@@ -1,0 +1,258 @@
+@import "tailwindcss";
+
+@plugin 'flowbite/plugin';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Default Rose theme - primary colors */
+  --color-primary-50: #FFF1F2;
+  --color-primary-100: #FFE4E6;
+  --color-primary-200: #FECDD3;
+  --color-primary-300: #FDA4AF;
+  --color-primary-400: #FB7185;
+  --color-primary-500: #F43F5E;
+  --color-primary-600: #E11D48;
+  --color-primary-700: #BE123C;
+  --color-primary-800: #9F1239;
+  --color-primary-900: #881337;
+
+  --color-secondary-50: #f8fafc;
+  --color-secondary-100: #f1f5f9;
+  --color-secondary-200: #e2e8f0;
+  --color-secondary-300: #cbd5e1;
+  --color-secondary-400: #94a3b8;
+  --color-secondary-500: #64748b;
+  --color-secondary-600: #475569;
+  --color-secondary-700: #334155;
+  --color-secondary-800: #1e293b;
+  --color-secondary-900: #0f172a;
+}
+
+/* Blue theme */
+[data-theme="blue"] {
+  --color-primary-50: #EFF6FF;
+  --color-primary-100: #DBEAFE;
+  --color-primary-200: #BFDBFE;
+  --color-primary-300: #93C5FD;
+  --color-primary-400: #60A5FA;
+  --color-primary-500: #3B82F6;
+  --color-primary-600: #2563EB;
+  --color-primary-700: #1D4ED8;
+  --color-primary-800: #1E40AF;
+  --color-primary-900: #1E3A8A;
+}
+
+/* Violet theme */
+[data-theme="violet"] {
+  --color-primary-50: #F5F3FF;
+  --color-primary-100: #EDE9FE;
+  --color-primary-200: #DDD6FE;
+  --color-primary-300: #C4B5FD;
+  --color-primary-400: #A78BFA;
+  --color-primary-500: #8B5CF6;
+  --color-primary-600: #7C3AED;
+  --color-primary-700: #6D28D9;
+  --color-primary-800: #5B21B6;
+  --color-primary-900: #4C1D95;
+}
+
+/* Emerald theme */
+[data-theme="emerald"] {
+  --color-primary-50: #ECFDF5;
+  --color-primary-100: #D1FAE5;
+  --color-primary-200: #A7F3D0;
+  --color-primary-300: #6EE7B7;
+  --color-primary-400: #34D399;
+  --color-primary-500: #10B981;
+  --color-primary-600: #059669;
+  --color-primary-700: #047857;
+  --color-primary-800: #065F46;
+  --color-primary-900: #064E3B;
+}
+
+/* Amber theme */
+[data-theme="amber"] {
+  --color-primary-50: #FFFBEB;
+  --color-primary-100: #FEF3C7;
+  --color-primary-200: #FDE68A;
+  --color-primary-300: #FCD34D;
+  --color-primary-400: #FBBF24;
+  --color-primary-500: #F59E0B;
+  --color-primary-600: #D97706;
+  --color-primary-700: #B45309;
+  --color-primary-800: #92400E;
+  --color-primary-900: #78350F;
+}
+
+@source "../node_modules/flowbite-svelte/dist";
+@source "../node_modules/flowbite-svelte-icons/dist";
+
+@layer base {
+
+  /* disable chrome cancel button */
+  input[type="search"]::-webkit-search-cancel-button {
+    display: none;
+  }
+}
+
+/* Custom utility classes for backwards compatibility */
+:root {
+  --background: 0 0% 100%;
+  --foreground: 222.2 84% 4.9%;
+  --muted: 210 40% 96.1%;
+  --muted-foreground: 215.4 16.3% 46.9%;
+  --border: 214.3 31.8% 91.4%;
+  --destructive: 0 84.2% 60.2%;
+}
+
+.dark {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --border: 217.2 32.6% 17.5%;
+  --destructive: 0 62.8% 30.6%;
+}
+
+body {
+  @apply bg-white text-gray-900 dark:bg-gray-900 dark:text-white;
+}
+
+/* Legacy utility classes */
+@layer utilities {
+  .bg-background {
+    @apply bg-white dark:bg-gray-900;
+  }
+
+  .bg-muted {
+    @apply bg-gray-100 dark:bg-gray-800;
+  }
+
+  .text-foreground {
+    @apply text-gray-900 dark:text-white;
+  }
+
+  .text-muted-foreground {
+    @apply text-gray-500 dark:text-gray-400;
+  }
+
+  .text-destructive {
+    @apply text-red-600 dark:text-red-400;
+  }
+
+  .border-border {
+    @apply border-gray-200 dark:border-gray-700;
+  }
+}
+
+/* Custom scrollbar styling */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #4b5563 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: #4b5563;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: #6b7280;
+}
+
+.dark *::-webkit-scrollbar-thumb {
+  background-color: #6b7280;
+}
+
+.dark *::-webkit-scrollbar-thumb:hover {
+  background-color: #9ca3af;
+}
+
+/* Custom range slider styling */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  background: #e5e7eb;
+  height: 8px;
+  border-radius: 4px;
+}
+
+.dark input[type="range"]::-webkit-slider-runnable-track {
+  background: #374151;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  background: #E11D48;
+  border-radius: 50%;
+  margin-top: -6px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+  box-shadow: 0 4px 10px rgba(225, 29, 72, 0.3);
+}
+
+input[type="range"]::-moz-range-track {
+  background: #e5e7eb;
+  height: 8px;
+  border-radius: 4px;
+}
+
+.dark input[type="range"]::-moz-range-track {
+  background: #374151;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  background: #E11D48;
+  border-radius: 50%;
+  border: none;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* Fix Flowbite Modal double scrollbar */
+body.overflow-hidden {
+  overflow: hidden !important;
+  padding-right: 0 !important;
+}
+
+/* Modal backdrop should not have scrollbar */
+[data-modal-backdrop="static"],
+.fixed.inset-0.z-50 {
+  overflow: hidden;
+}
+
+/* Ensure only modal content scrolls, not multiple containers */
+.fixed.inset-0.z-50>div {
+  max-height: 100vh;
+  overflow-y: auto;
+}
+
+.fixed.inset-0.z-50>div>div {
+  overflow: visible;
+}

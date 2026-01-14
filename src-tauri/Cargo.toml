@@ -1,0 +1,70 @@
+[package]
+name = "ultima"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "ultima_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "ultima"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+
+# === Serialization ===
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# === Async Runtime ===
+tokio = { version = "1", features = ["full"] }
+
+# === HTTP Client ===
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# === UUID Generation ===
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# === Date/Time ===
+chrono = { version = "0.4", features = ["serde"] }
+
+# === Error Handling ===
+thiserror = "1"
+anyhow = "1"
+
+# === Async Streams ===
+futures = "0.3"
+async-stream = "0.3"
+async-trait = "0.1"
+
+# === SSE Parsing ===
+eventsource-stream = "0.2"
+
+# === Logging ===
+log = "0.4"
+env_logger = "0.11"
+
+# === Local Storage ===
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# === Tauri Plugins ===
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+tauri-plugin-shell = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
