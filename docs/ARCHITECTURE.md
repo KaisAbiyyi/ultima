@@ -29,6 +29,12 @@ Distinguish **agent adapter** (preexisting agent loop), **model connector** (BYO
 
 See [Downloadable Block Architecture](MODULE-SYSTEM.md) and [Product Vision](PRODUCT-VISION.md).
 
+## Independent GitHub Releases and version pinning (future requirement)
+
+CoSoS and Mind Place are not Ultima subrepositories, source packages, or mandatory build dependencies. They are independently released applications. Ultima shall consume a **user-selected, exact, verified GitHub Release asset** (or connect to a user's existing compatible instance) through a stable versioned IPC/MCP/API boundary. Each provider remains free to ship and update without an Ultima commit. Keep separate app/module versions, lockfiles/manifest checksums and rollback slots.
+
+A tagged release alone is insufficient if it lacks a usable sidecar/runtime interface. CoSoS must expose its supported headless or service-side agent interface; Mind Place must expose its supported scoped read-only-by-default retrieval interface. Contract testing is a release gate, not a source-code fork. Version pinning must not hide Mind Place schema migration or data rollback risks; backup and requalification are required. See [release-pinned module policy](MODULE-SYSTEM.md#external-project-releases-are-the-source-of-truth-future-integration-contract).
+
 ## Future provider boundary (NOT implemented)
 
 Ultima's eventual host can expose capability-negotiated, lazily activated provider adapters: Codex (first), possible CoSoS (once stable), possible Mind Place read-only-by-default continuity (once stable), and legally authorized third-party agent SDKs. Keep configuration and credentials isolated; never proxy approvals or bypass auth. No cross-provider process starts on idle. See [staged Product Vision](PRODUCT-VISION.md).
