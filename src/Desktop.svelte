@@ -4,6 +4,7 @@
   import { visibleRange } from './lib/virtual';
   import { resolveShortcut } from './lib/shortcuts';
   import { nativeBridge, desktopAvailable, type EngineBridge, type EngineEvent } from './lib/desktop-bridge';
+  import { EngineSessionFence } from './lib/engine-session-fence';
   import { addThread, appendDelta, appendProject, cappedMessages, restoreProjects, restoreThreads, restoreThreadMessages, saveMetadata, type Project, type Thread } from './lib/desktop-state';
 
   const ROW_HEIGHT = 88;
@@ -19,7 +20,7 @@
   let draft = '';
   let model = '';
   let models: string[] = [];
-  let status: 'disconnected' | 'connecting' | 'ready' | 'error' = 'disconnected';
+  let status: 'disconnected' | 'connecting' | 'disconnecting' | 'ready' | 'error' = 'disconnected';
   let busy = false;
   let errorMessage = '';
   let search = '';
@@ -36,6 +37,8 @@
   const pending = new Map<number, 'models' | 'create' | 'resume' | 'turn' | 'interrupt'>();
   // IPC notifications can arrive before invoke() resolves; replay only bounded replies.
   const earlyReplies = new Map<number, Extract<EngineEvent, { type: 'reply' }>>();
+  const fence = new EngineSessionFence<EngineEvent>();
+  let connectionEpoch = 0;
   $: shownProjects = projects.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
   $: shownThreads = threads.filter(t => t.project === activeProject && t.title.toLowerCase().includes(search.toLowerCase()));
   $: range = visibleRange(messages.length, scrollTop, viewportHeight, ROW_HEIGHT);
@@ -72,22 +75,41 @@
       if (!duplicate) { errorMessage = 'Enter an absolute project directory.'; return; }
     }
     projects = updated;
-    activeProject = updated[0]?.path ?? activeProject;
+    if (!activeProject) activeProject = updated[0]?.path ?? activeProject;
     projectInput = '';
     persist();
   }
   async function disconnect() {
-    try { await bridge?.disconnect(); } catch { /* disconnected is already safe */ }
+    if (status === 'disconnecting') return;
+    if (status === 'connecting') {
+      errorMessage = 'Connection is still being established.';
+      return;
+    }
+    const epoch = ++connectionEpoch;
+    fence.beginDisconnect();
     pending.clear();
     earlyReplies.clear();
     activeTurn = '';
     busy = false;
-    status = 'disconnected';
+    status = 'disconnecting';
+    try {
+      await bridge?.disconnect();
+      if (epoch === connectionEpoch) status = 'disconnected';
+    } catch {
+      if (epoch === connectionEpoch) {
+        status = 'error';
+        errorMessage = 'Codex shutdown was not confirmed. Reconnect is blocked until the engine is safely stopped.';
+      }
+    }
   }
   async function chooseProject(path: string) {
-    if (busy) { errorMessage = 'Stop the current turn before switching projects.'; return; }
+    if (busy || status === 'connecting' || status === 'disconnecting') {
+      errorMessage = 'Wait for the active connection or turn to finish before switching projects.';
+      return;
+    }
     if (path !== activeProject) {
       await disconnect();
+      if (status !== 'disconnected') return;
       activeProject = path;
       activeThread = '';
       messages = [];
@@ -96,26 +118,40 @@
     persist();
   }
   async function connect() {
+    if (status === 'connecting' || status === 'disconnecting' || status === 'ready') return;
     if (!selectedProject || !executable.trim()) { errorMessage = 'Provide a Codex executable and choose a project.'; return; }
     if (!bridge) { errorMessage = 'Tauri desktop host unavailable. Browser mode cannot run Codex.'; return; }
+    const epoch = ++connectionEpoch;
+    fence.beginConnect();
+    pending.clear();
+    earlyReplies.clear();
     errorMessage = '';
     status = 'connecting';
     try {
-      await bridge.connect(executable.trim(), selectedProject.path);
+      const session = await bridge.connect(executable.trim(), selectedProject.path);
+      if (epoch !== connectionEpoch) return;
+      // Ready/handshake notifications may precede the invoke result.
+      const buffered = fence.connected(session);
       persist();
+      for (const event of buffered) onEngine(event);
     } catch {
+      if (epoch !== connectionEpoch) return;
+      fence.beginDisconnect();
       status = 'error';
       errorMessage = 'Could not start Codex. Check the selected executable and project directory.';
     }
   }
   async function request(method: Parameters<EngineBridge['call']>[0], params: Record<string, unknown>, kind: 'models' | 'create' | 'resume' | 'turn' | 'interrupt') {
-    if (!bridge) return;
+    const session = fence.session;
+    if (!bridge || session === null) return;
     try {
       const id = await bridge.call(method, params);
+      if (fence.session !== session) return; // stale invoke acknowledgement
       pending.set(id, kind);
       const early = earlyReplies.get(id);
       if (early) { earlyReplies.delete(id); onEngine(early); }
     } catch {
+      if (fence.session !== session) return;
       busy = false;
       pendingPrompt = '';
       errorMessage = 'The engine rejected this command or disconnected.';
@@ -145,10 +181,18 @@
     await tick(); scrollLatest();
   }
   function onEngine(event: EngineEvent) {
+    if (!fence.accept(event)) return;
     if (event.type === 'status') {
       status = event.state;
       if (event.state === 'ready') void request('model/list', {}, 'models');
-      if (event.state === 'disconnected' || event.state === 'error') { busy = false; activeTurn = ''; }
+      if (event.state === 'disconnected' || event.state === 'error') {
+        busy = false; activeTurn = '';
+        if (event.state === 'disconnected') {
+          fence.beginDisconnect();
+          pending.clear();
+          earlyReplies.clear();
+        }
+      }
       if (event.message) errorMessage = event.message;
       return;
     }
@@ -327,7 +371,7 @@
           <label for="nc06-executable">Trusted Codex executable path (selected by you)</label>
           <input id="nc06-executable" placeholder="C:\path\to\codex.exe" bind:value={executable} autocomplete="off"/>
           <p>Only the selected executable is launched via stdio in the selected project. Ultima never collects your Codex credentials.</p>
-          <button class="secondary-action" disabled={!selectedProject || status === 'connecting' || !executable.trim() || !desktopAvailable()} onclick={() => void connect()}>Connect to Codex</button>
+          <button class="secondary-action" disabled={!selectedProject || status === 'connecting' || status === 'disconnecting' || !executable.trim() || !desktopAvailable()} onclick={() => void connect()}>Connect to Codex</button>
           {#if !desktopAvailable()}<p data-testid="nc06-browser-limit">Browser preview only — launch the Tauri desktop to connect.</p>{/if}
         </div>
       {:else}<div class="nc06-engine"><button class="secondary-action" onclick={() => void disconnect()}>Disconnect engine</button><label for="nc06-model">Model</label><select id="nc06-model" bind:value={model} disabled={busy}><option value="">Engine default</option>{#each models as option}<option value={option}>{option}</option>{/each}</select></div>{/if}

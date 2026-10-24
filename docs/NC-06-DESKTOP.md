@@ -19,3 +19,9 @@
 - Recovered thread render depends on App Server `thread/resume` reply returning `thread.turns[].input/items` for the pinned interface; missing history is shown empty instead of fabricating messages.
 - Synthetic browser/Rust CI does not demonstrate authenticated live Codex execution, native owner Windows WebView2 behavior, process-tree RAM, p95 input/stream latency or release readiness. Those remain NOT_RUN pending proper evidence.
 - Backend Tauri build is separately validated in NC-06 hosted cross-platform CI. Never treat hosted runner data as owner's machine.
+
+## NC-06 disconnect/reconnect acceptance
+- The native process-tree gate moves atomically from Running to Stopping; a new connect cannot spawn until `EngineSupervisor::stop()` confirms successful shutdown. Teardown errors poison the slot, blocking new starts until the application is restarted and old child state is diagnosed.
+- Disconnect uses a detached completion watcher so a cancelled IPC request does not release the native slot early. Stale Rust teardown callbacks cannot clear a newer generation.
+- Every host event carries a session generation. The UI accepts only the acknowledged generation, buffers up to 64 pre-ack events, ignores stale replies/statuses/deltas, and invalidates pending request callbacks on disconnect.
+- Hosted Windows CI runs native lifecycle unit tests (rapid 20-cycle stop/reconnect, simultaneous start, failed stop, stale completion) in addition to Tauri `cargo check`. Vitest covers late UI events and buffer bounds.

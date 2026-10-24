@@ -1,12 +1,13 @@
 /** NC-06 thin Tauri bridge: all permission/process policy lives in Rust. */
-export type EngineEvent =
+export type EngineEvent = { session: number } & (
   | { type: 'status'; state: 'connecting' | 'ready' | 'error' | 'disconnected'; message?: string }
   | { type: 'reply'; id: number; method: string; ok: boolean; result: unknown }
   | { type: 'threadStarted' | 'turnStarted' | 'turnCompleted' | 'itemStarted' | 'itemCompleted' | 'delta' | 'requestResolved'; params: Record<string, unknown> }
-  | { type: 'approvalBlocked'; kind: string };
+  | { type: 'approvalBlocked'; kind: string }
+);
 
 export interface EngineBridge {
-  connect(executable: string, project: string): Promise<void>;
+  connect(executable: string, project: string): Promise<number>;
   call(method: 'model/list' | 'thread/start' | 'thread/resume' | 'turn/start' | 'turn/interrupt', params: Record<string, unknown>): Promise<number>;
   disconnect(): Promise<void>;
   listen(listener: (event: EngineEvent) => void): Promise<() => void>;
@@ -20,7 +21,7 @@ export async function nativeBridge(): Promise<EngineBridge> {
     import('@tauri-apps/api/core'), import('@tauri-apps/api/event')
   ]);
   return {
-    connect: (executable, project) => invoke<void>('ultima_connect', { executable, project }),
+    connect: (executable, project) => invoke<number>('ultima_connect', { executable, project }),
     call: (method, params) => invoke<number>('ultima_call', { method, params }),
     disconnect: () => invoke<void>('ultima_disconnect'),
     listen: async (handler) => {
