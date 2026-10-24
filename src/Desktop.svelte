@@ -5,7 +5,7 @@
   import { resolveShortcut } from './lib/shortcuts';
   import { nativeBridge, desktopAvailable, type EngineBridge, type EngineEvent } from './lib/desktop-bridge';
   import { EngineSessionFence } from './lib/engine-session-fence';
-  import { approvalToolIdentity, canApprove, matchesApprovalEvidence, parseApproval, sameApproval, toolIdentity, trackTool, type ApprovalRequest, type ToolItem } from './lib/tool-events';
+  import { approvalToolIdentity, canApprove, canApproveInActiveTurn, matchesApprovalEvidence, parseApproval, sameApproval, toolIdentity, trackTool, type ApprovalRequest, type ToolItem } from './lib/tool-events';
   import { addThread, appendDelta, appendProject, cappedMessages, restoreProjects, restoreThreads, restoreThreadMessages, saveMetadata, type Project, type Thread } from './lib/desktop-state';
 
   const ROW_HEIGHT = 88;
@@ -54,8 +54,8 @@
   $: currentApproval = approvals[0] ?? null;
   $: currentTool = currentApproval ? toolItems.find(t => matchesApprovalEvidence(currentApproval, t)) : undefined;
   $: currentApprovalKey = currentApproval ? approvalToolIdentity(currentApproval) : '';
-  $: canAccept = !!currentApproval && canApprove(currentApproval, toolItems) &&
-    currentApproval.threadId === activeThread && currentApproval.turnId === activeTurn &&
+  $: canAccept = !!currentApproval &&
+    canApproveInActiveTurn(currentApproval, toolItems, activeThread, activeTurn) &&
     (currentApproval.kind !== 'fileChange' || expandedDiffId === currentApprovalKey) &&
     reviewedApproval && !approvalBusy && status === 'ready';
 
