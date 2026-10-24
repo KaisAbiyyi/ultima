@@ -99,7 +99,7 @@ async fn drive(
     mut inbox: mpsc::Receiver<Action>,
     closed: watch::Sender<Option<bool>>,
     updates: Arc<Mutex<()>>,
-    managed: bool,
+    managed_version: Option<String>,
 ) {
     let result: Result<(), String> = async {
         broker.begin_initialize().map_err(|_| safe_error("Handshake initialization failed"))?;
@@ -174,16 +174,11 @@ async fn drive(
     // connect cannot race a failed managed session and inherit its selection.
     let _update = updates.lock().await;
     let mut safe = clean;
-    if failed && managed && clean {
-        // Never replay or approve old in-flight protocol work.
-        let recovered = runtime::manager(&app)
-            .and_then(|manager| {
-                manager
-                    .rollback()
-                    .map(|_| ())
-                    .map_err(|_| "Managed rollback failed".into())
-            })
-            .is_ok();
+    if failed && clean {
+        if let Some(failed_version) = managed_version.as_deref() {
+            // Confirm the new effective selection is different from the failed
+            // managed version BEFORE unlocking the SessionGate.
+            let recovered = runtime::rollback_after_failure(&app, failed_version).is_ok();
         safe &= recovered;
         emit(
             &app,
@@ -195,6 +190,7 @@ async fn drive(
                     else { "Managed Codex failed and rollback could not be confirmed. Reconnect blocked; restart Ultima." }
             }),
         );
+        }
     }
     let _ = closed.send(Some(safe));
     // A disconnect owns the Stopping sentinel; spontaneous EOF owns Running.
@@ -230,10 +226,10 @@ async fn ultima_connect(
     }
     let exe_parent = exe.parent().ok_or("Missing executable parent")?;
     let manager = runtime::manager(&app)?;
-    let managed = matches!(
-        manager.selected(),
-        ultima_runtime_manager::Choice::Managed(_)
-    );
+    let managed_version = match manager.selected() {
+        ultima_runtime_manager::Choice::Managed(version) => Some(version),
+        ultima_runtime_manager::Choice::System => None,
+    };
     let config = manager
         .engine_config(exe, exe_parent, cwd, cwd)
         .map_err(|_| safe_error("Executable or project not accessible"))?;
@@ -273,11 +269,13 @@ async fn ultima_connect(
             ))
         }
         Err(StartError::Start(reason)) => {
-            if managed && manager.rollback().is_err() {
-                state.gate.poison_idle().await;
-                return Err(safe_error(
-                    "Managed launch failed and rollback unconfirmed; restart Ultima",
-                ));
+            if let Some(failed_version) = managed_version.as_deref() {
+                if runtime::rollback_after_failure(&app, failed_version).is_err() {
+                    state.gate.poison_idle().await;
+                    return Err(safe_error(
+                        "Managed launch failed and distinct rollback unconfirmed; restart Ultima",
+                    ));
+                }
             }
             return Err(reason);
         }
@@ -291,7 +289,7 @@ async fn ultima_connect(
         receiver,
         shutdown_tx,
         state.updates.clone(),
-        managed,
+        managed_version,
     ));
     Ok(session)
 }
