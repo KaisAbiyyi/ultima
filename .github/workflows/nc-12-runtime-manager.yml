@@ -5,12 +5,22 @@ on:
       - "crates/runtime-manager/**"
       - "crates/app-server-supervisor/**"
       - "protocol/compat-matrix.json"
+      - "protocol/managed-assets.json"
+      - "src-tauri/**"
+      - "src/**"
+      - "tests/nc-11-compat.test.mjs"
+      - "tests/nc-01-contract.test.mjs"
       - ".github/workflows/nc-12-runtime-manager.yml"
   push:
     paths:
       - "crates/runtime-manager/**"
       - "crates/app-server-supervisor/**"
       - "protocol/compat-matrix.json"
+      - "protocol/managed-assets.json"
+      - "src-tauri/**"
+      - "src/**"
+      - "tests/nc-11-compat.test.mjs"
+      - "tests/nc-01-contract.test.mjs"
       - ".github/workflows/nc-12-runtime-manager.yml"
   workflow_dispatch:
 permissions:
@@ -36,3 +46,16 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Synthetic security, offline and rollback tests
         run: cargo test --all-targets
+      - name: Verify NC-01 and NC-11 protocol and release policy regressions
+        shell: bash
+        run: |
+          node --test ../../tests/nc-01-contract.test.mjs ../../tests/nc-11-compat.test.mjs
+          node ../../scripts/nc-11-compat.mjs matrix
+      - name: Compile and test NC-06 Tauri host after runtime integration
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo check --manifest-path ../../src-tauri/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path ../../src-tauri/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
