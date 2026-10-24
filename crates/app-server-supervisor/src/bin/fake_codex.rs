@@ -23,7 +23,9 @@ fn main() {
                 .unwrap();
             println!("{{\"childPid\":{}}}", child.id());
             let _ = io::stdout().flush();
-            std::thread::spawn(move || { let _ = child.wait(); });
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
             continue;
         }
         if input.contains("fixture/crash") {
