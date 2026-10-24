@@ -41,7 +41,8 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
     ['whitespace second diff', [change('src/a.ts', '+a'), change('src/b.ts', '   ')]],
     ['missing path', [change('src/a.ts', '+a'), { diff: '+b' }]],
     ['malformed second entry', [change('src/a.ts', '+a'), 'not an object']],
-    ['duplicate path', [change('src/a.ts', '+a'), change('src/a.ts', '+b')]]
+    ['duplicate path', [change('src/a.ts', '+a'), change('src/a.ts', '+b')]],
+    ['entry flagged partial', [change('src/a.ts', '+a'), { path: 'src/b.ts', diff: '+b', partial: true }]]
   ])('fails closed on multi-file %s', (_name, changes) => {
     const items = trackTool([], 'itemStarted', fileEvent(changes));
     expect(items[0].previewComplete).toBe(false);
