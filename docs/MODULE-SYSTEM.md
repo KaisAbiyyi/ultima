@@ -16,6 +16,28 @@
 
 **Included Codex integration is NOT a promise to package third-party binaries by default.** Installer should offer a frictionless Codex onboarding flow: detect a supported system installation, provide user-consented managed installation **only after** provenance/license/release checks are proven, and otherwise show clear prerequisites. Never silently reuse or rewrite external apps' auth/config.
 
+## External project releases are the source of truth (future integration contract)
+
+**CoSoS and Mind Place remain independent products and repositories.** Ultima must NEVER copy their source into its own tree or couple their Git histories. The default integration is **release-based consumption**, using user-chosen published tags/assets, not `git pull main` or building from an arbitrary unreviewed commit.
+
+| Block | Upstream repository | Artifact expected from each qualifying release |
+|---|---|---|
+| CoSoS | [KaisAbiyyi/chat-on-steroids-on-steroids](https://github.com/KaisAbiyyi/chat-on-steroids-on-steroids) | Versioned Windows runtime/portable sidecar and a documented IPC/agent protocol (not merely the desktop installer) |
+| Mind Place | [KaisAbiyyi/mind-place](https://github.com/KaisAbiyyi/mind-place) | Versioned service/connector or approved installer artifact, documented MCP/API contract, explicit storage schema version and migration policy |
+
+**These are desired future release contracts, not statements that today's releases already contain those assets.** Each upstream team independently decides when a version is stable and published.
+
+**Version picker / update policy**
+1. Discover explicitly published stable release tags and platform assets; expose available versions and tested compatibility. Allow **Install version...**, **Pin version**, **Check updates**, **Update after verification**, **Rollback** and **Uninstall adapter**.
+2. Resolve each selected tag to a **specific artifact digest and source commit**. Verify HTTPS origin, checksums and available signatures/provenance; treat mutable tags/replaced assets as new candidates requiring fresh verification. Never run unverified release binaries.
+3. Maintain an Ultima-side compatibility matrix (`ultima_version`, `module_id`, `module_version`, `platform`, `protocol_version`, `asset_sha256`, `qualification`). Reject unknown incompatible combinations without modifying installed working versions.
+4. Install to a per-module/per-version directory with an atomic activation pointer; preserve a known-good binary for rollback. Do not change an existing user-installed CoSoS/Mind Place executable or overwrite its configuration.
+5. **Connect to existing standalone service when explicitly chosen**, or launch an Ultima-owned on-demand sidecar as a distinct lifecycle. Detect port/profile conflicts; avoid duplicate background runtimes; disconnect/stop only processes Ultima owns.
+6. **Mind Place migration warning:** binary rollback is not automatically data rollback. Preserve separate data ownership; snapshot/backup and test schema compatibility before upgrades. A destructive/irreversible migration requires explicit user approval and verified recovery; never automatically downgrade live archives or change their ownership.
+7. Release update must not automatically update Ultima, CoSoS, and Mind Place together. Their version lifecycles, documentation, CI and legal notices remain independent.
+
+**Concrete future user flow:** Ultima → Modules → Mind Place → Versions → choose a compatible **published release** → verify → download/install (or connect to an existing installation) → launch only when activated. Same pattern for CoSoS. A module can stay installed/pinned indefinitely, subject to documented security or compatibility warnings.
+
 ## Invariant — Installed != Loaded != Running
 
 - **Installed:** validated manifest, version and disk files; no agent process, model load, persistent background worker, network polling or reactive UI tree instantiated.
