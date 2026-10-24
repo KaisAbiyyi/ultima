@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "source": "https://api.github.com/repos/openai/codex/releases/tags/rust-v0.164.0",
+  "release": "https://github.com/openai/codex/releases/tag/rust-v0.164.0",
+  "version": "0.164.0",
+  "assets": [
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "name": "codex-x86_64-pc-windows-msvc.exe",
+      "url": "https://github.com/openai/codex/releases/download/rust-v0.164.0/codex-x86_64-pc-windows-msvc.exe",
+      "size": 354558768,
+      "sha256": "6f267830b029ee25d9339864aa867cd45de9f8fd4c5ea007d2e63c13a0c66d36"
+    }
+  ]
+}
