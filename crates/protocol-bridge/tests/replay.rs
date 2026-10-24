@@ -8,7 +8,7 @@ fn make_ready() -> Broker {
     assert_eq!(broker.phase(), Phase::Initializing);
     assert!(broker.call(ClientMethod::ModelList, json!({})).is_err());
     let request: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
-    assert_eq!(request["capabilities"]["experimentalApi"], false);
+    assert_eq!(request["params"]["capabilities"]["experimentalApi"], false);
     broker.ingest_line(br#"{"id":0,"result":{"userAgent":"codex/0.164.0","platformFamily":"unix","platformOs":"linux"}}"#).unwrap();
     assert_eq!(broker.phase(), Phase::Acknowledgeable);
     broker.acknowledge_initialized().unwrap();
