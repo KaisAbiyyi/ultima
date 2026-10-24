@@ -18,7 +18,7 @@
   "dependencies": { "@tauri-apps/api": "2.8.0" },
   "devDependencies": {
     "@playwright/test": "1.56.1",
-    "@tauri-apps/cli": "2.8.5",
+    "@tauri-apps/cli": "2.8.4",
     "@tsconfig/svelte": "^5.0.0",
     "@types/node": "^22.0.0",
     "@sveltejs/vite-plugin-svelte": "5.1.0",
