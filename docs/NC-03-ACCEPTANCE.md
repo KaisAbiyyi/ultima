@@ -31,7 +31,7 @@ Cloud acceptance is GitHub Actions `NC-03 Svelte UI prototype` on the exact PR H
 - Fixed-height rows clamp long text to two lines. Real Markdown and variable-height virtualized messages belong to NC-06/NC-08.
 - Screenshot artifacts are generated in GitHub CI; screenshots are not proof of Windows/WebView2 usability or process-tree memory.
 - No real streaming, tool approval, App Server auth or filesystem integration. No claims are made about native Windows RAM, p95 frame latency, IME or screen-reader acceptance.
-- Fonts have system fallbacks, but hosted Google Fonts are an optional external resource for this visual prototype. Production must bundle or replace fonts for strict offline/network policies.
+- Only system font fallbacks are used; no font CDN, tracking, network request, or icon library is required.
 
 ## Verification checklist
 
