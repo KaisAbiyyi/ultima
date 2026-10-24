@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  approvalToolIdentity, parseApproval, canApprove, matchesApprovalEvidence, sameApproval,
+  approvalToolIdentity, parseApproval, canApprove, canApproveInActiveTurn, matchesApprovalEvidence, sameApproval,
   toolIdentity, trackTool, MAX_FILE_CHANGES, MAX_TOOL_ITEMS, MAX_TOOL_DIFF_CHARS,
   MAX_TOOL_OUTPUT_CHARS, type ApprovalRequest
 } from './tool-events';
@@ -90,6 +90,16 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
     expect(canApprove({ ...approval, turnId: 'turn-one' }, second)).toBe(true);
     expect(canApprove({ ...approval, turnId: 'turn-two' }, second)).toBe(false);
     expect(trackTool(first, 'commandOutput', { threadId: 't', turnId: 'turn-two', itemId: 'i', delta: 'fake' })).toEqual(first);
+  });
+
+  it('revokes Allow once when the selected active turn changes', () => {
+    const tools = trackTool([], 'itemStarted', fileEvent([
+      change('src/a.ts', '+a'), change('src/b.ts', '+b')
+    ]));
+    expect(canApproveInActiveTurn(fileApproval, tools, 't', 'z')).toBe(true);
+    expect(canApproveInActiveTurn(fileApproval, tools, 't', 'next-turn')).toBe(false);
+    expect(canApproveInActiveTurn(fileApproval, tools, 'other-thread', 'z')).toBe(false);
+    expect(canApproveInActiveTurn(fileApproval, [], 't', 'z')).toBe(false);
   });
 
   it('never consumes unscoped or forged turn output as an approval preview', () => {
