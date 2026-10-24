@@ -629,6 +629,23 @@ mod policy_tests {
     }
 
     #[test]
+    fn activating_system_again_is_a_no_op_for_the_bounded_journal() {
+        let (_tmp, manager, file, _) = fixture();
+        assert_eq!(manager.history().unwrap().len(), 0);
+        manager.activate_system().unwrap();
+        manager.activate_system().unwrap();
+        assert_eq!(manager.history().unwrap().len(), 0);
+        manager.stage(&file, "0.164.0").unwrap();
+        manager.record(Choice::Managed("0.164.0".into())).unwrap();
+        manager.activate_system().unwrap();
+        let count = manager.history().unwrap().len();
+        manager.activate_system().unwrap();
+        manager.activate_system().unwrap();
+        assert_eq!(manager.history().unwrap().len(), count);
+        assert_eq!(manager.active(), Choice::System);
+    }
+
+    #[test]
     fn journal_corruption_fails_closed_and_forged_folders_rejected() {
         let (tmp, manager, _, _) = fixture();
         manager.record(Choice::Managed("0.164.0".into())).unwrap();
