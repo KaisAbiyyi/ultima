@@ -423,10 +423,25 @@ impl Manager {
         health::probe(config).await?;
         // Detect any concurrent post-smoke binary change.
         self.verified(version)?;
-        self.record(Choice::Managed(version.to_owned()))
+        let choice = Choice::Managed(version.to_owned());
+        // A re-check of the same approved version is a journal no-op.
+        // Historic duplicate entries still remain safe for rollback().
+        if self.history()?.last().is_some_and(|entry| entry.choice == choice) {
+            return Ok(());
+        }
+        self.record(choice)
     }
     pub fn activate_system(&self) -> Result<(), Error> {
         let _guard = self.lock()?;
+        // System is the safe default even before the first journal entry.
+        // Repeated clicks must not exhaust the bounded journal.
+        if self
+            .history()?
+            .last()
+            .is_none_or(|entry| entry.choice == Choice::System)
+        {
+            return Ok(());
+        }
         self.record(Choice::System)
     }
     /// Roll back to the newest DISTINCT, currently verified previous runtime,
