@@ -1,10 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod lifecycle;
+mod runtime;
 
 use std::path::Path;
 use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
 use tauri::{Emitter, State};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use ultima_app_server_supervisor::{EngineConfig, EngineSupervisor, OutputEvent};
 use ultima_protocol_bridge::{Broker, ClientMethod, Event, Limits, NotificationKind, Phase};
 use serde_json::{json, Value};
@@ -18,10 +19,11 @@ struct EngineHandle {
 struct Shared {
     gate: Arc<SessionGate<EngineHandle>>,
     next_session: AtomicU64,
+    updates: Arc<Mutex<()>>,
 }
 impl Default for Shared {
     fn default() -> Self {
-        Self { gate: Arc::new(SessionGate::default()), next_session: AtomicU64::new(0) }
+        Self { gate: Arc::new(SessionGate::default()), next_session: AtomicU64::new(0), updates: Arc::new(Mutex::new(())) }
     }
 }
 enum Action {
@@ -79,6 +81,8 @@ async fn drive(
     mut broker: Broker,
     mut inbox: mpsc::Receiver<Action>,
     closed: watch::Sender<Option<bool>>,
+    updates: Arc<Mutex<()>>,
+    managed: bool,
 ) {
     let result: Result<(), String> = async {
         broker.begin_initialize().map_err(|_| safe_error("Handshake initialization failed"))?;
@@ -143,7 +147,17 @@ async fn drive(
         emit(&app, session, json!({"type":"status","state":"error","message":reason}));
     }
     // The stop signal is NOT completion. Notify observers only after supervisor.stop().
+    let failed = result.is_err();
     let clean = supervisor.stop().await.is_ok();
+    // Reserve the update mutex through rollback + gate completion so a new
+    // connect cannot race a failed managed session and inherit its selection.
+    let _update = updates.lock().await;
+    if failed && managed && clean {
+        // Never replay or approve old in-flight protocol work.
+        let _ = runtime::manager(&app).and_then(|manager| manager.rollback().map(|_| ())
+            .map_err(|_| "Managed rollback failed".into()));
+        emit(&app, session, json!({"type":"status","state":"error","message":"Managed Codex failed; previous safe runtime restored. Reconnect explicitly."}));
+    }
     let _ = closed.send(Some(clean));
     // A disconnect owns the Stopping sentinel; spontaneous EOF owns Running.
     if gate.finish_unexpected(session, clean).await {
@@ -162,30 +176,40 @@ async fn ultima_connect(
     if executable.len() > 4096 || project.len() > 4096 {
         return Err(safe_error("Path too long"));
     }
+    // Serialize connect with updates and rollback. SessionGate remains the
+    // authoritative owner for one live process tree.
+    let _update = state.updates.lock().await;
     let exe = Path::new(&executable);
     let cwd = Path::new(&project);
     if !exe.is_absolute() || !cwd.is_absolute() {
         return Err(safe_error("Absolute paths are required"));
     }
     let exe_parent = exe.parent().ok_or("Missing executable parent")?;
-    let config = EngineConfig::new(exe, exe_parent, cwd, cwd)
+    let manager = runtime::manager(&app)?;
+    let managed = matches!(manager.selected(), ultima_runtime_manager::Choice::Managed(_));
+    let config = manager.engine_config(exe, exe_parent, cwd, cwd)
         .map_err(|_| safe_error("Executable or project not accessible"))?;
     let broker = Broker::new(Limits::default())
         .map_err(|_| safe_error("Bridge initialization failed"))?;
     let session = state.next_session.fetch_add(1, Ordering::Relaxed)
         .checked_add(1).ok_or("Session identifiers exhausted")?;
-    let (supervisor, receiver, shutdown_tx) = state.gate.start(session, || {
+    let launch = state.gate.start(session, || {
         let mut supervisor = EngineSupervisor::new(config);
         supervisor.start().map_err(|_| safe_error("Failed to launch trusted Codex"))?;
         let (tx, rx) = mpsc::channel(16);
         let (shutdown_tx, shutdown_rx) = watch::channel(None);
         Ok::<_, String>((EngineHandle { tx, closed: shutdown_rx }, (supervisor, rx, shutdown_tx)))
-    }).await.map_err(|error| match error {
-        StartError::Gate(GateError::Busy) => safe_error("Engine is still running or shutting down"),
-        StartError::Gate(GateError::Poisoned) => safe_error("Previous engine shutdown unconfirmed; restart Ultima"),
-        StartError::Start(reason) => reason,
-    })?;
-    tauri::async_runtime::spawn(drive(app, state.gate.clone(), session, supervisor, broker, receiver, shutdown_tx));
+    }).await;
+    let (supervisor, receiver, shutdown_tx) = match launch {
+        Ok(value) => value,
+        Err(StartError::Gate(GateError::Busy)) => return Err(safe_error("Engine is still running or shutting down")),
+        Err(StartError::Gate(GateError::Poisoned)) => return Err(safe_error("Previous engine shutdown unconfirmed; restart Ultima")),
+        Err(StartError::Start(reason)) => {
+            if managed { let _ = manager.rollback(); }
+            return Err(reason);
+        }
+    };
+    tauri::async_runtime::spawn(drive(app, state.gate.clone(), session, supervisor, broker, receiver, shutdown_tx, state.updates.clone(), managed));
     Ok(session)
 }
 #[tauri::command]
@@ -239,10 +263,40 @@ async fn ultima_disconnect(app: tauri::AppHandle, state: State<'_, Shared>) -> R
         _ => Err(safe_error("Engine shutdown unconfirmed; reconnect blocked")),
     }
 }
+// Update operations are opt-in, never invoked during automatic desktop startup.
+// In particular, Stopping/Poisoned SessionGate is not an idle gate.
+#[tauri::command]
+async fn ultima_runtime_status(app: tauri::AppHandle) -> Result<Value, String> {
+    runtime::status(&app)
+}
+#[tauri::command]
+async fn ultima_runtime_stage(app: tauri::AppHandle, state: State<'_, Shared>, source: String) -> Result<(), String> {
+    let _updates = state.updates.lock().await;
+    state.gate.require_idle().await.map_err(|_| safe_error("Disconnect Codex and confirm shutdown before updating"))?;
+    runtime::stage(&app, &source)
+}
+#[tauri::command]
+async fn ultima_runtime_activate(app: tauri::AppHandle, state: State<'_, Shared>, project: String) -> Result<(), String> {
+    let _updates = state.updates.lock().await;
+    state.gate.require_idle().await.map_err(|_| safe_error("Disconnect Codex and confirm shutdown before updating"))?;
+    runtime::activate(&app, &project).await
+}
+#[tauri::command]
+async fn ultima_runtime_system(app: tauri::AppHandle, state: State<'_, Shared>) -> Result<(), String> {
+    let _updates = state.updates.lock().await;
+    state.gate.require_idle().await.map_err(|_| safe_error("Disconnect Codex and confirm shutdown before updating"))?;
+    runtime::restore_system(&app)
+}
+#[tauri::command]
+async fn ultima_runtime_rollback(app: tauri::AppHandle, state: State<'_, Shared>) -> Result<(), String> {
+    let _updates = state.updates.lock().await;
+    state.gate.require_idle().await.map_err(|_| safe_error("Disconnect Codex and confirm shutdown before updating"))?;
+    runtime::rollback(&app)
+}
 fn main() {
     tauri::Builder::default()
         .manage(Shared::default())
-        .invoke_handler(tauri::generate_handler![ultima_connect, ultima_call, ultima_disconnect])
+        .invoke_handler(tauri::generate_handler![ultima_connect, ultima_call, ultima_disconnect, ultima_runtime_status, ultima_runtime_stage, ultima_runtime_activate, ultima_runtime_system, ultima_runtime_rollback])
         .run(tauri::generate_context!())
         .expect("Ultima desktop could not start");
 }
