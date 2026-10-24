@@ -12,6 +12,8 @@ test('virtualizes 10k messages without growing the DOM', async ({ page }) => {
 
 test('keyboard-first navigation, composition and theme switch', async ({ page }) => {
   await page.goto('/');
+  // The shell is imported asynchronously; wait for Svelte mount before shortcuts.
+  await expect(page.getByTestId('message-count')).toHaveText('10,000 messages');
   await page.keyboard.press('Control+k');
   await expect(page.getByPlaceholder('Find a project')).toBeFocused();
   await page.keyboard.press('Control+l');
