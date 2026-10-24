@@ -1,10 +1,10 @@
-# Necessary Codex — Performance & UX Acceptance Contract
+# Ultima: Codex Foundation — Performance & UX Acceptance Contract
 
 **Performance first, but correctness/security/authorization are non-negotiable.** This is a proposed v0.1 benchmark contract, **NOT evidence of achieved performance**.
 
 ## Measurement principle
 
-Measure **total product process tree**: Necessary Codex executable + WebView2 children + Codex App Server + any attributable subprocesses; also report UI-only and engine-only deltas separately. Compare like-for-like on same machine, same Codex engine version, login state, project size, history length, tool policy, context and workload. No browser in one variant and browser in another. Record hardware, OS, power mode, binary SHAs, warm/cold cache, graphics backend and 3+ repetitions. Report median, p95 and variance. Never attribute shared OS/browser usage to one product without evidence.
+Measure **total product process tree**: Ultima executable + WebView2 children + Codex App Server + any attributable subprocesses; also report UI-only and engine-only deltas separately. Compare like-for-like on same machine, same Codex engine version, login state, project size, history length, tool policy, context and workload. No browser in one variant and browser in another. Record hardware, OS, power mode, binary SHAs, warm/cold cache, graphics backend and 3+ repetitions. Report median, p95 and variance. Never attribute shared OS/browser usage to one product without evidence.
 
 ## Provisional budgets (validate against NC-02 baseline; revise via reviewed ADR, not silent weakening)
 
