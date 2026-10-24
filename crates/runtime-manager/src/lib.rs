@@ -67,47 +67,79 @@ impl Approval {
     /// with an exact digest, size, download URL, OS and architecture.
     /// No caller-supplied matching digest can become its own trust anchor.
     pub fn official() -> Result<Self, Error> {
-        let pins: serde_json::Value = serde_json::from_str(include_str!("../../../protocol/managed-assets.json"))
-            .map_err(|_| Error::Invalid("assets manifest"))?;
-        let target = if cfg!(all(target_os="windows", target_arch="x86_64")) {
+        let pins: serde_json::Value =
+            serde_json::from_str(include_str!("../../../protocol/managed-assets.json"))
+                .map_err(|_| Error::Invalid("assets manifest"))?;
+        let target = if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
             "x86_64-pc-windows-msvc"
         } else {
             return Err(Error::Invalid("unsupported platform"));
         };
-        if pins["schemaVersion"] != 1 || pins["version"] != "0.164.0" ||
-            pins["source"] != "https://api.github.com/repos/openai/codex/releases/tags/rust-v0.164.0" ||
-            pins["release"] != "https://github.com/openai/codex/releases/tag/rust-v0.164.0" {
+        if pins["schemaVersion"] != 1
+            || pins["version"] != "0.164.0"
+            || pins["source"]
+                != "https://api.github.com/repos/openai/codex/releases/tags/rust-v0.164.0"
+            || pins["release"] != "https://github.com/openai/codex/releases/tag/rust-v0.164.0"
+        {
             return Err(Error::Invalid("untrusted manifest"));
         }
         let assets = pins["assets"].as_array().ok_or(Error::Invalid("assets"))?;
-        if assets.len()!=1 { return Err(Error::Invalid("asset count")); }
-        let item = assets.iter().find(|i| i["target"]==target).ok_or(Error::Invalid("architecture"))?;
+        if assets.len() != 1 {
+            return Err(Error::Invalid("asset count"));
+        }
+        let item = assets
+            .iter()
+            .find(|i| i["target"] == target)
+            .ok_or(Error::Invalid("architecture"))?;
         let version = pins["version"].as_str().ok_or(Error::Invalid("version"))?;
         let name = format!("codex-{target}.exe");
-        let url = format!("https://github.com/openai/codex/releases/download/rust-v{version}/{name}");
+        let url =
+            format!("https://github.com/openai/codex/releases/download/rust-v{version}/{name}");
         let hash = item["sha256"].as_str().ok_or(Error::Invalid("digest"))?;
-        if !qualified(version) || item["name"]!=name || item["url"]!=url ||
-            item["size"]!=354558768u64 || hash.len()!=64 ||
-            !hash.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+        if !qualified(version)
+            || item["name"] != name
+            || item["url"] != url
+            || item["size"] != 354558768u64
+            || hash.len() != 64
+            || !hash
+                .bytes()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        {
             return Err(Error::Invalid("official asset"));
         }
-        Self::new(version, pins["release"].as_str().ok_or(Error::Invalid("release"))?, hash)
+        Self::new(
+            version,
+            pins["release"].as_str().ok_or(Error::Invalid("release"))?,
+            hash,
+        )
     }
 
     /// Retained API shape but now only accepts the exact official, pinned
     /// digest for the OS/architecture; arbitrary hash + tag cannot qualify.
     pub fn new(version: &str, url: &str, hash: &str) -> Result<Self, Error> {
-        let supported_target = cfg!(all(target_os="windows", target_arch="x86_64"));
+        let supported_target = cfg!(all(target_os = "windows", target_arch = "x86_64"));
         let official_hash = "6f267830b029ee25d9339864aa867cd45de9f8fd4c5ea007d2e63c13a0c66d36";
-        if !supported_target || !qualified(version) || version != "0.164.0" ||
-            url != format!("{UPSTREAM}{version}") || hash != official_hash {
+        if !supported_target
+            || !qualified(version)
+            || version != "0.164.0"
+            || url != format!("{UPSTREAM}{version}")
+            || hash != official_hash
+        {
             return Err(Error::Invalid("trusted official release digest"));
         }
-        Ok(Self { version: version.into(), release_url: url.into(), sha256: hash.into() })
+        Ok(Self {
+            version: version.into(),
+            release_url: url.into(),
+            sha256: hash.into(),
+        })
     }
 
-    pub fn version(&self) -> &str { &self.version }
-    pub fn digest(&self) -> &str { &self.sha256 }
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+    pub fn digest(&self) -> &str {
+        &self.sha256
+    }
     pub fn asset_url(&self) -> &'static str {
         "https://github.com/openai/codex/releases/download/rust-v0.164.0/codex-x86_64-pc-windows-msvc.exe"
     }
@@ -377,14 +409,17 @@ impl Manager {
     /// initialize/initialized/model-list smoke and confirmed process teardown
     /// BEFORE journaling the new selection.
     pub async fn activate_checked(
-        &self, version: &str, project: &Path, project_root: &Path,
+        &self,
+        version: &str,
+        project: &Path,
+        project_root: &Path,
     ) -> Result<(), Error> {
         let _guard = self.lock()?;
         let path = self.verified(version)?;
         let trusted = self.root.join("versions").join(version);
-        let config = ultima_app_server_supervisor::EngineConfig::new(
-            &path, &trusted, project, project_root,
-        ).map_err(|_| Error::Invalid("preflight config"))?;
+        let config =
+            ultima_app_server_supervisor::EngineConfig::new(&path, &trusted, project, project_root)
+                .map_err(|_| Error::Invalid("preflight config"))?;
         health::probe(config).await?;
         // Detect any concurrent post-smoke binary change.
         self.verified(version)?;
@@ -409,7 +444,9 @@ impl Manager {
         self.record(choice.clone())?;
         Ok(choice)
     }
-    pub fn selected(&self) -> Choice { self.active() }
+    pub fn selected(&self) -> Choice {
+        self.active()
+    }
 
     pub fn engine_config(
         &self,
@@ -440,11 +477,14 @@ mod policy_tests {
         let hash = hash_file(&file).unwrap();
         // Private test fixture: production cannot construct ApprovedArtifact
         // except the exact reviewed upstream platform pin.
-        manager.approvals.insert("0.164.0".into(), Approval {
-            version: "0.164.0".into(),
-            release_url: format!("{UPSTREAM}0.164.0"),
-            sha256: hash.clone(),
-        });
+        manager.approvals.insert(
+            "0.164.0".into(),
+            Approval {
+                version: "0.164.0".into(),
+                release_url: format!("{UPSTREAM}0.164.0"),
+                sha256: hash.clone(),
+            },
+        );
         (tmp, manager, file, hash)
     }
     #[test]
@@ -475,7 +515,11 @@ mod policy_tests {
     fn journal_corruption_fails_closed_and_forged_folders_rejected() {
         let (tmp, manager, _, _) = fixture();
         manager.record(Choice::Managed("0.164.0".into())).unwrap();
-        fs::write(manager.root.join("journal/00000000000000000001.json"), b"corrupt").unwrap();
+        fs::write(
+            manager.root.join("journal/00000000000000000001.json"),
+            b"corrupt",
+        )
+        .unwrap();
         assert_eq!(manager.active(), Choice::System);
         assert!(manager.activate_system().is_err());
         let foreign = tmp.path().join("foreign");

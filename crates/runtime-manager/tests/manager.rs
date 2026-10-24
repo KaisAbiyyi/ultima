@@ -9,26 +9,48 @@ const OFFICIAL_DIGEST: &str = "6f267830b029ee25d9339864aa867cd45de9f8fd4c5ea007d
 
 #[test]
 fn arbitrary_matching_hash_cannot_claim_official_provenance() {
-    let digest_of_attacker_file = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let digest_of_attacker_file =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     assert!(Approval::new(VERSION, RELEASE, digest_of_attacker_file).is_err());
-    assert!(Approval::new("0.163.0",
-        "https://github.com/openai/codex/releases/tag/rust-v0.163.0", OFFICIAL_DIGEST).is_err());
-    assert!(Approval::new("0.164.1",
-        "https://github.com/openai/codex/releases/tag/rust-v0.164.1", OFFICIAL_DIGEST).is_err());
-    assert!(Approval::new(VERSION, "https://malicious.example/tag/rust-v0.164.0", OFFICIAL_DIGEST).is_err());
-    assert!(Approval::new(VERSION, RELEASE, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").is_err());
+    assert!(Approval::new(
+        "0.163.0",
+        "https://github.com/openai/codex/releases/tag/rust-v0.163.0",
+        OFFICIAL_DIGEST
+    )
+    .is_err());
+    assert!(Approval::new(
+        "0.164.1",
+        "https://github.com/openai/codex/releases/tag/rust-v0.164.1",
+        OFFICIAL_DIGEST
+    )
+    .is_err());
+    assert!(Approval::new(
+        VERSION,
+        "https://malicious.example/tag/rust-v0.164.0",
+        OFFICIAL_DIGEST
+    )
+    .is_err());
+    assert!(Approval::new(
+        VERSION,
+        RELEASE,
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    )
+    .is_err());
 }
 #[test]
 fn pinned_official_asset_bound_to_target_platform() {
     let approval = Approval::official();
-    if cfg!(all(target_os="windows", target_arch="x86_64")) {
+    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         let approval = approval.unwrap();
         assert_eq!(approval.version(), VERSION);
         assert_eq!(approval.digest(), OFFICIAL_DIGEST);
         assert_eq!(approval.asset_url(),
             "https://github.com/openai/codex/releases/download/rust-v0.164.0/codex-x86_64-pc-windows-msvc.exe");
     } else {
-        assert!(approval.is_err(), "no wrong-architecture managed asset may be accepted");
+        assert!(
+            approval.is_err(),
+            "no wrong-architecture managed asset may be accepted"
+        );
     }
 }
 #[test]

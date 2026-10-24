@@ -1,5 +1,8 @@
 //! Host-owned runtime update bridge. No implicit downloads or global mutations.
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use tauri::{AppHandle, Manager as TauriManager};
 use ultima_runtime_manager::{Approval, Choice, Manager as RuntimeManager};
 
@@ -37,15 +40,19 @@ pub fn stage(app: &AppHandle, source: &str) -> Result<(), String> {
     }
     // The source file is user-selected; it can never choose the expected hash.
     let approved = Approval::official().map_err(sanitize)?;
-    manager(app)?.stage(Path::new(source), approved.version()).map_err(sanitize)
+    manager(app)?
+        .stage(Path::new(source), approved.version())
+        .map_err(sanitize)
 }
 pub async fn activate(app: &AppHandle, project: &str) -> Result<(), String> {
     if project.len() > 4096 || !Path::new(project).is_absolute() {
         return Err("Select an absolute trusted project directory".into());
     }
     let approved = Approval::official().map_err(sanitize)?;
-    manager(app)?.activate_checked(approved.version(), Path::new(project), Path::new(project))
-        .await.map_err(sanitize)
+    manager(app)?
+        .activate_checked(approved.version(), Path::new(project), Path::new(project))
+        .await
+        .map_err(sanitize)
 }
 pub fn restore_system(app: &AppHandle) -> Result<(), String> {
     manager(app)?.activate_system().map_err(sanitize)

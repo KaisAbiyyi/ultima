@@ -27,7 +27,9 @@ pub struct SessionGate<T> {
 
 impl<T: Clone> Default for SessionGate<T> {
     fn default() -> Self {
-        Self { slot: Mutex::new(Slot::Empty) }
+        Self {
+            slot: Mutex::new(Slot::Empty),
+        }
     }
 }
 
@@ -76,8 +78,7 @@ impl<T: Clone> SessionGate<T> {
             Slot::Stopping { .. } => return Err(GateError::Busy),
             Slot::Running { .. } => {}
         }
-        if let Slot::Running { generation, handle } =
-            std::mem::replace(&mut *slot, Slot::Poisoned)
+        if let Slot::Running { generation, handle } = std::mem::replace(&mut *slot, Slot::Poisoned)
         {
             *slot = Slot::Stopping { generation };
             Ok(Some((generation, handle)))
@@ -127,7 +128,9 @@ mod tests {
                 let previous = alive.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(previous, 0, "overlapping process trees");
                 Ok::<_, ()>((generation as usize, ()))
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
             let (id, _) = gate.begin_stop().await.unwrap().unwrap();
             let (release, stopped) = oneshot::channel::<()>();
             let gate_clone = gate.clone();
@@ -140,7 +143,8 @@ mod tests {
             assert_eq!(
                 gate.start(generation + 1000, || -> Result<(usize, ()), ()> {
                     panic!("must not spawn before stop has completed")
-                }).await,
+                })
+                .await,
                 Err(StartError::Gate(GateError::Busy))
             );
             release.send(()).unwrap();
@@ -161,11 +165,15 @@ mod tests {
                 gate.start(generation, || {
                     spawned.fetch_add(1, Ordering::SeqCst);
                     Ok::<_, ()>((generation as usize, ()))
-                }).await.is_ok()
+                })
+                .await
+                .is_ok()
             }));
         }
         let mut successes = 0;
-        for worker in workers { successes += usize::from(worker.await.unwrap()); }
+        for worker in workers {
+            successes += usize::from(worker.await.unwrap());
+        }
         assert_eq!(successes, 1);
         assert_eq!(spawned.load(Ordering::SeqCst), 1);
     }
@@ -178,7 +186,10 @@ mod tests {
         assert!(gate.finish_stop(generation, false).await);
         assert!(gate.current().await.is_none());
         assert_eq!(
-            gate.start(2, || -> Result<(usize, ()), ()> { panic!("must fail closed") }).await,
+            gate.start(2, || -> Result<(usize, ()), ()> {
+                panic!("must fail closed")
+            })
+            .await,
             Err(StartError::Gate(GateError::Poisoned))
         );
     }
@@ -200,9 +211,6 @@ mod tests {
         let gate = SessionGate::<usize>::default();
         gate.start(1, || Ok::<_, ()>((1, ()))).await.unwrap();
         assert!(gate.finish_unexpected(1, false).await);
-        assert_eq!(
-            gate.begin_stop().await,
-            Err(GateError::Poisoned)
-        );
+        assert_eq!(gate.begin_stop().await, Err(GateError::Poisoned));
     }
 }
