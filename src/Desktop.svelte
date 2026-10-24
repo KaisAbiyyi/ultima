@@ -222,7 +222,8 @@
   function denyWithoutPrompt(request: ApprovalRequest, session: number) {
     // Unexpected thread or bounded queue overflow must fail closed.
     void bridge?.approval(session, request, 'decline').catch(() => {
-      errorMessage = 'Unable to safely decline tool permission. Disconnect the engine.';
+      errorMessage = 'Unable to safely decline tool permission. Engine shutdown requested.';
+      void disconnect();
     });
   }
   function onEngine(event: EngineEvent) {
