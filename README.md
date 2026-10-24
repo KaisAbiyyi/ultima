@@ -1,28 +1,33 @@
-# Necessary Codex
+# Ultima
 
-A minimalist, beautiful, **performance-first** Windows desktop client for the **official OpenAI Codex App Server**.
+**Ultima** is a minimal, fast, beautiful and modular **AI development workstation**. One lightweight desktop, independent coding agents and (eventually) optional continuity services. **Performance first**; security, permission correctness and durable work are mandatory.
 
-**Goal:** ultra-low UI latency, bounded process-tree RAM/CPU, fast startup and keyboard-first developer workflows—without forking the Codex agent engine. Independent from CoSoS and Mind Place.
+**Today:** Build **Ultima: Codex Foundation**—a standalone Codex desktop experience using the official OpenAI `codex app-server`. **Later, only after each component is stable:** optional CoSoS adapter → optional Mind Place connector → investigate other supported coding agents. These are separate projects, **not current blockers or required dependencies**.
 
-**Planned stack:** Tauri 2 + Svelte/TypeScript + Rust, Windows x64 first; system-installed `codex app-server` over stdio/JSONL. This is a roadmap-stage project, **not a finished app**.
+**Initial stack:** Tauri 2 + Svelte/TypeScript + Rust; Windows x64 first. The system-installed Codex binary remains independently updated and independently licensed. No agent-core fork and no always-on bundled browser.
 
-## Project planning
+## Direction and documentation
 
-- [Project Hub and execution board in Notion](https://app.notion.com/p/403c4a6aaf738104addaf3358440d7aa)
-- [Four-phase roadmap (13 tasks)](docs/ROADMAP.md)
-- [Dependency and parallel execution board](docs/EXECUTION-BOARD.md)
-- [Performance and UX acceptance contract](docs/PERFORMANCE-CONTRACT.md)
+- [Ultima product vision and staged integration](docs/PRODUCT-VISION.md)
+- [Codex Foundation four-phase roadmap (13 existing NC tasks)](docs/ROADMAP.md)
+- [Canonical dependency and parallel execution board](docs/EXECUTION-BOARD.md)
+- [Performance + UX qualification budgets](docs/PERFORMANCE-CONTRACT.md)
 - [Architecture and upstream update policy](docs/ARCHITECTURE.md)
-- [GitHub execution issues](https://github.com/KaisAbiyyi/necessary-codex/issues)
+- [Licensing / provider integration review](docs/LICENSING-AND-PROVIDERS.md)
+- [Notion Project Hub](https://app.notion.com/p/403c4a6aaf738104addaf3358440d7aa)
+- [GitHub Issues](https://github.com/KaisAbiyyi/ultima/issues)
 
-## Current state
+## Initial execution snapshot (24 Oct 2026)
 
-**Roadmap initialized; 0/13 tasks Done (0%).** Initial Now (Ready, unclaimed): [NC-01](https://github.com/KaisAbiyyi/necessary-codex/issues/1), [NC-02](https://github.com/KaisAbiyyi/necessary-codex/issues/2), [NC-03](https://github.com/KaisAbiyyi/necessary-codex/issues/3). Initial Up Next: NC-04, NC-05, both blocked. The **Notion execution task database** is the live status authority; this README is an initialization snapshot.
+**0/13 tasks Done; 0%.** `NC-01` [#1](https://github.com/KaisAbiyyi/ultima/issues/1), `NC-02` [#2](https://github.com/KaisAbiyyi/ultima/issues/2) and `NC-03` [#3](https://github.com/KaisAbiyyi/ultima/issues/3) are Ready in Now (unclaimed). `NC-04` and `NC-05` are blocked direct successors in Up Next. **NC prefix is intentionally preserved** for the Codex Foundation tasks; do not renumber the existing board after branding. Live status comes from Notion task data and exact GitHub PR/CI evidence, not this snapshot.
 
-## Development governance
+## Non-negotiable release criteria
 
-Claim before coding, respect AND dependencies and resource locks, use reviewable GitHub PRs/CI, and separately record **real Windows** native measurements and owner gates; never infer actual performance from roadmap targets.
+- Measure total process-tree RAM/CPU and UI event/input latency on *real Windows hardware*, compare equivalent CLI work, and qualify long-history/multi-project sessions.
+- Keep idle adapters unloaded, minimize process count, virtualize histories and use bounded caches.
+- Do not bypass provider approval/auth rules or silently copy/rewrite credentials.
+- Claim before coding, review exact SHA, pass relevant CI and native/owner gates separately.
 
-## Legal
+## License and relationship to upstreams
 
-Planned first-party license: Apache-2.0. OpenAI Codex remains a separately maintained upstream project with its own license and notices. Neither affiliated with nor endorsed by OpenAI.
+**Ultima's original first-party source: [Apache License 2.0](LICENSE).** Other coding agents, SDKs, models, binaries and APIs retain their own licenses and terms. Ultima is independent and is not affiliated with or endorsed by OpenAI, Anthropic or Google. See the [provider legal policy](docs/LICENSING-AND-PROVIDERS.md).
