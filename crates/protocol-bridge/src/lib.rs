@@ -208,6 +208,7 @@ pub enum NotificationKind {
     ItemStarted,
     ItemCompleted,
     AgentMessageDelta,
+    CommandOutputDelta,
     ServerRequestResolved,
 }
 impl NotificationKind {
@@ -219,6 +220,7 @@ impl NotificationKind {
             "item/started" => Some(Self::ItemStarted),
             "item/completed" => Some(Self::ItemCompleted),
             "item/agentMessage/delta" => Some(Self::AgentMessageDelta),
+            "item/commandExecution/outputDelta" => Some(Self::CommandOutputDelta),
             "serverRequest/resolved" => Some(Self::ServerRequestResolved),
             _ => None,
         }
@@ -324,6 +326,18 @@ impl Broker {
     }
     pub fn approval_count(&self) -> usize {
         self.approvals.len()
+    }
+    /// A request identity is bound to the original pending approval, not merely its RPC id.
+    pub fn approval(&self, id: &RpcId) -> Option<&Approval> {
+        self.approvals.get(id)
+    }
+    /// Interrupting a turn must decline all still-pending requests, never replay them.
+    pub fn decline_approvals_for_turn(&mut self, thread_id: &str, turn_id: &str) -> Result<usize> {
+        let ids: Vec<_> = self.approvals.values()
+            .filter(|a| a.thread_id == thread_id && a.turn_id == turn_id)
+            .map(|a| a.id.clone()).collect();
+        for id in &ids { self.decline_approval(id)?; }
+        Ok(ids.len())
     }
 
     fn encode(&self, value: &Value) -> Result<Vec<u8>> {
@@ -456,6 +470,14 @@ impl Broker {
     }
     /// Never auto-accept a tool request. The host should decline on rejection or
     /// terminate this session if its outbound queue cannot accept the decline.
+    pub fn decide_exact_approval(
+        &mut self, expected: &Approval, decision: ApprovalDecision, explicit_user_approval: bool,
+    ) -> Result<()> {
+        if self.approvals.get(&expected.id) != Some(expected) {
+            return Err(BridgeError::UnknownApproval);
+        }
+        self.reply_approval(&expected.id, decision, explicit_user_approval)
+    }
     pub fn decline_approval(&mut self, id: &RpcId) -> Result<()> {
         self.reply_approval(id, ApprovalDecision::Decline, false)
     }
