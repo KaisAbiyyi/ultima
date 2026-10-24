@@ -55,7 +55,7 @@ async fn next_response(supervisor: &mut EngineSupervisor, id: u64) -> Result<Val
     }
     Err(Error::Invalid("probe event cap"))
 }
-pub(super) async fn probe(config: EngineConfig) -> Result<(), Error> {
+pub async fn probe(config: EngineConfig) -> Result<(), Error> {
     let mut supervisor = EngineSupervisor::new(config);
     supervisor.start().map_err(|_| Error::Invalid("probe start"))?;
     let begin = Instant::now();
