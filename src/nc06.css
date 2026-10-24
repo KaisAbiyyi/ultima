@@ -41,3 +41,7 @@
 @media(max-width: 640px) {
  .nc06 .nc07-approval, .nc06 .nc07-tools { margin: 5px; max-height: 33vh; }
 }
+
+/* NC-08: fixed-height virtual rows never expand with long text or tool evidence. */
+.nc06 .message-row { contain: layout paint style; overflow: hidden; }
+.nc06 .message-content p { overflow-wrap: anywhere; white-space: pre-wrap; }
