@@ -1,6 +1,6 @@
-# Necessary Codex — Task execution board
+# Ultima: Codex Foundation — Task execution board
 
-**Scope:** Canonical task DAG and governance. Live acceptance state must come from verifiable GitHub PRs/CI and Notion task properties, not a static snapshot in this file. All tasks created **Ready** or **Blocked**, none claimed/done at roadmap creation.
+**Scope:** Existing Codex Foundation task DAG (NC-01–NC-13) within Ultima; future integrations remain exploratory and out of this board. Canonical task DAG and governance. Live acceptance state must come from verifiable GitHub PRs/CI and Notion task properties, not a static snapshot in this file. All tasks created **Ready** or **Blocked**, none claimed/done at roadmap creation.
 
 ## Rules borrowed from Mind Place / CoSoS
 
