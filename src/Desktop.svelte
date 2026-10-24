@@ -6,6 +6,7 @@
   import { nativeBridge, desktopAvailable, type EngineBridge, type EngineEvent } from './lib/desktop-bridge';
   import { EngineSessionFence } from './lib/engine-session-fence';
   import { FrameDeltas } from './lib/frame-deltas';
+  import { readerPage, rowPreview, ROW_PREVIEW_CHARS } from './lib/message-paging';
   import { approvalToolIdentity, canApprove, canApproveInActiveTurn, matchesApprovalEvidence, parseApproval, sameApproval, toolIdentity, trackTool, type ApprovalRequest, type ToolItem } from './lib/tool-events';
   import { addThread, appendDelta, appendProject, cappedMessages, restoreProjects, restoreThreads, restoreThreadMessages, saveMetadata, type Project, type Thread } from './lib/desktop-state';
 
@@ -38,6 +39,8 @@
   let viewportHeight = 600;
   let followTail = true;
   let streamTargetId = '';
+  let readerId = '';
+  let readerPosition = 0;
   let feedEl: HTMLDivElement;
   let composerEl: HTMLTextAreaElement;
   let searchEl: HTMLInputElement;
@@ -71,11 +74,14 @@
     frames.clear();
     streamTargetId = '';
   }
+  function closeReader() { readerId = ''; readerPosition = 0; }
   let connectionEpoch = 0;
   $: shownProjects = projects.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
   $: shownThreads = threads.filter(t => t.project === activeProject && t.title.toLowerCase().includes(search.toLowerCase()));
   $: range = visibleRange(messages.length, scrollTop, viewportHeight, ROW_HEIGHT);
   $: shownMessages = messages.slice(range.start, range.end);
+  $: readerMessage = readerId ? messages.find(m => m.id === readerId) : undefined;
+  $: page = readerMessage ? readerPage(readerMessage.text, readerPosition) : null;
   $: selectedProject = projects.find(p => p.path === activeProject);
   $: currentApproval = approvals[0] ?? null;
   $: currentTool = currentApproval ? toolItems.find(t => matchesApprovalEvidence(currentApproval, t)) : undefined;
@@ -133,6 +139,7 @@
     const epoch = ++connectionEpoch;
     fence.beginDisconnect();
     discardStream();
+    closeReader();
     pending.clear();
     earlyReplies.clear();
     approvals = [];
@@ -164,6 +171,7 @@
       activeProject = path;
       activeThread = '';
       discardStream();
+      closeReader();
       messages = [];
       followTail = true;
     }
@@ -177,6 +185,7 @@
     const epoch = ++connectionEpoch;
     fence.beginConnect();
     discardStream();
+    closeReader();
     pending.clear();
     earlyReplies.clear();
     approvals = [];
@@ -404,6 +413,7 @@
     if (busy) { errorMessage = 'Stop the active turn before opening another thread.'; return; }
     activeThread = '';
     discardStream();
+    closeReader();
     messages = [];
     followTail = true;
     toolItems = [];
@@ -418,6 +428,7 @@
     if (thread.project !== activeProject) await chooseProject(thread.project);
     activeThread = thread.id;
     discardStream();
+    closeReader();
     messages = [];
     followTail = true;
     toolItems = [];
@@ -539,11 +550,25 @@
             <div class="virtual-canvas" style:height={messages.length * ROW_HEIGHT + 'px'}>
               {#each shownMessages as message, offset (message.id)}
                 <article class="message-row" class:user-message={message.role === 'user'} style:top={(range.start + offset) * ROW_HEIGHT + 'px'} aria-posinset={range.start + offset + 1} aria-setsize={messages.length} data-testid="nc06-row">
-                  <div class="message-avatar">{message.role === 'user' ? 'Y' : 'U'}</div><div class="message-content"><div class="message-line"><span class="message-author">{message.role === 'user' ? 'You' : 'Codex'}</span></div><p>{message.text || 'Thinking…'}</p></div>
+                  <div class="message-avatar">{message.role === 'user' ? 'Y' : 'U'}</div><div class="message-content"><div class="message-line"><span class="message-author">{message.role === 'user' ? 'You' : 'Codex'}</span>{#if message.text.length > ROW_PREVIEW_CHARS}<button class="nc08-read" onclick={() => { readerId = message.id; readerPosition = 0; }}>Read message</button>{/if}</div><p>{rowPreview(message.text) || 'Thinking…'}</p></div>
                 </article>
               {/each}
             </div>
           </div>
+        {/if}
+        {#if readerMessage && page}
+          <section class="nc08-reader" aria-label="Message reader" data-testid="nc08-reader">
+            <div class="nc08-reader-head">
+              <strong>{readerMessage.role === 'user' ? 'You' : 'Codex'} · Message detail</strong>
+              <button class="secondary-action" aria-label="Close message reader" onclick={closeReader}>Close</button>
+            </div>
+            <p>Page {page.page + 1} of {page.pages} · text rendered on demand</p>
+            <pre>{page.text}</pre>
+            <div class="nc08-reader-controls">
+              <button class="secondary-action" disabled={!page.hasPrevious} onclick={() => readerPosition--}>Previous</button>
+              <button class="secondary-action" disabled={!page.hasNext} onclick={() => readerPosition++}>Next</button>
+            </div>
+          </section>
         {/if}
       </div>
       {#if currentApproval}

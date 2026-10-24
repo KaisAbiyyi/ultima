@@ -2,7 +2,7 @@
 
 ## Scope and contracts
 
-Ultima retains Codex as the authoritative store for thread history and authorization. The desktop renders a **window** of messages via fixed 88 px rows and 6-row overscan; message content remains escaped plain text (no HTML injection or expensive Markdown highlighter). This does not claim a complete Markdown renderer or a native performance measurement.
+Ultima retains Codex as the authoritative store for thread history and authorization. The desktop renders a **window** of messages via fixed 88 px rows and 6-row overscan; message content remains escaped plain text (no HTML injection or expensive Markdown highlighter). Long messages have a lazy source reader in 4096-character pages, so Markdown/code remain escaped and readable without loading a costly parser or highlighter. This does not claim a complete Markdown renderer or a native performance measurement.
 
 - Maximum in-memory UI history is `MAX_RENDER_HISTORY=5000` rows **and** `MAX_RETAINED_TEXT_CHARS=8 Mi chars`. Oldest snapshots are evicted, not durable Codex history. Historical individual preview is capped at 64 Ki chars with a visible truncation marker. Live reply limit remains 2 Mi chars.
 - Stream delta updates are grouped into one animation-frame commit, preserving the accepted delta ordering; pending deltas are capped at 128 Ki chars. Overflow causes an explicit disconnect rather than a silent truncated answer.

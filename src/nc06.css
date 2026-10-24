@@ -45,3 +45,12 @@
 /* NC-08: fixed-height virtual rows never expand with long text or tool evidence. */
 .nc06 .message-row { contain: layout paint style; overflow: hidden; }
 .nc06 .message-content p { overflow-wrap: anywhere; white-space: pre-wrap; }
+
+/* NC-08: lazy chunk reader overlays only the history feed, not approval controls. */
+.nc06 .conversation-body { position: relative; }
+.nc06 .nc08-read { margin-left: auto; font-size: 11px; border: 0; padding: 0 5px; color: var(--accent); background: transparent; cursor: pointer; }
+.nc06 .nc08-reader { position: absolute; z-index: 3; inset: 4px; padding: 14px; overflow: auto; border: 1px solid var(--border); background: var(--bg); border-radius: 9px; }
+.nc06 .nc08-reader-head, .nc06 .nc08-reader-controls { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.nc06 .nc08-reader p { color: var(--muted); font-size: 11px; }
+.nc06 .nc08-reader pre { max-height: none; overflow-wrap: anywhere; white-space: pre-wrap; font: 12px/1.55 ui-monospace, monospace; color: var(--text); }
+.nc06 .nc08-reader-controls { justify-content: flex-end; }
