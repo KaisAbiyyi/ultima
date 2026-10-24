@@ -5,6 +5,7 @@
   import { resolveShortcut } from './lib/shortcuts';
   import { nativeBridge, desktopAvailable, type EngineBridge, type EngineEvent } from './lib/desktop-bridge';
   import { EngineSessionFence } from './lib/engine-session-fence';
+  import { canApprove, parseApproval, sameApproval, trackTool, type ApprovalRequest, type ToolItem } from './lib/tool-events';
   import { addThread, appendDelta, appendProject, cappedMessages, restoreProjects, restoreThreads, restoreThreadMessages, saveMetadata, type Project, type Thread } from './lib/desktop-state';
 
   const ROW_HEIGHT = 88;
@@ -20,6 +21,12 @@
   let draft = '';
   let model = '';
   let models: string[] = [];
+  let toolItems: ToolItem[] = [];
+  let approvals: ApprovalRequest[] = [];
+  let reviewedApproval = false;
+  let approvalBusy = false;
+  let expandedDiffId = '';
+  let expandedOutputId = '';
   let status: 'disconnected' | 'connecting' | 'disconnecting' | 'ready' | 'error' = 'disconnected';
   let busy = false;
   let errorMessage = '';
@@ -44,6 +51,11 @@
   $: range = visibleRange(messages.length, scrollTop, viewportHeight, ROW_HEIGHT);
   $: shownMessages = messages.slice(range.start, range.end);
   $: selectedProject = projects.find(p => p.path === activeProject);
+  $: currentApproval = approvals[0] ?? null;
+  $: currentTool = currentApproval ? toolItems.find(t => t.id === currentApproval.itemId) : undefined;
+  $: canAccept = !!currentApproval && canApprove(currentApproval, toolItems) &&
+    (currentApproval.kind !== 'fileChange' || expandedDiffId === currentApproval.itemId) &&
+    reviewedApproval && !approvalBusy && status === 'ready';
 
   function persist() {
     try {
@@ -89,6 +101,11 @@
     fence.beginDisconnect();
     pending.clear();
     earlyReplies.clear();
+    approvals = [];
+    toolItems = [];
+    reviewedApproval = false;
+    expandedDiffId = '';
+    expandedOutputId = '';
     activeTurn = '';
     busy = false;
     status = 'disconnecting';
@@ -125,6 +142,10 @@
     fence.beginConnect();
     pending.clear();
     earlyReplies.clear();
+    approvals = [];
+    toolItems = [];
+    reviewedApproval = false;
+    expandedDiffId = '';
     errorMessage = '';
     status = 'connecting';
     try {
@@ -180,6 +201,30 @@
     await request('turn/start', { threadId: activeThread, input: [{ type: 'text', text }], ...(model ? { model } : {}) }, 'turn');
     await tick(); scrollLatest();
   }
+  async function decideApproval(decision: 'accept' | 'decline') {
+    const current = approvals[0];
+    const session = fence.session;
+    if (!bridge || !current || session === null || approvalBusy) return;
+    if (decision === 'accept' && !canAccept) return;
+    // Remove BEFORE IPC: if an ACK is lost, never offer a dangerous duplicate retry.
+    approvalBusy = true;
+    approvals = approvals.slice(1);
+    reviewedApproval = false;
+    expandedDiffId = '';
+    try {
+      await bridge.approval(session, current, decision);
+    } catch {
+      errorMessage = 'The permission decision could not be confirmed. Do not retry; disconnect the engine before continuing.';
+    } finally {
+      approvalBusy = false;
+    }
+  }
+  function denyWithoutPrompt(request: ApprovalRequest, session: number) {
+    // Unexpected thread or bounded queue overflow must fail closed.
+    void bridge?.approval(session, request, 'decline').catch(() => {
+      errorMessage = 'Unable to safely decline tool permission. Disconnect the engine.';
+    });
+  }
   function onEngine(event: EngineEvent) {
     if (!fence.accept(event)) return;
     if (event.type === 'status') {
@@ -187,6 +232,7 @@
       if (event.state === 'ready') void request('model/list', {}, 'models');
       if (event.state === 'disconnected' || event.state === 'error') {
         busy = false; activeTurn = '';
+        approvals = []; toolItems = []; reviewedApproval = false;
         if (event.state === 'disconnected') {
           fence.beginDisconnect();
           pending.clear();
@@ -196,7 +242,28 @@
       if (event.message) errorMessage = event.message;
       return;
     }
-    if (event.type === 'approvalBlocked') { errorMessage = 'Tool permission declined until the NC-07 approval UI is available.'; return; }
+    if (event.type === 'approvalPending') {
+      const request = parseApproval(event.request);
+      if (!request) {
+        errorMessage = 'Invalid tool approval payload. Disconnect to deny safely.';
+        void disconnect();
+        return;
+      }
+      if (status !== 'ready' || request.threadId !== activeThread || approvals.length >= 16) {
+        denyWithoutPrompt(request, event.session);
+        return;
+      }
+      if (!approvals.some(a => sameApproval(a, request))) approvals = [...approvals, request];
+      return;
+    }
+    if (event.type === 'itemStarted' || event.type === 'itemCompleted' || event.type === 'commandOutput') {
+      if (event.params.threadId && event.params.threadId !== activeThread) return;
+      const item = event.params.item;
+      const itemId = typeof item === 'object' && item && 'id' in item ? item.id : event.params.itemId;
+      if (currentApproval && itemId === currentApproval.itemId) reviewedApproval = false;
+      toolItems = trackTool(toolItems, event.type, event.params);
+      return;
+    }
     if (event.type === 'reply') {
       const kind = pending.get(event.id);
       pending.delete(event.id);
@@ -242,6 +309,9 @@
       if (params.threadId && params.threadId !== activeThread) return;
       busy = false;
       activeTurn = '';
+      // A completed turn must not leave an actionable stale approval card.
+      for (const approval of approvals) denyWithoutPrompt(approval, event.session);
+      approvals = []; reviewedApproval = false;
       return;
     }
     if (event.type === 'delta') {
@@ -263,6 +333,9 @@
     if (busy) { errorMessage = 'Stop the active turn before opening another thread.'; return; }
     activeThread = '';
     messages = [];
+    toolItems = [];
+    approvals = [];
+    reviewedApproval = false;
     draft = '';
     navOpen = false;
     await tick(); composerEl?.focus();
@@ -272,6 +345,9 @@
     if (thread.project !== activeProject) await chooseProject(thread.project);
     activeThread = thread.id;
     messages = [];
+    toolItems = [];
+    approvals = [];
+    reviewedApproval = false;
     navOpen = false;
     if (status !== 'ready') {
       errorMessage = 'Connect to this project, then resume the selected thread.';
@@ -390,6 +466,44 @@
           </div>
         {/if}
       </div>
+      {#if currentApproval}
+        <section class="nc07-approval" aria-label="Tool permission request" role="dialog" aria-modal="false" data-testid="nc07-approval">
+          <p class="eyebrow">PERMISSION REQUIRED · ONE REQUEST ONLY</p>
+          <h2>{currentApproval.kind === 'command' ? 'Execute a command?' : 'Apply file changes?'}</h2>
+          <p>Review the exact command or change preview. Permission defaults to decline; this does not grant future requests.</p>
+          {#if currentTool && currentApproval.kind === 'command' && currentTool.kind === 'command'}
+            <pre class="nc07-evidence">{currentTool.command}</pre>
+          {:else if currentTool && currentApproval.kind === 'fileChange' && currentTool.kind === 'fileChange'}
+            <p>{currentTool.paths.join(', ') || 'Paths not available'}</p>
+            <button class="secondary-action" onclick={() => expandedDiffId = expandedDiffId === currentApproval?.itemId ? '' : currentApproval?.itemId ?? ''}>Review file diff</button>
+            {#if expandedDiffId === currentApproval.itemId}<pre class="nc07-evidence">{currentTool.diff || 'No diff provided by server.'}</pre>{/if}
+          {:else}
+            <p class="nc07-warning">The App Server has not provided a verifiable command or diff preview. Accept is unavailable.</p>
+          {/if}
+          {#if currentTool?.truncated}<p class="nc07-warning">Preview was truncated. Decline this request unless the full action can be reviewed.</p>{/if}
+          <label class="nc07-review"><input type="checkbox" bind:checked={reviewedApproval} disabled={!canApprove(currentApproval, toolItems) || (currentApproval.kind === 'fileChange' && expandedDiffId !== currentApproval.itemId)} /> I reviewed this specific action</label>
+          <div class="nc07-actions">
+            <button class="secondary-action" disabled={approvalBusy} onclick={() => void decideApproval('decline')}>Decline</button>
+            <button class="secondary-action" disabled={!canAccept} onclick={() => void decideApproval('accept')}>Allow once</button>
+          </div>
+          <p class="nc07-secondary">{approvals.length} pending · session {fence.session} · item {currentApproval.itemId}</p>
+        </section>
+      {/if}
+      {#if toolItems.length}
+        <section class="nc07-tools" aria-label="Recent tool activity" data-testid="nc07-tools">
+          <h2>Recent tools <span>{toolItems.length} / 16</span></h2>
+          {#each [...toolItems].reverse() as item (item.id)}
+            <div class="nc07-tool-row"><span>{item.kind === 'command' ? 'Command' : item.kind === 'fileChange' ? 'File changes' : 'Tool'} · {item.state}</span>
+              <span>{item.kind === 'command' ? item.command.slice(0, 100) : item.paths.join(', ').slice(0, 100)}</span>
+              {#if item.output}<button class="secondary-action" onclick={() => expandedOutputId = expandedOutputId === item.id ? '' : item.id}>{expandedOutputId === item.id ? 'Hide output' : 'Show output'}</button>{/if}
+              {#if item.diff}<button class="secondary-action" onclick={() => expandedDiffId = expandedDiffId === item.id ? '' : item.id}>{expandedDiffId === item.id ? 'Hide diff' : 'Show diff'}</button>{/if}
+              {#if item.truncated}<small>Truncated</small>{/if}
+              {#if expandedOutputId === item.id}<pre class="nc07-evidence">{item.output}</pre>{/if}
+              {#if expandedDiffId === item.id}<pre class="nc07-evidence">{item.diff}</pre>{/if}
+            </div>
+          {/each}
+        </section>
+      {/if}
     </section>
     <div class="composer-area"><div class="composer-shell" class:busy><label for="composer" class="sr-only">Message to Codex</label><textarea id="composer" bind:this={composerEl} bind:value={draft} onkeydown={keydown} maxlength="8000" rows="2" placeholder="Ask Codex to build something…" disabled={busy || status !== 'ready'}></textarea><div class="composer-bottom"><span class="composer-mode">◇ Codex <span class="mode-separator"></span>{model || 'Default model'}</span>
       {#if busy}<button class="send-button stop-button" aria-label="Interrupt Codex turn" onclick={() => void stop()}><span class="stop-icon"></span></button>{:else}<button class="send-button" aria-label="Send message to Codex" disabled={status !== 'ready' || !draft.trim()} onclick={() => void send()}>↑</button>{/if}
