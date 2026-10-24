@@ -2,13 +2,14 @@
 
 **Ultima** is a minimal, fast, beautiful and modular **AI development workstation**. One lightweight desktop, independent coding agents and (eventually) optional continuity services. **Performance first**; security, permission correctness and durable work are mandatory.
 
-**Today:** Build **Ultima: Codex Foundation**—a standalone Codex desktop experience using the official OpenAI `codex app-server`. **Later, only after each component is stable:** optional CoSoS adapter → optional Mind Place connector → investigate other supported coding agents. These are separate projects, **not current blockers or required dependencies**.
+**Default download experience:** Ultima Core with **Codex preselected as the default agent** and a simple official Codex setup/discovery flow. Codex is the only active implementation focus. **All other blocks are optional user downloads**: Gemini/Antigravity (if supported), CoSoS (once stable), Mind Place (once stable), **Custom API Agent (BYOK)**, and **Local Agent (Ollama/LM Studio or compatible engines)**. Claude remains a potential authorized SDK/API integration, not an open-source dependency. No future block is a current release prerequisite.
 
 **Initial stack:** Tauri 2 + Svelte/TypeScript + Rust; Windows x64 first. The system-installed Codex binary remains independently updated and independently licensed. No agent-core fork and no always-on bundled browser.
 
 ## Direction and documentation
 
 - [Ultima product vision and staged integration](docs/PRODUCT-VISION.md)
+- [Codex-default installation and downloadable block architecture](docs/MODULE-SYSTEM.md)
 - [Codex Foundation four-phase roadmap (13 existing NC tasks)](docs/ROADMAP.md)
 - [Canonical dependency and parallel execution board](docs/EXECUTION-BOARD.md)
 - [Performance + UX qualification budgets](docs/PERFORMANCE-CONTRACT.md)
@@ -24,7 +25,8 @@
 ## Non-negotiable release criteria
 
 - Measure total process-tree RAM/CPU and UI event/input latency on *real Windows hardware*, compare equivalent CLI work, and qualify long-history/multi-project sessions.
-- Keep idle adapters unloaded, minimize process count, virtualize histories and use bounded caches.
+- **Installed ≠ Loaded ≠ Running**: inactive downloadable blocks must not start processes, model servers, background workers or eager UI trees. Measure **both default-only and all-modules-installed** idle baselines, as well as a multi-block active stress workload. User-managed local servers must not be killed by Ultima.
+- Minimize process count, virtualize histories, isolate provider secrets and use bounded caches.
 - Do not bypass provider approval/auth rules or silently copy/rewrite credentials.
 - Claim before coding, review exact SHA, pass relevant CI and native/owner gates separately.
 
