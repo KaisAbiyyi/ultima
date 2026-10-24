@@ -18,3 +18,26 @@
 .nc06 .nc06-engine .secondary-action { padding: 8px; }
 .nc06 .feed { min-height: 100px; }
 @media(max-width: 640px) { .nc06 .nc06-engine { flex-wrap: wrap; } }
+
+/* NC-07: bounded, opt-in tool evidence. No diff renders until expanded. */
+.nc06 .nc07-approval, .nc06 .nc07-tools {
+  flex: none; max-height: 35vh; overflow: auto; padding: 12px 16px;
+  border: 1px solid var(--border); border-radius: 9px; margin: 8px 16px; background: var(--elevated);
+}
+.nc06 .nc07-approval { border-color: #b89a57; }
+.nc06 .nc07-approval h2, .nc06 .nc07-tools h2 { font-size: 14px; margin: 6px 0; }
+.nc06 .nc07-approval p, .nc06 .nc07-tools p, .nc06 .nc07-review {
+  font-size: 12px; line-height: 1.5; overflow-wrap: anywhere;
+}
+.nc06 .nc07-evidence { max-height: 170px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-height: 1.5; padding: 10px; color: var(--text); background: var(--input); border: 1px solid var(--border); border-radius: 6px; }
+.nc06 .nc07-actions { display: flex; gap: 8px; margin: 10px 0; }
+.nc06 .nc07-review { display: flex; align-items: center; gap: 8px; }
+.nc06 .nc07-warning { color: #de9f74; }
+.nc06 .nc07-secondary, .nc06 .nc07-tools span, .nc06 .nc07-tools small { color: var(--muted); font-size: 11px; }
+.nc06 .nc07-tools h2 { display: flex; justify-content: space-between; }
+.nc06 .nc07-tool-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 7px 0; border-top: 1px solid var(--border); }
+.nc06 .nc07-tool-row > span:nth-child(2) { flex: 1; min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nc06 .nc07-tool-row > pre { width: 100%; flex: none; }
+@media(max-width: 640px) {
+ .nc06 .nc07-approval, .nc06 .nc07-tools { margin: 5px; max-height: 33vh; }
+}
