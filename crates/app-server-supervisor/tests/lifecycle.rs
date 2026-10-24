@@ -162,14 +162,27 @@ async fn windows_job_contains_and_kills_grandchild() {
     let mut supervisor = EngineSupervisor::new(paths.config());
     supervisor.start().unwrap();
     let session = supervisor.session_mut().unwrap();
-    session.send_json(&serde_json::json!({"method":"fixture/spawnChild"})).await.unwrap();
-    let event = timeout(Duration::from_secs(5), session.next_event()).await.unwrap().unwrap();
-    let OutputEvent::Line(line) = event else { panic!("expected child ID") };
-    let pid = serde_json::from_str::<serde_json::Value>(&line).unwrap()["childPid"].as_u64().unwrap() as u32;
+    session
+        .send_json(&serde_json::json!({"method":"fixture/spawnChild"}))
+        .await
+        .unwrap();
+    let event = timeout(Duration::from_secs(5), session.next_event())
+        .await
+        .unwrap()
+        .unwrap();
+    let OutputEvent::Line(line) = event else {
+        panic!("expected child ID")
+    };
+    let pid = serde_json::from_str::<serde_json::Value>(&line).unwrap()["childPid"]
+        .as_u64()
+        .unwrap() as u32;
     let child = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
     assert!(!child.is_null(), "child process must exist before teardown");
     supervisor.stop().await.unwrap();
     let status = unsafe { WaitForSingleObject(child, 5000) };
     unsafe { CloseHandle(child) };
-    assert_eq!(status, WAIT_OBJECT_0, "job close/terminate must stop grandchild");
+    assert_eq!(
+        status, WAIT_OBJECT_0,
+        "job close/terminate must stop grandchild"
+    );
 }

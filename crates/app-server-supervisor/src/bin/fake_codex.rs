@@ -5,7 +5,9 @@ use std::{
 };
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("fixture/child") {
-        loop { std::thread::sleep(std::time::Duration::from_secs(60)); }
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
     }
     if std::env::args().nth(1).as_deref() != Some("app-server") {
         process::exit(2);
