@@ -173,23 +173,23 @@ async fn drive(
     // Reserve the update mutex through rollback + gate completion so a new
     // connect cannot race a failed managed session and inherit its selection.
     let _update = updates.lock().await;
+    let mut safe = clean;
     if failed && managed && clean {
         // Never replay or approve old in-flight protocol work.
-        let _ = runtime::manager(&app).and_then(|manager| {
-            manager
-                .rollback()
-                .map(|_| ())
-                .map_err(|_| "Managed rollback failed".into())
-        });
-        emit(
-            &app,
-            session,
-            json!({"type":"status","state":"error","message":"Managed Codex failed; previous safe runtime restored. Reconnect explicitly."}),
-        );
+        let recovered = runtime::manager(&app)
+            .and_then(|manager| manager.rollback().map(|_| ()).map_err(|_| "Managed rollback failed".into()))
+            .is_ok();
+        safe &= recovered;
+        emit(&app, session, json!({
+            "type":"status",
+            "state":"error",
+            "message":if recovered { "Managed Codex failed; previous safe runtime restored. Reconnect explicitly." }
+                else { "Managed Codex failed and rollback could not be confirmed. Reconnect blocked; restart Ultima." }
+        }));
     }
-    let _ = closed.send(Some(clean));
+    let _ = closed.send(Some(safe));
     // A disconnect owns the Stopping sentinel; spontaneous EOF owns Running.
-    if gate.finish_unexpected(session, clean).await {
+    if gate.finish_unexpected(session, safe).await {
         emit(
             &app,
             session,
@@ -264,8 +264,9 @@ async fn ultima_connect(
             ))
         }
         Err(StartError::Start(reason)) => {
-            if managed {
-                let _ = manager.rollback();
+            if managed && manager.rollback().is_err() {
+                state.gate.poison_idle().await;
+                return Err(safe_error("Managed launch failed and rollback unconfirmed; restart Ultima"));
             }
             return Err(reason);
         }
