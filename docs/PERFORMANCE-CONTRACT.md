@@ -31,6 +31,10 @@ These figures are *targets*, not verified facts or promises. If native feasibili
 5. **S4:** 60-min repeated turns, 3 project switches, pause/resume, engine restart and recovery.
 6. **S5:** native Windows DPI, light/dark, keyboard-only, screen reader smoke, composition/IME and WebView2 subprocess lifecycle.
 
+## Future module-system native acceptance (not yet active in NC-01–NC-13)
+
+Once optional downloads exist, verify separately on the same exact release and Windows device: **(A)** default Ultima/Codex only; **(B)** every supported extra block installed/configured but not activated; **(C)** representative Codex + other provider + local-model/context connectors simultaneously active. Require negligible repeatable B-versus-A idle overhead, no unnecessary loaded processes or background polling, and a responsive shell during C; report attributable sidecar and external user-managed inference CPU/RAM/GPU honestly. Correct permissions, session isolation and provider lifecycle remain mandatory. Numeric admission thresholds require native baseline evidence and may not be invented.
+
 ## Continuous gates
 
 - Cloud CI: contract tests, fuzz malformed/out-of-order JSONL, authorization tests, rendering fixtures, synthetic performance regression signals. Cloud numbers are trend data, **not native Windows product PASS**.
