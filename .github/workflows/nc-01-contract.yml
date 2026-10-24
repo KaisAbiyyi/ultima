@@ -1,0 +1,67 @@
+name: NC-01 Codex protocol pinned contract
+on:
+  push:
+    paths:
+      - "protocol/**"
+      - "tests/**"
+      - "scripts/nc-01-*"
+      - "package.json"
+      - ".github/workflows/nc-01-contract.yml"
+  pull_request:
+    paths:
+      - "protocol/**"
+      - "tests/**"
+      - "scripts/nc-01-*"
+      - "package.json"
+      - ".github/workflows/nc-01-contract.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux-contract:
+    name: Linux contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm run test:protocol
+  windows-contract:
+    name: Windows hosted contract tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm run test:protocol
+  upstream-schema:
+    name: Official 0.164.0 schemas and live handshake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install pinned official Codex binary
+        run: npm install --global @openai/codex@0.164.0
+      - name: Assert binary version
+        shell: bash
+        run: |
+          codex --version | tee /tmp/codex-version.txt
+          grep -Eq '(^|[^0-9])0\.164\.0([^0-9]|$)' /tmp/codex-version.txt
+      - name: Export authoritative schemas
+        run: |
+          mkdir -p generated/json generated/ts
+          codex app-server generate-json-schema --out generated/json
+          codex app-server generate-ts --out generated/ts
+          node scripts/nc-01-export-check.mjs generated/json generated/ts
+      - name: Smoke unauthenticated initialize and model list
+        run: node scripts/nc-01-smoke.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: codex-0.164.0-official-schemas
+          path: generated/
+          if-no-files-found: warn
