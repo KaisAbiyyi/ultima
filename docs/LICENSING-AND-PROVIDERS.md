@@ -19,6 +19,15 @@ Permissive, allows redistribution/modification/commercial use, includes an expre
 
 **Sources:** https://github.com/openai/codex ; https://github.com/anthropics/claude-code/blob/main/LICENSE.md ; https://github.com/google-gemini/gemini-cli ; https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/ ; https://antigravity.google/blog/introducing-google-antigravity-sdk ; https://antigravity.google/docs/sdk/overview .
 
+## New opt-in provider blocks (owner decision 24 October 2026)
+
+| Block | Legal/product approach |
+|---|---|
+| **Codex default** | Ultima ships with Codex preselected as its core **experience**; detect existing official binary or use an explicitly consented, provenance-verified installation path. The Apache-2.0 project license does **not** automatically certify how every third-party binary may be bundled. |
+| **Custom API Agent / BYOK** | User brings own provider API credentials and config. Respect selected provider's API/SDK terms, billing, model licensing and secrets; no bundled third-party account entitlement. Agent actions require explicit permissioned runtime. |
+| **Local Agent** | Connect to user-managed localhost Ollama/LM Studio (or supported equivalent). Preserve server/model/runtime licenses, quantization/model weight license, and installed version attribution; Ultima may not own or kill external model servers. |
+| **Gemini / Antigravity, CoSoS, Mind Place, Claude** | Explicit per-user downloaded/activated blocks only after each appropriate provider stability, rights, security, auth and measured performance gate; no redistribution of proprietary vendor assets without authorization. |
+
 ## Distribution rules
 
 1. Keep third-party source and runtime licenses independent. Preserve copyright notices, LICENSE/NOTICE and modification notices when redistribution requires them; build an SBOM when packaging.
