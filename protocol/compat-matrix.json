@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "source": "https://github.com/openai/codex",
+  "transport": "stdio-jsonl",
+  "stableTagPrefix": "rust-v",
+  "pinnedVersion": "0.164.0",
+  "versions": [
+    {"version":"0.163.0","tag":"rust-v0.163.0","state":"candidate","release":"https://github.com/openai/codex/releases/tag/rust-v0.163.0"},
+    {"version":"0.164.0","tag":"rust-v0.164.0","state":"supported","release":"https://github.com/openai/codex/releases/tag/rust-v0.164.0"}
+  ],
+  "stableMethods": ["initialize","initialized","model/list","thread/start","thread/resume","turn/start","turn/interrupt"],
+  "approvalMethods": ["item/commandExecution/requestApproval","item/fileChange/requestApproval"]
+}

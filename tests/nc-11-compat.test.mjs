@@ -1,0 +1,15 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { parseStableVersion, compareStable, validateMatrix, compatibilityFor, latestStableRelease, releaseDrift } from "../protocol/compatibility.mjs";
+const m=JSON.parse(readFileSync(new URL("../protocol/compat-matrix.json",import.meta.url),"utf8"));
+const rel=(v,extra={})=>({tag_name:"rust-v"+v,draft:false,prerelease:false,html_url:"https://github.com/openai/codex/releases/tag/rust-v"+v,published_at:"2026-10-23T04:48:10Z",...extra});
+test("manifest includes pinned and candidate release",()=>{assert.equal(validateMatrix(m).pinnedVersion,"0.164.0");assert.deepEqual(m.versions.map(x=>x.version),["0.163.0","0.164.0"]);});
+test("numeric semantic comparison",()=>{assert.equal(compareStable("0.164.0","0.99.0"),1);assert.equal(compareStable("0.163.0","0.164.0"),-1);assert.equal(compareStable("0.164.0","0.164.0"),0);});
+test("reject malformed stable version",()=>{for(const x of ["v0.164.0","0.165.0-alpha.1","01.164.0","0.164.0\n","0.164.0 && echo hi","9999999999999999999.0.0",null])assert.equal(parseStableVersion(x),null);});
+test("exact runtime pin only; no candidate/prerelease auto-promotions",()=>{assert.equal(compatibilityFor(m,"0.164.0").canStart,true);for(const v of ["0.163.0","0.165.0","0.164.0-alpha.1","0.162.0"])assert.equal(compatibilityFor(m,v).canStart,false);});
+test("unsafe supported matrix cannot be silently promoted",()=>{const x=structuredClone(m);x.versions[0].state="supported";assert.throws(()=>validateMatrix(x),/UNSAFE_SUPPORTED_VERSION/);});
+test("no forged upstream source or release URL",()=>{const x=structuredClone(m);x.versions[0].release="https://fake.invalid/";assert.throws(()=>validateMatrix(x),/INVALID_MATRIX_ENTRY/);x.versions[0].release=m.versions[0].release;x.source="https://fake.invalid/";assert.throws(()=>validateMatrix(x),/INVALID_COMPAT_MATRIX/);});
+test("stable selection rejects alpha, draft and forged release URL",()=>{const r=latestStableRelease([rel("0.165.0-alpha.1",{prerelease:true}),rel("0.168.0",{draft:true}),rel("0.999.0",{html_url:"https://fake.invalid"}),rel("0.163.0"),rel("0.164.0")]);assert.equal(r.version,"0.164.0");});
+test("monitor selects newest stable independently of list order",()=>{assert.equal(latestStableRelease([rel("0.164.0"),rel("0.169.0"),rel("0.163.0")]).version,"0.169.0");assert.equal(releaseDrift(m,[rel("0.165.0")]).newer,true);assert.equal(releaseDrift(m,[rel("0.164.0")]).newer,false);});
+test("monitor refuses invalid empty upstream response",()=>{assert.throws(()=>latestStableRelease([]),/NO_VERIFIED_STABLE_RELEASE/);assert.throws(()=>latestStableRelease({}),/INVALID_RELEASE_RESPONSE/);});
