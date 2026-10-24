@@ -177,15 +177,24 @@ async fn drive(
     if failed && managed && clean {
         // Never replay or approve old in-flight protocol work.
         let recovered = runtime::manager(&app)
-            .and_then(|manager| manager.rollback().map(|_| ()).map_err(|_| "Managed rollback failed".into()))
+            .and_then(|manager| {
+                manager
+                    .rollback()
+                    .map(|_| ())
+                    .map_err(|_| "Managed rollback failed".into())
+            })
             .is_ok();
         safe &= recovered;
-        emit(&app, session, json!({
-            "type":"status",
-            "state":"error",
-            "message":if recovered { "Managed Codex failed; previous safe runtime restored. Reconnect explicitly." }
-                else { "Managed Codex failed and rollback could not be confirmed. Reconnect blocked; restart Ultima." }
-        }));
+        emit(
+            &app,
+            session,
+            json!({
+                "type":"status",
+                "state":"error",
+                "message":if recovered { "Managed Codex failed; previous safe runtime restored. Reconnect explicitly." }
+                    else { "Managed Codex failed and rollback could not be confirmed. Reconnect blocked; restart Ultima." }
+            }),
+        );
     }
     let _ = closed.send(Some(safe));
     // A disconnect owns the Stopping sentinel; spontaneous EOF owns Running.
@@ -266,7 +275,9 @@ async fn ultima_connect(
         Err(StartError::Start(reason)) => {
             if managed && manager.rollback().is_err() {
                 state.gate.poison_idle().await;
-                return Err(safe_error("Managed launch failed and rollback unconfirmed; restart Ultima"));
+                return Err(safe_error(
+                    "Managed launch failed and rollback unconfirmed; restart Ultima",
+                ));
             }
             return Err(reason);
         }
