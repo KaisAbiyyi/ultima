@@ -256,6 +256,18 @@
       if (!approvals.some(a => sameApproval(a, request))) approvals = [...approvals, request];
       return;
     }
+    if (event.type === 'requestResolved') {
+      const id = event.params.requestId ?? event.params.serverRequestId ?? event.params.id;
+      if (typeof id === 'string' || typeof id === 'number') {
+        const previous = approvals[0];
+        approvals = approvals.filter(a => a.id !== id);
+        if (previous && previous.id === id) {
+          reviewedApproval = false;
+          expandedDiffId = '';
+        }
+      }
+      return;
+    }
     if (event.type === 'itemStarted' || event.type === 'itemCompleted' || event.type === 'commandOutput') {
       if (event.params.threadId && event.params.threadId !== activeThread) return;
       const item = event.params.item;
