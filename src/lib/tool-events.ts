@@ -83,6 +83,6 @@ export function trackTool(items: ToolItem[], type: 'itemStarted' | 'itemComplete
 }
 export function canApprove(request: ApprovalRequest, items: ToolItem[]): boolean {
   const item = items.find(v => v.id === request.itemId);
-  return !!item && ((request.kind === 'command' && item.kind === 'command' && !!item.command) ||
+  return !!item && ((request.kind === 'command' && item.kind === 'command' && !!item.command && !item.truncated) ||
     (request.kind === 'fileChange' && item.kind === 'fileChange' && !!item.diff && !item.truncated));
 }
