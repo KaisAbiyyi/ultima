@@ -89,6 +89,69 @@ mod tests {
     use super::is_safe_recovery;
     use ultima_runtime_manager::Choice;
 
+    /// Deterministic gate-level simulation of a managed handshake failure:
+    /// no second child may start while stopping, and an unchanged failed
+    /// selection poisons reconnect rather than retrying the same executable.
+    #[tokio::test]
+    async fn failed_handshake_same_managed_runtime_never_retries_or_overlaps() {
+        use crate::lifecycle::{GateError, SessionGate, StartError};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let gate = SessionGate::<usize>::default();
+        let children = AtomicUsize::new(0);
+        gate.start(1, || {
+            children.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, ()>((1, ()))
+        })
+        .await
+        .unwrap();
+        // Synthetic rejected initialize frame: transition into teardown.
+        let (generation, _) = gate.begin_stop().await.unwrap().unwrap();
+        assert_eq!(gate.require_idle().await, Err(GateError::Busy));
+        assert_eq!(
+            gate.start(2, || -> Result<(usize, ()), ()> {
+                panic!("a new process must not overlap teardown")
+            })
+            .await,
+            Err(StartError::Gate(GateError::Busy))
+        );
+        children.fetch_sub(1, Ordering::SeqCst); // supervisor stop/reap confirmed
+        let failed = Choice::Managed("0.164.0".into());
+        let recovered = Choice::Managed("0.164.0".into());
+        let safe = is_safe_recovery("0.164.0", &recovered, &recovered);
+        assert!(!safe);
+        assert!(gate.finish_stop(generation, safe).await);
+        assert_eq!(gate.require_idle().await, Err(GateError::Poisoned));
+        assert_eq!(
+            gate.start(3, || -> Result<(usize, ()), ()> {
+                panic!("same failing binary must never be relaunched")
+            })
+            .await,
+            Err(StartError::Gate(GateError::Poisoned))
+        );
+        assert_eq!(children.load(Ordering::SeqCst), 0);
+        assert_eq!(failed, recovered);
+    }
+
+    #[tokio::test]
+    async fn failed_managed_handshake_system_fallback_reopens_only_after_reap() {
+        use crate::lifecycle::{GateError, SessionGate};
+        let gate = SessionGate::<usize>::default();
+        gate.start(1, || Ok::<_, ()>((1, ())))
+            .await
+            .unwrap();
+        let (generation, _) = gate.begin_stop().await.unwrap().unwrap();
+        assert_eq!(gate.require_idle().await, Err(GateError::Busy));
+        let system = Choice::System;
+        assert!(is_safe_recovery("0.164.0", &system, &system));
+        assert!(gate.finish_stop(generation, true).await);
+        assert_eq!(gate.require_idle().await, Ok(()));
+        gate.start(2, || Ok::<_, ()>((2, ())))
+            .await
+            .unwrap();
+        assert_eq!(gate.current().await, Some((2, 2)));
+    }
+
     #[test]
     fn failure_recovery_requires_distinct_and_verified_effective_choice() {
         let failed = "0.164.0";
