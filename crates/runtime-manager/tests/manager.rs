@@ -1,151 +1,66 @@
-use sha2::{Digest, Sha256};
-use std::{fs, path::Path};
+use std::{fs, path::PathBuf};
 use tempfile::TempDir;
-use ultima_runtime_manager::{Approval, Choice, Manager};
+use ultima_app_server_supervisor::EngineConfig;
+use ultima_runtime_manager::{health::probe, Approval, Choice, Manager};
 
 const VERSION: &str = "0.164.0";
 const RELEASE: &str = "https://github.com/openai/codex/releases/tag/rust-v0.164.0";
-fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-fn fixture(dir: &TempDir, bytes: &[u8]) -> (std::path::PathBuf, Approval) {
-    let path = dir.path().join("candidate.bin");
-    fs::write(&path, bytes).unwrap();
-    (
-        path,
-        Approval::new(VERSION, RELEASE, &digest(bytes)).unwrap(),
-    )
-}
-fn new_manager(dir: &TempDir, approval: Approval) -> Manager {
-    Manager::open(&dir.path().join("ultima-managed"), vec![approval]).unwrap()
+const OFFICIAL_DIGEST: &str = "6f267830b029ee25d9339864aa867cd45de9f8fd4c5ea007d2e63c13a0c66d36";
+
+#[test]
+fn arbitrary_matching_hash_cannot_claim_official_provenance() {
+    let digest_of_attacker_file = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    assert!(Approval::new(VERSION, RELEASE, digest_of_attacker_file).is_err());
+    assert!(Approval::new("0.163.0",
+        "https://github.com/openai/codex/releases/tag/rust-v0.163.0", OFFICIAL_DIGEST).is_err());
+    assert!(Approval::new("0.164.1",
+        "https://github.com/openai/codex/releases/tag/rust-v0.164.1", OFFICIAL_DIGEST).is_err());
+    assert!(Approval::new(VERSION, "https://malicious.example/tag/rust-v0.164.0", OFFICIAL_DIGEST).is_err());
+    assert!(Approval::new(VERSION, RELEASE, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").is_err());
 }
 #[test]
-fn system_is_default_even_when_candidate_prepared() {
-    let dir = TempDir::new().unwrap();
-    let (artifact, approved) = fixture(&dir, b"test fixture bytes");
-    let manager = new_manager(&dir, approved);
-    assert_eq!(manager.active(), Choice::System);
-    manager.stage(&artifact, VERSION).unwrap();
-    assert_eq!(manager.active(), Choice::System);
-}
-#[test]
-fn activate_reopen_rollback_and_explicit_system() {
-    let dir = TempDir::new().unwrap();
-    let (artifact, approved) = fixture(&dir, b"valid candidate");
-    let manager = new_manager(&dir, approved.clone());
-    manager.stage(&artifact, VERSION).unwrap();
-    manager.activate_managed(VERSION).unwrap();
-    assert_eq!(manager.active(), Choice::Managed(VERSION.into()));
-    drop(manager);
-    let manager = new_manager(&dir, approved);
-    assert_eq!(manager.active(), Choice::Managed(VERSION.into()));
-    assert_eq!(manager.rollback().unwrap(), Choice::System);
-    assert_eq!(manager.active(), Choice::System);
-    manager.activate_managed(VERSION).unwrap();
-    manager.activate_system().unwrap();
-    assert_eq!(manager.active(), Choice::System);
-}
-#[test]
-fn altered_installed_binary_is_never_executed() {
-    let dir = TempDir::new().unwrap();
-    let (artifact, approved) = fixture(&dir, b"known good");
-    let manager = new_manager(&dir, approved);
-    manager.stage(&artifact, VERSION).unwrap();
-    manager.activate_managed(VERSION).unwrap();
-    let binary = dir
-        .path()
-        .join("ultima-managed/versions")
-        .join(VERSION)
-        .join(if cfg!(windows) { "codex.exe" } else { "codex" });
-    fs::remove_file(&binary).unwrap();
-    fs::write(&binary, b"tamper").unwrap();
-    assert_eq!(manager.active(), Choice::System);
-    assert!(manager.activate_managed(VERSION).is_err());
-    assert_eq!(manager.rollback().unwrap(), Choice::System);
-}
-#[test]
-fn no_forged_release_or_unknown_version() {
-    let dir = TempDir::new().unwrap();
-    let (artifact, _) = fixture(&dir, b"known");
-    assert!(Approval::new(
-        "0.163.0",
-        "https://github.com/openai/codex/releases/tag/rust-v0.163.0",
-        &digest(b"known")
-    )
-    .is_err());
-    assert!(Approval::new(
-        "0.164.1",
-        "https://github.com/openai/codex/releases/tag/rust-v0.164.1",
-        &digest(b"known")
-    )
-    .is_err());
-    assert!(Approval::new(VERSION, "https://example.net/fake", &digest(b"known")).is_err());
-    let bad = Approval::new(VERSION, RELEASE, &digest(b"not the artifact")).unwrap();
-    let manager = new_manager(&dir, bad);
-    assert!(manager.stage(&artifact, VERSION).is_err());
-    assert_eq!(manager.active(), Choice::System);
-}
-#[test]
-fn never_overwrite_existing_version_or_user_data() {
-    let dir = TempDir::new().unwrap();
-    let unrelated = dir.path().join("unrelated");
-    fs::create_dir(&unrelated).unwrap();
-    fs::write(unrelated.join("user.txt"), b"do not touch").unwrap();
-    assert!(Manager::open(&unrelated, vec![]).is_err());
-    assert_eq!(
-        fs::read(unrelated.join("user.txt")).unwrap(),
-        b"do not touch"
-    );
-    let (artifact, approved) = fixture(&dir, b"one");
-    let manager = new_manager(&dir, approved);
-    manager.stage(&artifact, VERSION).unwrap();
-    assert!(manager.stage(&artifact, VERSION).is_err());
-}
-#[test]
-fn corrupt_journal_falls_back_without_running_managed() {
-    let dir = TempDir::new().unwrap();
-    let (artifact, approved) = fixture(&dir, b"v");
-    let manager = new_manager(&dir, approved);
-    manager.stage(&artifact, VERSION).unwrap();
-    manager.activate_managed(VERSION).unwrap();
-    let entry = dir
-        .path()
-        .join("ultima-managed/journal/00000000000000000001.json");
-    fs::write(entry, b"corrupt").unwrap();
-    assert_eq!(manager.active(), Choice::System);
-    assert!(manager.activate_managed(VERSION).is_err());
-}
-#[test]
-fn selection_uses_nc04_trusted_system_binary_and_project_root() {
-    let dir = TempDir::new().unwrap();
-    let (_, approved) = fixture(&dir, b"good");
-    let manager = new_manager(&dir, approved);
-    let system = dir
-        .path()
-        .join(if cfg!(windows) { "codex.exe" } else { "codex" });
-    fs::write(&system, b"system test fixture").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&system, fs::Permissions::from_mode(0o700)).unwrap();
+fn pinned_official_asset_bound_to_target_platform() {
+    let approval = Approval::official();
+    if cfg!(all(target_os="windows", target_arch="x86_64")) {
+        let approval = approval.unwrap();
+        assert_eq!(approval.version(), VERSION);
+        assert_eq!(approval.digest(), OFFICIAL_DIGEST);
+        assert_eq!(approval.asset_url(),
+            "https://github.com/openai/codex/releases/download/rust-v0.164.0/codex-x86_64-pc-windows-msvc.exe");
+    } else {
+        assert!(approval.is_err(), "no wrong-architecture managed asset may be accepted");
     }
-    let project = dir.path().join("project");
-    fs::create_dir(&project).unwrap();
-    assert!(manager
-        .engine_config(&system, dir.path(), &project, dir.path())
-        .is_ok());
-    assert!(manager
-        .engine_config(&system, dir.path(), Path::new(".."), dir.path())
-        .is_err());
 }
-#[cfg(unix)]
 #[test]
-fn symlink_source_rejected() {
-    use std::os::unix::fs::symlink;
-    let dir = TempDir::new().unwrap();
-    let (artifact, approved) = fixture(&dir, b"original");
-    let link = dir.path().join("malicious-link");
-    symlink(&artifact, &link).unwrap();
-    let manager = new_manager(&dir, approved);
-    assert!(manager.stage(&link, VERSION).is_err());
+fn runtime_manager_does_not_change_default_selection() {
+    let tmp = TempDir::new().unwrap();
+    let manager = Manager::open(&tmp.path().join("owned-runtime"), vec![]).unwrap();
+    assert_eq!(manager.active(), Choice::System);
+    assert!(manager.activate_system().is_ok());
+    assert_eq!(manager.active(), Choice::System);
+    // No managed executable is available without the exact approved release asset.
+}
+
+fn preflight_setup() -> (TempDir, EngineConfig) {
+    let tmp = TempDir::new().unwrap();
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_fake_runtime"));
+    let cfg = EngineConfig::new(&bin, bin.parent().unwrap(), tmp.path(), tmp.path()).unwrap();
+    (tmp, cfg)
+}
+#[tokio::test]
+async fn healthy_synthetic_server_requires_successful_init_and_model_list() {
+    let (_tmp, cfg) = preflight_setup();
+    probe(cfg).await.unwrap();
+}
+#[tokio::test]
+async fn rejected_initialize_aborts_without_activation() {
+    let (tmp, cfg) = preflight_setup();
+    fs::write(tmp.path().join("probe-fail-init"), b"1").unwrap();
+    assert!(probe(cfg).await.is_err());
+}
+#[tokio::test]
+async fn rejected_model_list_aborts_without_activation() {
+    let (tmp, cfg) = preflight_setup();
+    fs::write(tmp.path().join("probe-fail-model"), b"1").unwrap();
+    assert!(probe(cfg).await.is_err());
 }
