@@ -1,0 +1,95 @@
+name: NC-11 Official Codex upstream compatibility
+on:
+  push:
+    paths:
+      - "protocol/compat*"
+      - "scripts/nc-11-*"
+      - "tests/nc-11-*"
+      - ".github/workflows/nc-11-upstream-compat.yml"
+  pull_request:
+    paths:
+      - "protocol/compat*"
+      - "scripts/nc-11-*"
+      - "tests/nc-11-*"
+      - ".github/workflows/nc-11-upstream-compat.yml"
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: nc11-compat-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+jobs:
+  policy:
+    name: Compatibility policy (unit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node --test tests/nc-11-compat.test.mjs
+      - run: node scripts/nc-11-compat.mjs matrix
+      - run: node scripts/nc-11-compat.mjs gate-runtime 0.164.0
+      - name: Assert candidate fails closed
+        shell: bash
+        run: |
+          if node scripts/nc-11-compat.mjs gate-runtime 0.163.0; then
+            echo "Candidate was incorrectly promoted" >&2
+            exit 1
+          fi
+  contract:
+    name: Official App Server ${{ matrix.version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        version: ["0.163.0", "0.164.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install exact official npm version
+        shell: bash
+        run: npm install --global "@openai/codex@${{ matrix.version }}"
+      - name: Check installed version
+        shell: bash
+        run: |
+          codex --version > codex-version.txt
+          node scripts/nc-11-compat.mjs verify-version "${{ matrix.version }}" "$(cat codex-version.txt)"
+      - name: Export official JSON and TypeScript schemas
+        shell: bash
+        run: |
+          mkdir -p generated/json generated/ts
+          codex app-server generate-json-schema --out generated/json
+          codex app-server generate-ts --out generated/ts
+          node scripts/nc-01-export-check.mjs generated/json generated/ts
+      - name: Run non-destructive real App Server contract smoke
+        shell: bash
+        run: node scripts/nc-11-compat.mjs smoke-installed "${{ matrix.version }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: official-schema-${{ matrix.version }}-${{ matrix.os }}
+          path: generated/
+          if-no-files-found: warn
+          retention-days: 14
+  stable-release-watch:
+    name: Check latest verified official stable release
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Detect stable release drift (fail, no auto-install)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/nc-11-compat.mjs check-latest
