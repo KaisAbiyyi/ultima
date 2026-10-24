@@ -47,7 +47,7 @@ The fastest *usable* Codex desktop: minimal yet polished UI, keyboard-first, low
 ## Critical path and parallelism
 
 - Initial **Now (unclaimed, Ready)**: NC-01, NC-02, NC-03.
-- Initial **Up Next (blocked direct successors of Now)**: NC-04, NC-05, NC-11 (from NC-01). NC-06 is *not* Up Next yet because its other predecessors NC-04/05 are neither Done nor Now.
+- Initial **Up Next (blocked direct successors of Now)**: NC-04 and NC-05 (both depend on NC-01). NC-11 waits on NC-05 and is not yet a direct successor of initial Now; NC-06 also waits on NC-04/05.
 - NC-04 and NC-05 can execute in parallel after NC-01; NC-11 can also run independently then. NC-03 and NC-02 can run alongside NC-01.
 - No arbitrary phase barrier: readiness follows AND dependencies and resource locks, not phase number.
 
