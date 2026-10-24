@@ -301,8 +301,15 @@ fn nc07_upstream_resolved_invalidates_original_request() {
     let Event::Approval(valid) = b.take_event().unwrap() else {
         panic!("expected approval")
     };
-    b.ingest_line(br#"{"method":"serverRequest/resolved","params":{"requestId":"resolved1"}}"#).unwrap();
-    assert!(matches!(b.take_event(), Some(Event::Notification { kind: NotificationKind::ServerRequestResolved, .. })));
+    b.ingest_line(br#"{"method":"serverRequest/resolved","params":{"requestId":"resolved1"}}"#)
+        .unwrap();
+    assert!(matches!(
+        b.take_event(),
+        Some(Event::Notification {
+            kind: NotificationKind::ServerRequestResolved,
+            ..
+        })
+    ));
     assert_eq!(b.approval_count(), 0);
     assert_eq!(
         b.decide_exact_approval(&valid, ApprovalDecision::Accept, true),
