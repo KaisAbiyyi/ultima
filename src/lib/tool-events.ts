@@ -136,6 +136,12 @@ export function trackTool(items: ToolItem[], type: 'itemStarted' | 'itemComplete
   }
   return [...items.filter(t => toolIdentity(t) !== key), tool].slice(-MAX_TOOL_ITEMS);
 }
+/** A reviewed tool is never a grant for another selected thread or active turn. */
+export function canApproveInActiveTurn(
+  request: ApprovalRequest, items: ToolItem[], activeThread: string, activeTurn: string
+): boolean {
+  return request.threadId === activeThread && request.turnId === activeTurn && canApprove(request, items);
+}
 export function canApprove(request: ApprovalRequest, items: ToolItem[]): boolean {
   const item = items.find(v => matchesApprovalEvidence(request, v));
   return !!item && item.previewComplete && !item.truncated && (
