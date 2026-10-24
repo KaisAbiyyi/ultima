@@ -137,18 +137,14 @@ mod tests {
     async fn failed_managed_handshake_system_fallback_reopens_only_after_reap() {
         use crate::lifecycle::{GateError, SessionGate};
         let gate = SessionGate::<usize>::default();
-        gate.start(1, || Ok::<_, ()>((1, ())))
-            .await
-            .unwrap();
+        gate.start(1, || Ok::<_, ()>((1, ()))).await.unwrap();
         let (generation, _) = gate.begin_stop().await.unwrap().unwrap();
         assert_eq!(gate.require_idle().await, Err(GateError::Busy));
         let system = Choice::System;
         assert!(is_safe_recovery("0.164.0", &system, &system));
         assert!(gate.finish_stop(generation, true).await);
         assert_eq!(gate.require_idle().await, Ok(()));
-        gate.start(2, || Ok::<_, ()>((2, ())))
-            .await
-            .unwrap();
+        gate.start(2, || Ok::<_, ()>((2, ()))).await.unwrap();
         assert_eq!(gate.current().await, Some((2, 2)));
     }
 
