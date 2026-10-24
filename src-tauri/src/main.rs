@@ -6,7 +6,7 @@ use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
 use tauri::{Emitter, State};
 use tokio::sync::{mpsc, oneshot, watch};
 use ultima_app_server_supervisor::{EngineConfig, EngineSupervisor, OutputEvent};
-use ultima_protocol_bridge::{Broker, ClientMethod, Event, Limits, NotificationKind, Phase};
+use ultima_protocol_bridge::{Approval, ApprovalDecision, ApprovalKind, Broker, ClientMethod, Event, Limits, NotificationKind, Phase, RpcId};
 use serde_json::{json, Value};
 use lifecycle::{SessionGate, GateError, StartError};
 
@@ -26,7 +26,28 @@ impl Default for Shared {
 }
 enum Action {
     Call(ClientMethod, Value, oneshot::Sender<Result<u64, String>>),
+    Decision(Approval, ApprovalDecision, oneshot::Sender<Result<(), String>>),
     Stop,
+}
+/// A decision must match the complete immutable server request (not merely its id).
+fn parse_approval(value: &Value) -> Result<Approval, String> {
+    let id: RpcId = serde_json::from_value(value.get("id").cloned().ok_or("Approval ID missing")?)
+        .map_err(|_| safe_error("Invalid approval ID"))?;
+    let id_valid = match &id { RpcId::Number(_) => true, RpcId::String(s) => !s.is_empty() && s.len() <= 128 };
+    if !id_valid { return Err(safe_error("Invalid approval ID")); }
+    let field = |name| -> Result<String, String> {
+        value.get(name).and_then(Value::as_str)
+            .filter(|s| !s.is_empty() && s.len() <= 256)
+            .map(str::to_owned).ok_or_else(|| safe_error("Invalid approval identity"))
+    };
+    let kind = match value.get("kind").and_then(Value::as_str) {
+        Some("command") => ApprovalKind::Command,
+        Some("fileChange") => ApprovalKind::FileChange,
+        _ => return Err(safe_error("Invalid approval kind")),
+    };
+    Ok(Approval { id, kind, thread_id: field("threadId")?, turn_id: field("turnId")?,
+        item_id: field("itemId")?, started_at_ms: value.get("startedAtMs")
+            .and_then(Value::as_u64).ok_or("Invalid approval timestamp")? })
 }
 fn safe_error(reason: &str) -> String {
     // Never forward arbitrary child stderr or protocol messages containing credentials.
@@ -64,6 +85,7 @@ fn broker_event(event: Event) -> Option<Value> {
                 NotificationKind::ItemStarted => "itemStarted",
                 NotificationKind::ItemCompleted => "itemCompleted",
                 NotificationKind::AgentMessageDelta => "delta",
+                NotificationKind::CommandOutputDelta => "commandOutput",
                 NotificationKind::ServerRequestResolved => "requestResolved",
             };
             Some(json!({"type":name,"params":params}))
@@ -90,8 +112,25 @@ async fn drive(
                 action = inbox.recv() => {
                     match action {
                         Some(Action::Call(method, params, reply)) => {
+                            if method == ClientMethod::TurnInterrupt {
+                                let thread = params.get("threadId").and_then(Value::as_str).unwrap_or("");
+                                let turn = params.get("turnId").and_then(Value::as_str).unwrap_or("");
+                                broker.decline_approvals_for_turn(thread, turn)
+                                    .map_err(|_| safe_error("Cannot safely cancel pending approvals"))?;
+                            }
                             let answer = broker.call(method, params)
                                 .map_err(|_| safe_error("Invalid or unavailable engine command"));
+                            if answer.is_ok() {
+                                if let Err(reason) = flush(&mut broker, &mut supervisor).await {
+                                    let _ = reply.send(Err(reason.clone()));
+                                    return Err(reason);
+                                }
+                            }
+                            let _ = reply.send(answer);
+                        }
+                        Some(Action::Decision(approval, decision, reply)) => {
+                            let answer = broker.decide_exact_approval(&approval, decision, decision == ApprovalDecision::Accept)
+                                .map_err(|_| safe_error("Approval stale, invalid or already resolved"));
                             if answer.is_ok() {
                                 if let Err(reason) = flush(&mut broker, &mut supervisor).await {
                                     let _ = reply.send(Err(reason.clone()));
@@ -118,10 +157,15 @@ async fn drive(
                             }
                             while let Some(event) = broker.take_event() {
                                 match event {
-                                    Event::Approval(ref approval) => {
-                                        broker.decline_approval(&approval.id)
-                                            .map_err(|_| safe_error("Permission denial failed"))?;
-                                        emit(&app, session, json!({"type":"approvalBlocked","kind":format!("{:?}",approval.kind)}));
+                                    Event::Approval(approval) => {
+                                        emit(&app, session, json!({"type":"approvalPending","request":{
+                                            "id":approval.id,
+                                            "kind":if approval.kind == ApprovalKind::Command { "command" } else { "fileChange" },
+                                            "threadId":approval.thread_id,
+                                            "turnId":approval.turn_id,
+                                            "itemId":approval.item_id,
+                                            "startedAtMs":approval.started_at_ms,
+                                        }}));
                                     }
                                     other => {
                                         if let Some(value) = broker_event(other) { emit(&app, session, value); }
@@ -207,6 +251,18 @@ async fn ultima_call(
     rx.await.map_err(|_| safe_error("Engine command unavailable"))?
 }
 #[tauri::command]
+async fn ultima_approval(state: State<'_, Shared>, session: u64, request: Value, decision: String) -> Result<(), String> {
+    if decision != "accept" && decision != "decline" { return Err(safe_error("Unsupported decision")); }
+    let approval = parse_approval(&request)?;
+    let (current, handle) = state.gate.current().await.ok_or("Engine is not ready")?;
+    if current != session { return Err(safe_error("Stale engine session")); }
+    let (tx, rx) = oneshot::channel();
+    let decision = if decision == "accept" { ApprovalDecision::Accept } else { ApprovalDecision::Decline };
+    handle.tx.try_send(Action::Decision(approval, decision, tx))
+        .map_err(|_| safe_error("Engine decision queue unavailable"))?;
+    rx.await.map_err(|_| safe_error("Engine decision dropped"))?
+}
+#[tauri::command]
 async fn ultima_disconnect(app: tauri::AppHandle, state: State<'_, Shared>) -> Result<(), String> {
     let (session, handle) = match state.gate.begin_stop().await {
         Ok(Some(v)) => v,
@@ -242,7 +298,7 @@ async fn ultima_disconnect(app: tauri::AppHandle, state: State<'_, Shared>) -> R
 fn main() {
     tauri::Builder::default()
         .manage(Shared::default())
-        .invoke_handler(tauri::generate_handler![ultima_connect, ultima_call, ultima_disconnect])
+        .invoke_handler(tauri::generate_handler![ultima_connect, ultima_call, ultima_approval, ultima_disconnect])
         .run(tauri::generate_context!())
         .expect("Ultima desktop could not start");
 }
