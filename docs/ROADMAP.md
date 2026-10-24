@@ -1,12 +1,12 @@
-# Necessary Codex — Performance-First Roadmap v0.1
+# Ultima: Codex Foundation — Performance-First Roadmap v0.1
 
-**Updated:** 2026-10-24 (Asia/Jakarta) · **Product:** independent, lean desktop frontend for official OpenAI Codex App Server · **License:** Apache-2.0 (see [LICENSE](../LICENSE)).
+**Updated:** 2026-10-24 (Asia/Jakarta) · **Product:** Ultima's first independent Codex adapter and desktop foundation, using official OpenAI Codex App Server · **License:** Apache-2.0 (see [LICENSE](../LICENSE)).
 
 ## North star
 
 The fastest *usable* Codex desktop: minimal yet polished UI, keyboard-first, low input/stream latency, low total process-tree RAM and CPU, reliable permissions, durable sessions, and zero unnecessary browser/runtime duplication. **Performance is a release gate, not a late optimization.**
 
-**Hard boundaries:** Remain independent from CoSoS and Mind Place. Use upstream `codex app-server` through stdio JSONL/JSON-RPC; do not fork Codex Core, duplicate login/session stores, build a second agent or bundle a full Chromium browser. Official App Server's WebSocket transport is experimental; do not make it the local MVP dependency. User's system-installed Codex binary is the initial engine; managed runtime is a later option, not a baseline requirement.
+**Current milestone boundary:** No dependency on CoSoS or Mind Place until their independent stabilization and explicit owner acceptance. Use upstream `codex app-server` through stdio JSONL/JSON-RPC; do not fork Codex Core, duplicate login/session stores, build a second agent or bundle a full Chromium browser. Official App Server's WebSocket transport is experimental; do not make it the local MVP dependency. User's system-installed Codex binary is the initial engine; managed runtime is a later option, not a baseline requirement.
 
 **Scope:** Windows x64 first. Tauri 2 + Svelte/TypeScript UI + Rust runtime host. No embedded browser or rich feature parity mandate. Accessibility, safe tool approvals, and text/file correctness are non-negotiable.
 
@@ -59,10 +59,14 @@ Canonical status: `Ready → Claimed → Review → Done`; `Reclaim` only for an
 
 ## Non-goals (until measured need)
 
-Internal browser, custom agent logic, telemetry-by-default, broad plugins/gallery, arbitrary settings pages, fancy animations, bundled duplicate Chromium, automatic modification of user Codex configuration, cross-project super-app coupling. Codex Cloud integration/worktrees are follow-up candidates, not prerequisites to shipping a fast editor.
+Internal browser, custom agent logic, telemetry-by-default, broad plugins/gallery, arbitrary settings pages, fancy animations, bundled duplicate Chromium, automatic modification of user Codex configuration, mandatory cross-project coupling *during Codex Foundation*. Optional CoSoS/Mind Place providers are intentionally deferred to [Ultima's staged vision](PRODUCT-VISION.md). Codex Cloud integration/worktrees are follow-up candidates, not prerequisites to shipping a fast editor.
 
 ## Source
 
 - [Official App Server docs](https://learn.chatgpt.com/docs/app-server)
 - [OpenAI Codex source](https://github.com/openai/codex)
 - [Execution board](EXECUTION-BOARD.md) · [Performance contract](PERFORMANCE-CONTRACT.md) · [Architecture](ARCHITECTURE.md)
+
+## Ultima beyond the Codex milestone (NOT active scope)
+
+The app's long-term product name is **Ultima**, not Necessary Codex. Existing NC-01–NC-13 task IDs remain stable for the Codex Foundation. Future CoSoS and Mind Place integrations are optional independent adapters with their own acceptance gates **only after those projects stabilize**; Claude Code and Google Antigravity are feasibility/legal research only. This roadmap does not add active integration tasks or require any other project for the Codex release. See [Product Vision](PRODUCT-VISION.md) and [Licensing and Provider Policy](LICENSING-AND-PROVIDERS.md).
