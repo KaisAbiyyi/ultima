@@ -207,6 +207,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_update_rejected_while_running_or_stopping() {
+        let gate = SessionGate::<usize>::default();
+        assert_eq!(gate.require_idle().await, Ok(()));
+        gate.start(7, || Ok::<_, ()>((7, ()))).await.unwrap();
+        assert_eq!(gate.require_idle().await, Err(GateError::Busy));
+        let (generation, _) = gate.begin_stop().await.unwrap().unwrap();
+        assert_eq!(gate.require_idle().await, Err(GateError::Busy));
+        assert!(gate.finish_stop(generation, true).await);
+        assert_eq!(gate.require_idle().await, Ok(()));
+        gate.start(8, || Ok::<_, ()>((8, ()))).await.unwrap();
+        assert!(gate.finish_unexpected(8, false).await);
+        assert_eq!(gate.require_idle().await, Err(GateError::Poisoned));
+    }
+
+    #[tokio::test]
     async fn spontaneous_failed_teardown_stays_poisoned() {
         let gate = SessionGate::<usize>::default();
         gate.start(1, || Ok::<_, ()>((1, ()))).await.unwrap();
