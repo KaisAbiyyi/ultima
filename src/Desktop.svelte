@@ -2,7 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { createMessage, type UIMessage } from './lib/history';
   import { visibleRange } from './lib/virtual';
-  import { resolveShortcut } from './lib/shortcuts';
+  import { isTextComposing, resolveShortcut, shouldSendComposer } from './lib/shortcuts';
   import { nativeBridge, desktopAvailable, type EngineBridge, type EngineEvent } from './lib/desktop-bridge';
   import { EngineSessionFence } from './lib/engine-session-fence';
   import { approvalToolIdentity, canApprove, canApproveInActiveTurn, matchesApprovalEvidence, parseApproval, sameApproval, toolIdentity, trackTool, type ApprovalRequest, type ToolItem } from './lib/tool-events';
@@ -32,6 +32,11 @@
   let errorMessage = '';
   let search = '';
   let navOpen = false;
+  let mobileNav = false;
+  let navigationReturnFocus: HTMLElement | null = null;
+  let menuButton: HTMLButtonElement;
+  let composing = false;
+  let lastCompositionEndAt = Number.NEGATIVE_INFINITY;
   let theme: 'dark' | 'light' = 'dark';
   let scrollTop = 0;
   let viewportHeight = 600;
@@ -69,6 +74,31 @@
     theme = next;
     document.documentElement.dataset.theme = next;
     try { localStorage.setItem('ultima-prototype-theme', next); } catch { /* no persistence */ }
+  }
+  function closeNavigation() {
+    navOpen = false;
+    const previous = navigationReturnFocus;
+    navigationReturnFocus = null;
+    void tick().then(() => {
+      if (previous?.isConnected) previous.focus();
+      else if (mobileNav) menuButton?.focus();
+    });
+  }
+  function openSearch() {
+    if (!navOpen && document.activeElement instanceof HTMLElement) navigationReturnFocus = document.activeElement;
+    navOpen = true;
+    void tick().then(() => searchEl?.focus());
+  }
+  function toggleNavigation() {
+    if (navOpen) closeNavigation();
+    else { navigationReturnFocus = menuButton; navOpen = true; void tick().then(() => searchEl?.focus()); }
+  }
+  function compositionEnd() {
+    composing = false;
+    lastCompositionEndAt = performance.now();
+  }
+  function commitInProgress() {
+    return composing || performance.now() - lastCompositionEndAt < 120;
   }
   function scrollLatest() {
     if (!feedEl) return;
@@ -133,7 +163,7 @@
       activeThread = '';
       messages = [];
     }
-    navOpen = false;
+    if (navOpen) closeNavigation();
     persist();
   }
   async function connect() {
@@ -369,7 +399,7 @@
     toolItems = [];
     approvals = [];
     reviewedApproval = false;
-    navOpen = false;
+    if (navOpen) closeNavigation();
     if (status !== 'ready') {
       errorMessage = 'Connect to this project, then resume the selected thread.';
       return;
@@ -395,14 +425,15 @@
     await request('turn/interrupt', { threadId: activeThread, turnId: activeTurn }, 'interrupt');
   }
   function keydown(event: KeyboardEvent) {
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void send(); }
+    if (shouldSendComposer(event, commitInProgress())) { event.preventDefault(); void send(); }
   }
   function windowKeydown(event: KeyboardEvent) {
-    const action = resolveShortcut(event);
+    if (event.defaultPrevented) return;
+    const action = resolveShortcut(event, commitInProgress());
     if (!action) return;
-    if (action === 'dismiss') { if (navOpen) { event.preventDefault(); navOpen = false; } return; }
+    if (action === 'dismiss') { if (navOpen) { event.preventDefault(); closeNavigation(); } return; }
     event.preventDefault();
-    if (action === 'search') { navOpen = true; void tick().then(() => searchEl?.focus()); }
+    if (action === 'search') openSearch();
     if (action === 'composer') composerEl?.focus();
     if (action === 'new-thread') void newThread();
   }
@@ -414,6 +445,10 @@
     let storedTheme = '';
     try { storedTheme = localStorage.getItem('ultima-prototype-theme') ?? ''; } catch { /* disabled */ }
     setTheme(storedTheme === 'light' ? 'light' : 'dark');
+    const navMedia = window.matchMedia('(max-width: 640px)');
+    const updateNavMedia = () => { mobileNav = navMedia.matches; if (!mobileNav && navOpen) closeNavigation(); };
+    updateNavMedia();
+    navMedia.addEventListener('change', updateNavMedia);
     let disposed = false;
     if (desktopAvailable()) {
       void nativeBridge().then(async native => {
@@ -425,6 +460,7 @@
     }
     return () => {
       disposed = true;
+      navMedia.removeEventListener('change', updateNavMedia);
       unlisten?.();
       void bridge?.disconnect();
     };
@@ -433,30 +469,30 @@
 
 <svelte:window onkeydown={windowKeydown}/>
 <div class="shell nc06">
-  {#if navOpen}<button class="mobile-scrim" aria-label="Close navigation" onclick={() => navOpen = false}></button>{/if}
-  <aside class="sidebar" class:open={navOpen} aria-label="Primary navigation">
+  {#if navOpen && mobileNav}<button class="mobile-scrim" aria-label="Close navigation" onclick={closeNavigation}></button>{/if}
+  <aside id="nc09-sidebar" class="sidebar" class:open={navOpen} aria-label="Primary navigation" inert={mobileNav && !navOpen}>
     <div class="sidebar-head"><div class="brand"><span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></span><span class="brand-name">ultima<span class="brand-period">.</span></span></div><span class="edition">CODEX / LIVE</span></div>
-    <button class="new-thread" onclick={() => void newThread()}><span class="new-thread-symbol">+</span> New thread <kbd>Ctrl N</kbd></button>
-    <label class="search-box"><span class="sr-only">Search projects and threads</span><input bind:this={searchEl} bind:value={search} placeholder="Find a project or thread" /></label>
+    <button class="new-thread" aria-keyshortcuts="Control+N Meta+N" onclick={() => void newThread()}><span class="new-thread-symbol">+</span> New thread <kbd>Ctrl N</kbd></button>
+    <label class="search-box"><span class="sr-only">Search projects and threads</span><input type="search" aria-label="Search projects and threads" aria-keyshortcuts="Control+K Meta+K" autocomplete="off" bind:this={searchEl} bind:value={search} placeholder="Find a project or thread" /></label>
     <div class="sidebar-group">
       <div class="group-label"><span>PROJECTS</span><span class="group-count">{projects.length}</span></div>
       {#each shownProjects as project (project.path)}
-        <button class="project-item" class:active={activeProject === project.path} onclick={() => void chooseProject(project.path)} title={project.path}><span class="project-symbol">{project.name.slice(0,1).toUpperCase()}</span><span>{project.name}</span></button>
+        <button class="project-item" class:active={activeProject === project.path} aria-current={activeProject === project.path ? 'page' : undefined} onclick={() => void chooseProject(project.path)} title={project.path}><span class="project-symbol">{project.name.slice(0,1).toUpperCase()}</span><span>{project.name}</span></button>
       {/each}
-      <div class="nc06-add"><input aria-label="Absolute project folder" placeholder="C:\projects\repo" bind:value={projectInput} onkeydown={e => { if (e.key === 'Enter') addProject(); }} /><button onclick={addProject}>Add</button></div>
+      <div class="nc06-add"><input aria-label="Absolute project folder" placeholder="C:\projects\repo" bind:value={projectInput} onkeydown={e => { if (e.key === 'Enter' && !isTextComposing(e, commitInProgress())) { e.preventDefault(); addProject(); } }} oncompositionstart={() => composing = true} oncompositionend={compositionEnd} /><button aria-label="Add project" onclick={addProject}>Add</button></div>
     </div>
     <div class="sidebar-group history-links">
       <div class="group-label"><span>RECENT THREADS</span><span class="group-count">{shownThreads.length}</span></div>
       {#each shownThreads as thread (thread.id)}
-        <button class="history-link" class:active={thread.id === activeThread} onclick={() => void resumeThread(thread)}><span class="tiny-square" aria-hidden="true"></span><span class="nc06-truncate">{thread.title}</span></button>
+        <button class="history-link" class:active={thread.id === activeThread} aria-current={thread.id === activeThread ? 'page' : undefined} onclick={() => void resumeThread(thread)}><span class="tiny-square" aria-hidden="true"></span><span class="nc06-truncate">{thread.title}</span></button>
       {:else}<p class="empty-search">No saved thread IDs for this project.</p>{/each}
     </div>
     <div class="sidebar-bottom"><span class="mock-indicator"><span class="mock-dot"></span> {status === 'ready' ? 'Codex connected' : 'Local desktop engine'}</span><span class="build-label">NC-06 · AUTH THROUGH CODEX</span></div>
   </aside>
   <main class="main-panel">
     <header class="topbar">
-      <div class="topbar-left"><button class="icon-button menu-toggle" aria-label="Open navigation" onclick={() => navOpen = !navOpen}>☰</button><span class="breadcrumb">Workspace</span><span class="slash">/</span><span class="breadcrumb-current">{selectedProject?.name ?? 'Select a project'}</span></div>
-      <div class="topbar-actions"><span class="nc06-status" aria-live="polite">{status}</span><button class="icon-button" aria-label="Toggle theme" onclick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>◐</button></div>
+      <div class="topbar-left"><button bind:this={menuButton} class="icon-button menu-toggle" aria-label="Open navigation" aria-controls="nc09-sidebar" aria-expanded={navOpen} onclick={toggleNavigation}>☰</button><span class="breadcrumb">Workspace</span><span class="slash">/</span><span class="breadcrumb-current">{selectedProject?.name ?? 'Select a project'}</span></div>
+      <div class="topbar-actions"><span class="nc06-status" aria-live="polite">{status}</span><button class="icon-button" aria-label="Toggle theme" aria-pressed={theme === 'light'} onclick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>◐</button></div>
     </header>
     <section class="conversation" aria-labelledby="conversation-title">
       <div class="conversation-head"><p class="eyebrow">CODEX / LOCAL APP SERVER</p><h1 id="conversation-title">{activeThread ? (threads.find(t => t.id === activeThread)?.title ?? 'Codex conversation') : 'Build with clarity'}<span class="heading-period">.</span></h1><p class="conversation-subtitle">{activeThread ? 'Thread resumes through your existing Codex session.' : 'Select a project and connect your Codex installation to begin.'}</p>
@@ -488,16 +524,16 @@
         {/if}
       </div>
       {#if currentApproval}
-        <section class="nc07-approval" aria-label="Tool permission request" role="dialog" aria-modal="false" data-testid="nc07-approval">
+        <section class="nc07-approval" aria-labelledby="nc09-approval-heading" role="dialog" aria-modal="false" data-testid="nc07-approval">
           <p class="eyebrow">PERMISSION REQUIRED · ONE REQUEST ONLY</p>
-          <h2>{currentApproval.kind === 'command' ? 'Execute a command?' : 'Apply file changes?'}</h2>
+          <h2 id="nc09-approval-heading">{currentApproval.kind === 'command' ? 'Execute a command?' : 'Apply file changes?'}</h2>
           <p>Review the exact command or change preview. Permission defaults to decline; this does not grant future requests.</p>
           {#if currentTool && currentApproval.kind === 'command' && currentTool.kind === 'command'}
             <pre class="nc07-evidence">{currentTool.command}</pre>
           {:else if currentTool && currentApproval.kind === 'fileChange' && currentTool.kind === 'fileChange'}
             <p>{currentTool.paths.join(', ') || 'Paths not available'}</p>
-            <button class="secondary-action" onclick={() => expandedDiffId = expandedDiffId === currentApprovalKey ? '' : currentApprovalKey}>Review file diff</button>
-            {#if expandedDiffId === currentApprovalKey}<pre class="nc07-evidence">{currentTool.diff || 'No diff provided by server.'}</pre>{/if}
+            <button class="secondary-action" aria-expanded={expandedDiffId === currentApprovalKey} onclick={() => expandedDiffId = expandedDiffId === currentApprovalKey ? '' : currentApprovalKey}>Review file diff</button>
+            {#if expandedDiffId === currentApprovalKey}<pre class="nc07-evidence nc09-diff" tabindex="0" role="region" aria-label="Complete proposed file diff">{currentTool.diff || 'No diff provided by server.'}</pre>{/if}
           {:else}
             <p class="nc07-warning">The App Server has not provided a verifiable command or diff preview. Accept is unavailable.</p>
           {/if}
@@ -516,18 +552,18 @@
           {#each [...toolItems].reverse() as item (toolIdentity(item))}
             <div class="nc07-tool-row"><span>{item.kind === 'command' ? 'Command' : item.kind === 'fileChange' ? 'File changes' : 'Tool'} · {item.state}</span>
               <span>{item.kind === 'command' ? item.command.slice(0, 100) : item.paths.join(', ').slice(0, 100)}</span>
-              {#if item.output}<button class="secondary-action" onclick={() => expandedOutputId = expandedOutputId === toolIdentity(item) ? '' : toolIdentity(item)}>{expandedOutputId === toolIdentity(item) ? 'Hide output' : 'Show output'}</button>{/if}
-              {#if item.diff}<button class="secondary-action" onclick={() => expandedDiffId = expandedDiffId === toolIdentity(item) ? '' : toolIdentity(item)}>{expandedDiffId === toolIdentity(item) ? 'Hide diff' : 'Show diff'}</button>{/if}
+              {#if item.output}<button class="secondary-action" aria-expanded={expandedOutputId === toolIdentity(item)} onclick={() => expandedOutputId = expandedOutputId === toolIdentity(item) ? '' : toolIdentity(item)}>{expandedOutputId === toolIdentity(item) ? 'Hide output' : 'Show output'}</button>{/if}
+              {#if item.diff}<button class="secondary-action" aria-expanded={expandedDiffId === toolIdentity(item)} onclick={() => expandedDiffId = expandedDiffId === toolIdentity(item) ? '' : toolIdentity(item)}>{expandedDiffId === toolIdentity(item) ? 'Hide diff' : 'Show diff'}</button>{/if}
               {#if item.truncated}<small>Truncated</small>{/if}
-              {#if expandedOutputId === toolIdentity(item)}<pre class="nc07-evidence">{item.output}</pre>{/if}
-              {#if expandedDiffId === toolIdentity(item)}<pre class="nc07-evidence">{item.diff}</pre>{/if}
+              {#if expandedOutputId === toolIdentity(item)}<pre class="nc07-evidence" tabindex="0" role="region" aria-label="Command output">{item.output}</pre>{/if}
+              {#if expandedDiffId === toolIdentity(item)}<pre class="nc07-evidence nc09-diff" tabindex="0" role="region" aria-label="Tool file diff">{item.diff}</pre>{/if}
             </div>
           {/each}
         </section>
       {/if}
     </section>
-    <div class="composer-area"><div class="composer-shell" class:busy><label for="composer" class="sr-only">Message to Codex</label><textarea id="composer" bind:this={composerEl} bind:value={draft} onkeydown={keydown} maxlength="8000" rows="2" placeholder="Ask Codex to build something…" disabled={busy || status !== 'ready'}></textarea><div class="composer-bottom"><span class="composer-mode">◇ Codex <span class="mode-separator"></span>{model || 'Default model'}</span>
+    <div class="composer-area"><div class="composer-shell" class:busy><label for="composer" class="sr-only">Message to Codex</label><textarea id="composer" bind:this={composerEl} bind:value={draft} onkeydown={keydown} oncompositionstart={() => composing = true} oncompositionend={compositionEnd} aria-keyshortcuts="Control+L Meta+L" maxlength="8000" rows="2" placeholder="Ask Codex to build something…" disabled={busy || status !== 'ready'}></textarea><div class="composer-bottom"><span class="composer-mode">◇ Codex <span class="mode-separator"></span>{model || 'Default model'}</span>
       {#if busy}<button class="send-button stop-button" aria-label="Interrupt Codex turn" onclick={() => void stop()}><span class="stop-icon"></span></button>{:else}<button class="send-button" aria-label="Send message to Codex" disabled={status !== 'ready' || !draft.trim()} onclick={() => void send()}>↑</button>{/if}
-    </div></div><div class="under-composer"><p>Enter to send · Shift+Enter newline · Ctrl/⌘+K search</p><span>LOCAL STDIO · NO BUILT-IN BROWSER</span></div></div>
+    </div></div><div class="under-composer"><p>Enter to send · Shift+Enter newline · Ctrl/⌘+K search · Ctrl/⌘+L composer</p><span>LOCAL STDIO · NO BUILT-IN BROWSER</span></div></div>
   </main>
 </div>
