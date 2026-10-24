@@ -54,6 +54,15 @@ impl<T: Clone> SessionGate<T> {
 
     /// Administrative runtime changes require an EMPTY gate. A stopping or
     /// poisoned generation is not safe to replace, even if current() is None.
+    /// Poison an empty slot when a failed managed launch cannot be rolled back.
+    /// This prevents retrying a suspect runtime until the host is restarted.
+    pub async fn poison_idle(&self) {
+        let mut slot = self.slot.lock().await;
+        if matches!(&*slot, Slot::Empty) {
+            *slot = Slot::Poisoned;
+        }
+    }
+
     pub async fn require_idle(&self) -> Result<(), GateError> {
         match &*self.slot.lock().await {
             Slot::Empty => Ok(()),
