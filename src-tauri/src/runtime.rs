@@ -24,7 +24,7 @@ pub fn status(app: &AppHandle) -> Result<serde_json::Value, String> {
     let choice = manager.selected();
     let supported = Approval::official().is_ok();
     Ok(serde_json::json!({
-        "mode":match choice { Choice::System => "system", Choice::Managed(_) => "managed" },
+        "mode":match &choice { Choice::System => "system", Choice::Managed(_) => "managed" },
         "version":match choice { Choice::System => None, Choice::Managed(v) => Some(v) },
         "managedSupported": supported,
         "pinnedVersion": if supported {Some("0.164.0")} else {None},
