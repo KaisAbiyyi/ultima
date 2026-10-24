@@ -198,7 +198,7 @@ async fn drive(
         emit(
             &app,
             session,
-            if clean {
+            if safe {
                 json!({"type":"status","state":"disconnected"})
             } else {
                 json!({"type":"status","state":"error","message":"Engine shutdown could not be confirmed; restart Ultima before reconnecting."})
