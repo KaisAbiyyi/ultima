@@ -232,23 +232,40 @@ fn malformed_and_version_drift_fail_safe_and_restart_clears_state() {
 fn nc07_exact_identity_replay_and_interrupt_deny() {
     let mut b = make_ready();
     b.ingest_line(br#"{"id":"req","method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","itemId":"item","startedAtMs":19}}"#).unwrap();
-    let Event::Approval(valid) = b.take_event().unwrap() else { panic!("expected approval") };
+    let Event::Approval(valid) = b.take_event().unwrap() else {
+        panic!("expected approval")
+    };
     let mut stale = valid.clone();
     stale.started_at_ms = 20;
-    assert_eq!(b.decide_exact_approval(&stale, ApprovalDecision::Accept, true), Err(BridgeError::UnknownApproval));
-    assert_eq!(b.decide_exact_approval(&valid, ApprovalDecision::Accept, false), Err(BridgeError::ExplicitApprovalRequired));
+    assert_eq!(
+        b.decide_exact_approval(&stale, ApprovalDecision::Accept, true),
+        Err(BridgeError::UnknownApproval)
+    );
+    assert_eq!(
+        b.decide_exact_approval(&valid, ApprovalDecision::Accept, false),
+        Err(BridgeError::ExplicitApprovalRequired)
+    );
     assert_eq!(b.approval_count(), 1);
     assert_eq!(b.decline_approvals_for_turn("other", "turn").unwrap(), 0);
     assert_eq!(b.decline_approvals_for_turn("thread", "turn").unwrap(), 1);
     let denied: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
     assert_eq!(denied["result"]["decision"], "decline");
-    assert_eq!(b.decide_exact_approval(&valid, ApprovalDecision::Accept, true), Err(BridgeError::UnknownApproval));
+    assert_eq!(
+        b.decide_exact_approval(&valid, ApprovalDecision::Accept, true),
+        Err(BridgeError::UnknownApproval)
+    );
     assert_eq!(b.decline_approvals_for_turn("thread", "turn").unwrap(), 0);
 }
 #[test]
 fn nc07_command_output_delta_is_known_but_bounded() {
     let mut b = make_ready();
     b.ingest_line(br#"{"method":"item/commandExecution/outputDelta","params":{"threadId":"t","itemId":"item","delta":"line"}} "#.trim_ascii()).unwrap();
-    assert!(matches!(b.take_event(), Some(Event::Notification { kind: NotificationKind::CommandOutputDelta, .. })));
+    assert!(matches!(
+        b.take_event(),
+        Some(Event::Notification {
+            kind: NotificationKind::CommandOutputDelta,
+            ..
+        })
+    ));
     assert_eq!(b.event_bytes(), 0);
 }
