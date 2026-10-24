@@ -71,7 +71,19 @@ jobs:
           node scripts/nc-01-export-check.mjs generated/json generated/ts
       - name: Run non-destructive real App Server contract smoke
         shell: bash
-        run: node scripts/nc-11-compat.mjs smoke-installed "${{ matrix.version }}"
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # Node spawn("codex") cannot launch npm's codex.cmd shim without a shell.
+            # Put the verified native EXE from the official platform npm package first in PATH.
+            root="$(cygpath -u "$(npm root -g)")"
+            native="$(find "$root/@openai" -type f -name codex.exe -print -quit)"
+            if [ -z "$native" ]; then
+              echo "Official native Codex executable was not found" >&2
+              exit 1
+            fi
+            export PATH="$(dirname "$native"):$PATH"
+          fi
+          node scripts/nc-11-compat.mjs smoke-installed "${{ matrix.version }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
