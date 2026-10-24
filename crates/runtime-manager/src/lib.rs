@@ -426,3 +426,62 @@ impl Manager {
             .map_err(|_| Error::Invalid("supervisor config"))
     }
 }
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use tempfile::TempDir;
+    fn fixture() -> (TempDir, Manager, PathBuf, String) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("owned");
+        let mut manager = Manager::open(&root, vec![]).unwrap();
+        let file = tmp.path().join("untrusted-fixture.bin");
+        fs::write(&file, b"synthetic test binary").unwrap();
+        let hash = hash_file(&file).unwrap();
+        // Private test fixture: production cannot construct ApprovedArtifact
+        // except the exact reviewed upstream platform pin.
+        manager.approvals.insert("0.164.0".into(), Approval {
+            version: "0.164.0".into(),
+            release_url: format!("{UPSTREAM}0.164.0"),
+            sha256: hash.clone(),
+        });
+        (tmp, manager, file, hash)
+    }
+    #[test]
+    fn stage_is_opt_in_and_fallback_after_tamper() {
+        let (_tmp, manager, file, _hash) = fixture();
+        assert_eq!(manager.active(), Choice::System);
+        manager.stage(&file, "0.164.0").unwrap();
+        assert_eq!(manager.active(), Choice::System);
+        manager.record(Choice::Managed("0.164.0".into())).unwrap();
+        assert_eq!(manager.active(), Choice::Managed("0.164.0".into()));
+        let dest = manager.binary("0.164.0");
+        fs::remove_file(&dest).unwrap();
+        fs::write(&dest, b"tampered").unwrap();
+        assert_eq!(manager.active(), Choice::System);
+        assert_eq!(manager.rollback().unwrap(), Choice::System);
+    }
+    #[test]
+    fn explicit_rollback_returns_preceding_selection() {
+        let (_tmp, manager, file, _) = fixture();
+        manager.stage(&file, "0.164.0").unwrap();
+        manager.record(Choice::System).unwrap();
+        manager.record(Choice::Managed("0.164.0".into())).unwrap();
+        assert_eq!(manager.active(), Choice::Managed("0.164.0".into()));
+        assert_eq!(manager.rollback().unwrap(), Choice::System);
+        assert_eq!(manager.active(), Choice::System);
+    }
+    #[test]
+    fn journal_corruption_fails_closed_and_forged_folders_rejected() {
+        let (tmp, manager, _, _) = fixture();
+        manager.record(Choice::Managed("0.164.0".into())).unwrap();
+        fs::write(manager.root.join("journal/00000000000000000001.json"), b"corrupt").unwrap();
+        assert_eq!(manager.active(), Choice::System);
+        assert!(manager.activate_system().is_err());
+        let foreign = tmp.path().join("foreign");
+        fs::create_dir(&foreign).unwrap();
+        fs::write(foreign.join("keep"), b"keep").unwrap();
+        assert!(Manager::open(&foreign, vec![]).is_err());
+        assert_eq!(fs::read(foreign.join("keep")).unwrap(), b"keep");
+    }
+}
