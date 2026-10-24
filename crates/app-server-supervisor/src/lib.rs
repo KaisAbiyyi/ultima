@@ -48,10 +48,14 @@ impl fmt::Display for SupervisorError {
 }
 impl std::error::Error for SupervisorError {}
 impl From<io::Error> for SupervisorError {
-    fn from(error: io::Error) -> Self { Self::Io(error) }
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
 }
 impl From<serde_json::Error> for SupervisorError {
-    fn from(error: serde_json::Error) -> Self { Self::Json(error) }
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -82,7 +86,10 @@ impl EngineConfig {
             return Err(SupervisorError::InvalidConfig("executable"));
         }
         #[cfg(windows)]
-        if !executable.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")) {
+        if !executable
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        {
             return Err(SupervisorError::InvalidConfig("native exe"));
         }
         #[cfg(unix)]
@@ -161,13 +168,17 @@ async fn read_stdout<R: AsyncRead + Unpin>(
             Ok(n) => {
                 for byte in &chunk[..n] {
                     if *byte == b'\n' {
-                        if line.last() == Some(&b'\r') { line.pop(); }
+                        if line.last() == Some(&b'\r') {
+                            line.pop();
+                        }
                         let event = match String::from_utf8(std::mem::take(&mut line)) {
                             Ok(value) => OutputEvent::Line(value),
                             Err(_) => OutputEvent::InvalidUtf8,
                         };
                         let invalid = matches!(event, OutputEvent::InvalidUtf8);
-                        if tx.send(event).await.is_err() || invalid { return; }
+                        if tx.send(event).await.is_err() || invalid {
+                            return;
+                        }
                     } else {
                         if line.len() == max_line_bytes {
                             let _ = tx.send(OutputEvent::LineTooLong).await;
@@ -283,18 +294,30 @@ pub struct EngineSupervisor {
 }
 impl EngineSupervisor {
     pub fn new(config: EngineConfig) -> Self {
-        Self { config, session: None, generation: 0 }
+        Self {
+            config,
+            session: None,
+            generation: 0,
+        }
     }
-    pub fn generation(&self) -> u64 { self.generation }
-    pub fn session_mut(&mut self) -> Option<&mut EngineSession> { self.session.as_mut() }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn session_mut(&mut self) -> Option<&mut EngineSession> {
+        self.session.as_mut()
+    }
     pub fn start(&mut self) -> Result<(), SupervisorError> {
-        if self.session.is_some() { return Err(SupervisorError::AlreadyRunning); }
+        if self.session.is_some() {
+            return Err(SupervisorError::AlreadyRunning);
+        }
         self.session = Some(EngineSession::spawn(&self.config)?);
         self.generation += 1;
         Ok(())
     }
     pub async fn stop(&mut self) -> Result<(), SupervisorError> {
-        if let Some(mut session) = self.session.take() { session.stop().await?; }
+        if let Some(mut session) = self.session.take() {
+            session.stop().await?;
+        }
         Ok(())
     }
     pub async fn restart(&mut self) -> Result<(), SupervisorError> {
@@ -308,12 +331,24 @@ mod tests {
     #[test]
     fn rejects_invalid_limits() {
         let cfg = EngineConfig {
-            executable: PathBuf::new(), cwd: PathBuf::new(), max_line_bytes: MAX_JSONL_BYTES,
-            queue_capacity: 64, write_timeout: Duration::from_secs(5),
+            executable: PathBuf::new(),
+            cwd: PathBuf::new(),
+            max_line_bytes: MAX_JSONL_BYTES,
+            queue_capacity: 64,
+            write_timeout: Duration::from_secs(5),
         };
-        assert!(cfg.clone().with_limits(MAX_JSONL_BYTES + 1, 8, Duration::from_secs(1)).is_err());
-        assert!(cfg.clone().with_limits(128, 0, Duration::from_secs(1)).is_err());
-        assert!(cfg.clone().with_limits(128, 129, Duration::from_secs(1)).is_err());
+        assert!(cfg
+            .clone()
+            .with_limits(MAX_JSONL_BYTES + 1, 8, Duration::from_secs(1))
+            .is_err());
+        assert!(cfg
+            .clone()
+            .with_limits(128, 0, Duration::from_secs(1))
+            .is_err());
+        assert!(cfg
+            .clone()
+            .with_limits(128, 129, Duration::from_secs(1))
+            .is_err());
         assert!(cfg.with_limits(128, 8, Duration::ZERO).is_err());
     }
     #[test]

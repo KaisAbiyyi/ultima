@@ -52,7 +52,10 @@ async fn echo_one_frame_and_stop_without_real_codex() {
     let mut supervisor = EngineSupervisor::new(paths.config());
     supervisor.start().unwrap();
     assert_eq!(supervisor.generation(), 1);
-    assert!(matches!(supervisor.start(), Err(SupervisorError::AlreadyRunning)));
+    assert!(matches!(
+        supervisor.start(),
+        Err(SupervisorError::AlreadyRunning)
+    ));
     let request = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"text":"one\nline"}});
     let session = supervisor.session_mut().unwrap();
     session.send_json(&request).await.unwrap();
@@ -60,8 +63,13 @@ async fn echo_one_frame_and_stop_without_real_codex() {
         .await
         .unwrap()
         .unwrap();
-    let OutputEvent::Line(raw) = event else { panic!("expected frame") };
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&raw).unwrap(), request);
+    let OutputEvent::Line(raw) = event else {
+        panic!("expected frame")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&raw).unwrap(),
+        request
+    );
     supervisor.stop().await.unwrap();
     assert!(supervisor.session_mut().is_none());
 }
@@ -83,9 +91,14 @@ async fn restart_after_abnormal_exit_discards_old_transport() {
     supervisor.restart().await.unwrap();
     assert_eq!(supervisor.generation(), 2);
     let session = supervisor.session_mut().unwrap();
-    session.send_json(&serde_json::json!({"id":2})).await.unwrap();
+    session
+        .send_json(&serde_json::json!({"id":2}))
+        .await
+        .unwrap();
     assert!(matches!(
-        timeout(Duration::from_secs(5), session.next_event()).await.unwrap(),
+        timeout(Duration::from_secs(5), session.next_event())
+            .await
+            .unwrap(),
         Some(OutputEvent::Line(_))
     ));
     supervisor.stop().await.unwrap();
@@ -94,7 +107,10 @@ async fn restart_after_abnormal_exit_discards_old_transport() {
 #[tokio::test]
 async fn malformed_oversized_output_fails_closed() {
     let paths = TestPaths::new();
-    let config = paths.config().with_limits(128, 2, Duration::from_secs(2)).unwrap();
+    let config = paths
+        .config()
+        .with_limits(128, 2, Duration::from_secs(2))
+        .unwrap();
     let mut supervisor = EngineSupervisor::new(config);
     supervisor.start().unwrap();
     let session = supervisor.session_mut().unwrap();
@@ -103,7 +119,9 @@ async fn malformed_oversized_output_fails_closed() {
         .await
         .unwrap();
     assert_eq!(
-        timeout(Duration::from_secs(5), session.next_event()).await.unwrap(),
+        timeout(Duration::from_secs(5), session.next_event())
+            .await
+            .unwrap(),
         Some(OutputEvent::LineTooLong)
     );
     supervisor.stop().await.unwrap();
