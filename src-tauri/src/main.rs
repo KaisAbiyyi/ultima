@@ -179,17 +179,17 @@ async fn drive(
             // Confirm the new effective selection is different from the failed
             // managed version BEFORE unlocking the SessionGate.
             let recovered = runtime::rollback_after_failure(&app, failed_version).is_ok();
-        safe &= recovered;
-        emit(
-            &app,
-            session,
-            json!({
-                "type":"status",
-                "state":"error",
-                "message":if recovered { "Managed Codex failed; previous safe runtime restored. Reconnect explicitly." }
-                    else { "Managed Codex failed and rollback could not be confirmed. Reconnect blocked; restart Ultima." }
-            }),
-        );
+            safe &= recovered;
+            emit(
+                &app,
+                session,
+                json!({
+                    "type":"status",
+                    "state":"error",
+                    "message":if recovered { "Managed Codex failed; previous safe runtime restored. Reconnect explicitly." }
+                        else { "Managed Codex failed and rollback could not be confirmed. Reconnect blocked; restart Ultima." }
+                }),
+            );
         }
     }
     let _ = closed.send(Some(safe));
