@@ -50,6 +50,16 @@ impl<T: Clone> SessionGate<T> {
         Ok(runtime)
     }
 
+    /// Administrative runtime changes require an EMPTY gate. A stopping or
+    /// poisoned generation is not safe to replace, even if current() is None.
+    pub async fn require_idle(&self) -> Result<(), GateError> {
+        match &*self.slot.lock().await {
+            Slot::Empty => Ok(()),
+            Slot::Poisoned => Err(GateError::Poisoned),
+            _ => Err(GateError::Busy),
+        }
+    }
+
     pub async fn current(&self) -> Option<(u64, T)> {
         match &*self.slot.lock().await {
             Slot::Running { generation, handle } => Some((*generation, handle.clone())),
