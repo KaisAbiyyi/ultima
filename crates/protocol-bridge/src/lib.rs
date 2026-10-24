@@ -523,9 +523,9 @@ impl Broker {
                     let started = p.and_then(|v| v.get("startedAtMs")).and_then(Value::as_u64);
                     if p.and_then(|v| v.get("approvalId"))
                         .is_some_and(|v| !v.is_null() && !v.as_str().is_some_and(|s| !s.is_empty()))
-                        || field("threadId").is_none()
-                        || field("turnId").is_none()
-                        || field("itemId").is_none()
+                        || ["threadId", "turnId", "itemId"]
+                            .iter()
+                            .any(|name| field(name).is_none_or(|s| s.len() > 256))
                         || started.is_none()
                     {
                         return self.error_reply(id, -32602, "Invalid approval request");
