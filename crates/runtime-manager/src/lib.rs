@@ -1,6 +1,6 @@
 //! NC-12: opt-in, checksum-verified Codex selection and crash-safe rollback.
 //! No network/download, global PATH changes, shell, or executable overwrite.
-mod health;
+pub mod health;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
