@@ -15,6 +15,74 @@ use tokio::{
     time::timeout,
 };
 
+
+#[cfg(windows)]
+mod windows_tree {
+    use std::{io, mem, ptr};
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, HANDLE},
+        System::{
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            },
+            Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
+        },
+    };
+
+    // HANDLE is process-global, usable across threads. Owning the last handle
+    // with KILL_ON_JOB_CLOSE terminates all non-breakaway descendants.
+    pub(super) struct Job(HANDLE);
+    unsafe impl Send for Job {}
+
+    impl Job {
+        pub(super) fn attach(pid: u32) -> io::Result<Self> {
+            unsafe {
+                let handle = CreateJobObjectW(ptr::null(), ptr::null());
+                if handle.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                let job = Self(handle);
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as _,
+                    mem::size_of_val(&info) as u32,
+                ) == 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+                if process.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                let attached = AssignProcessToJobObject(job.0, process);
+                CloseHandle(process);
+                if attached == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(job)
+            }
+        }
+
+        pub(super) fn terminate(&self) -> io::Result<()> {
+            if unsafe { TerminateJobObject(self.0, 1) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+}
+
 pub const MAX_JSONL_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_QUEUE_CAPACITY: usize = 64;
 const MAX_QUEUE_CAPACITY: usize = 128;
@@ -204,6 +272,8 @@ pub struct EngineSession {
     stderr_task: JoinHandle<()>,
     max_line_bytes: usize,
     write_timeout: Duration,
+    #[cfg(windows)]
+    job: windows_tree::Job,
 }
 
 impl EngineSession {
@@ -216,6 +286,8 @@ impl EngineSession {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()?;
+        #[cfg(windows)]
+        let job = windows_tree::Job::attach(child.id().ok_or(SupervisorError::NotRunning)?)?;
         let stdin = child.stdin.take().ok_or(SupervisorError::NotRunning)?;
         let stdout = child.stdout.take().ok_or(SupervisorError::NotRunning)?;
         let mut stderr = child.stderr.take().ok_or(SupervisorError::NotRunning)?;
@@ -234,6 +306,8 @@ impl EngineSession {
             stderr_task,
             max_line_bytes,
             write_timeout: config.write_timeout,
+            #[cfg(windows)]
+            job,
         })
     }
 
@@ -273,6 +347,8 @@ impl EngineSession {
         self.stdin.take();
         self.stdout_task.abort();
         self.stderr_task.abort();
+        #[cfg(windows)]
+        self.job.terminate()?;
         let _ = self.child.start_kill();
         match timeout(STOP_TIMEOUT, self.child.wait()).await {
             Ok(Ok(_)) => Ok(()),

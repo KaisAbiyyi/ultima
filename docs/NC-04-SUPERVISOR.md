@@ -20,5 +20,7 @@ GitHub Actions Linux and hosted Windows run Rust format, Clippy and synthetic ch
 
 - Tauri integration and single instance coordination across UI windows: NC-06.
 - JSON-RPC event routing, bounded request queues and permission enforcement: NC-05.
-- Windows Job Object descendant process-tree containment is not implemented here. stop/kill_on_drop cover the direct child, not a grandchild tree; a native tree cleanup gate is REQUIRED before claiming that ability or shipping tool subprocess workloads.
+- Windows uses a Job Object with KILL_ON_JOB_CLOSE and fail-closed attachment. Hosted Windows CI tests a synthetic grandchild termination. There remains a small process-start-to-job-assignment race; race-free suspended-process creation and real tool-subprocess native workload qualification are future hardening gates.
 - Upstream binary installer management, version pinning, updates and rollback: NC-12.
+
+On Windows, job attachment failure aborts engine start rather than silently running without containment. Hosted Windows Job Object tests do not prove the native owner environment or an arbitrary upstream-created process tree. Linux currently terminates the owned direct child only; it does not promise POSIX process-group containment.
