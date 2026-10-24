@@ -231,6 +231,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_managed_recovery_poisoned_idle_before_retry() {
+        let gate = SessionGate::<usize>::default();
+        gate.poison_idle().await;
+        assert_eq!(gate.require_idle().await, Err(GateError::Poisoned));
+        assert_eq!(
+            gate.start(99, || -> Result<(usize, ()), ()> { panic!("must not spawn after failed rollback") }).await,
+            Err(StartError::Gate(GateError::Poisoned))
+        );
+    }
+
+    #[tokio::test]
     async fn spontaneous_failed_teardown_stays_poisoned() {
         let gate = SessionGate::<usize>::default();
         gate.start(1, || Ok::<_, ()>((1, ()))).await.unwrap();
