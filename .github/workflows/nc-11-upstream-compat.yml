@@ -93,7 +93,6 @@ jobs:
           retention-days: 14
   stable-release-watch:
     name: Check latest verified official stable release
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
