@@ -1,0 +1,6 @@
+# Local NC-02 build outputs and machine-specific benchmark measurements.
+tools/nc02/target/
+artifacts/nc02/
+benchmarks/results/
+benchmarks/private/
+node_modules/
