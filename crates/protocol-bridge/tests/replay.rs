@@ -269,3 +269,26 @@ fn nc07_command_output_delta_is_known_but_bounded() {
     ));
     assert_eq!(b.event_bytes(), 0);
 }
+
+#[test]
+fn nc07_one_time_explicit_accept_never_replays() {
+    let mut b = make_ready();
+    b.ingest_line(br#"{"id":"accept1","method":"item/fileChange/requestApproval","params":{"threadId":"t","turnId":"z","itemId":"f","startedAtMs":4}}"#).unwrap();
+    let Event::Approval(req) = b.take_event().unwrap() else {
+        panic!("expected approval")
+    };
+    b.decide_exact_approval(&req, ApprovalDecision::Accept, true).unwrap();
+    let accepted: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
+    assert_eq!(accepted["id"], "accept1");
+    assert_eq!(accepted["result"]["decision"], "accept");
+    assert_eq!(b.approval_count(), 0);
+    assert_eq!(
+        b.decide_exact_approval(&req, ApprovalDecision::Accept, true),
+        Err(BridgeError::UnknownApproval)
+    );
+    b.reset_for_new_process();
+    assert_eq!(
+        b.decide_exact_approval(&req, ApprovalDecision::Accept, true),
+        Err(BridgeError::UnknownApproval)
+    );
+}
