@@ -1,0 +1,54 @@
+name: NC-03 Svelte UI prototype
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'tsconfig.json'
+      - 'vite.config.ts'
+      - 'playwright.config.ts'
+      - 'index.html'
+      - '.github/workflows/nc-03-ui.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'tsconfig.json'
+      - 'vite.config.ts'
+      - 'playwright.config.ts'
+      - 'index.html'
+      - '.github/workflows/nc-03-ui.yml'
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Static and type validation
+        run: npm run check
+      - name: Unit tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: End-to-end interaction and screenshot smoke
+        run: npm run test:e2e
+      - name: Upload visual and trace evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nc-03-screenshots-and-traces
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 14

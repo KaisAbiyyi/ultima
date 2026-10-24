@@ -4,3 +4,10 @@ artifacts/nc02/
 benchmarks/results/
 benchmarks/private/
 node_modules/
+dist/
+.svelte-kit/
+coverage/
+playwright-report/
+test-results/
+.DS_Store
+*.log
