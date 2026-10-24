@@ -1,0 +1,13 @@
+{
+  "name": "ultima-codex-foundation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test:protocol": "node --test tests/nc-01-contract.test.mjs",
+    "smoke:protocol": "node scripts/nc-01-smoke.mjs"
+  }
+}
