@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
 use tauri::{Emitter, State};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
-use ultima_app_server_supervisor::{EngineConfig, EngineSupervisor, OutputEvent};
+use ultima_app_server_supervisor::{EngineSupervisor, OutputEvent};
 use ultima_protocol_bridge::{Broker, ClientMethod, Event, Limits, NotificationKind, Phase};
 use serde_json::{json, Value};
 use lifecycle::{SessionGate, GateError, StartError};
@@ -143,11 +143,11 @@ async fn drive(
         Ok(())
     }.await;
 
+    let failed = result.is_err();
     if let Err(reason) = result {
         emit(&app, session, json!({"type":"status","state":"error","message":reason}));
     }
     // The stop signal is NOT completion. Notify observers only after supervisor.stop().
-    let failed = result.is_err();
     let clean = supervisor.stop().await.is_ok();
     // Reserve the update mutex through rollback + gate completion so a new
     // connect cannot race a failed managed session and inherit its selection.
