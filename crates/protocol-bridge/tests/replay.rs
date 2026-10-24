@@ -137,11 +137,13 @@ fn unknown_notifications_do_not_accumulate_and_known_events_replay() {
 }
 #[test]
 fn bounded_events_pending_approvals_and_outgoing_are_enforced() {
-    let mut limits = Limits::default();
-    limits.events = 1;
-    limits.pending = 1;
-    limits.approvals = 1;
-    limits.outbound = 1;
+    let limits = Limits {
+        events: 1,
+        pending: 1,
+        approvals: 1,
+        outbound: 1,
+        ..Limits::default()
+    };
     let mut b = Broker::new(limits).unwrap();
     b.begin_initialize().unwrap();
     assert_eq!(b.begin_initialize(), Err(BridgeError::InvalidState));
@@ -188,7 +190,7 @@ fn framing_splits_crlf_rejects_oversize_utf8_and_truncated_tail() {
     assert_eq!(lines, [br#"{"id":0,"#.to_vec(), br#"{"id":1}"#.to_vec()]);
     assert!(decoder.finish().is_ok());
     assert_eq!(
-        decoder.feed(&vec![b'x'; 31], |_| Ok(())),
+        decoder.feed(&[b'x'; 31], |_| Ok(())),
         Err(BridgeError::LineTooLarge)
     );
     let mut dangling = LineDecoder::new(30).unwrap();
