@@ -530,6 +530,89 @@ mod policy_tests {
         assert_eq!(manager.rollback().unwrap(), Choice::System);
         assert_eq!(manager.active(), Choice::System);
     }
+    // These private synthetic approvals exercise multi-version selection logic
+    // without weakening the single, officially pinned production release.
+    fn add_test_runtime(manager: &mut Manager, root: &Path, version: &str) -> PathBuf {
+        let source = root.join(format!("fixture-{version}.bin"));
+        fs::write(&source, format!("synthetic-runtime-{version}")).unwrap();
+        let digest = hash_file(&source).unwrap();
+        manager.approvals.insert(
+            version.to_owned(),
+            Approval {
+                version: version.to_owned(),
+                release_url: format!("{UPSTREAM}{version}"),
+                sha256: digest,
+            },
+        );
+        manager.stage(&source, version).unwrap();
+        source
+    }
+
+    #[test]
+    fn rollback_skips_duplicate_records_for_the_same_runtime() {
+        let (_tmp, manager, file, _) = fixture();
+        manager.stage(&file, "0.164.0").unwrap();
+        for _ in 0..3 {
+            manager.record(Choice::Managed("0.164.0".into())).unwrap();
+        }
+        assert_eq!(manager.rollback().unwrap(), Choice::System);
+        assert_eq!(manager.active(), Choice::System);
+        let history_len = manager.history().unwrap().len();
+        // A second rollback from System cannot resurrect the failed runtime.
+        assert_eq!(manager.rollback().unwrap(), Choice::System);
+        assert_eq!(manager.history().unwrap().len(), history_len);
+    }
+
+    #[test]
+    fn rollback_prefers_newest_distinct_verified_managed_runtime() {
+        let (tmp, mut manager, file, _) = fixture();
+        manager.stage(&file, "0.164.0").unwrap();
+        add_test_runtime(&mut manager, tmp.path(), "0.163.0");
+        manager.record(Choice::Managed("0.163.0".into())).unwrap();
+        manager.record(Choice::Managed("0.164.0".into())).unwrap();
+        manager.record(Choice::Managed("0.164.0".into())).unwrap();
+        assert_eq!(
+            manager.rollback().unwrap(),
+            Choice::Managed("0.163.0".into())
+        );
+        assert_eq!(manager.active(), Choice::Managed("0.163.0".into()));
+    }
+
+    #[test]
+    fn rollback_skips_tampered_and_unapproved_candidates() {
+        let (tmp, mut manager, file, _) = fixture();
+        manager.stage(&file, "0.164.0").unwrap();
+        add_test_runtime(&mut manager, tmp.path(), "0.163.0");
+        add_test_runtime(&mut manager, tmp.path(), "0.162.0");
+        manager.record(Choice::Managed("0.162.0".into())).unwrap();
+        manager.record(Choice::Managed("0.163.0".into())).unwrap();
+        manager.record(Choice::Managed("0.999.0".into())).unwrap();
+        manager.record(Choice::Managed("0.164.0".into())).unwrap();
+        manager.record(Choice::Managed("0.164.0".into())).unwrap();
+        let bad = manager.binary("0.163.0");
+        fs::remove_file(&bad).unwrap();
+        fs::write(&bad, b"tampered").unwrap();
+        // Scan past both an unapproved entry and an integrity failure.
+        assert_eq!(
+            manager.rollback().unwrap(),
+            Choice::Managed("0.162.0".into())
+        );
+    }
+
+    #[test]
+    fn rollback_respects_prior_system_selection_and_is_idempotent() {
+        let (tmp, mut manager, file, _) = fixture();
+        manager.stage(&file, "0.164.0").unwrap();
+        add_test_runtime(&mut manager, tmp.path(), "0.163.0");
+        manager.record(Choice::Managed("0.163.0".into())).unwrap();
+        manager.record(Choice::System).unwrap();
+        manager.record(Choice::Managed("0.164.0".into())).unwrap();
+        assert_eq!(manager.rollback().unwrap(), Choice::System);
+        let count = manager.history().unwrap().len();
+        assert_eq!(manager.rollback().unwrap(), Choice::System);
+        assert_eq!(manager.history().unwrap().len(), count);
+    }
+
     #[test]
     fn journal_corruption_fails_closed_and_forged_folders_rejected() {
         let (tmp, manager, _, _) = fixture();
