@@ -1,6 +1,6 @@
 # Necessary Codex — Performance-First Roadmap v0.1
 
-**Updated:** 2026-10-24 (Asia/Jakarta) · **Product:** independent, lean desktop frontend for official OpenAI Codex App Server · **License decision:** Apache-2.0 (add LICENSE before shipping).
+**Updated:** 2026-10-24 (Asia/Jakarta) · **Product:** independent, lean desktop frontend for official OpenAI Codex App Server · **License:** Apache-2.0 (see [LICENSE](../LICENSE)).
 
 ## North star
 
