@@ -150,7 +150,7 @@ h1 { font: 800 clamp(29px,3.3vw,42px)/1.25 'Manrope', sans-serif; letter-spacing
   .shell { min-height: 400px; }
   .sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: min(290px,85vw); z-index: 30; transform: translateX(-100%); transition: transform .16s ease-out; }
   .sidebar.open { transform: translateX(0); }
-  .mobile-scrim { display: block; position: fixed; inset: 0; z-index: 20; border: none; background: rgba(0,0,0,.55); }
+  .mobile-scrim { display: block; position: fixed; inset: 0 0 0 min(290px,85vw); z-index: 20; border: none; background: rgba(0,0,0,.55); }
   .menu-toggle { display: grid; }
   .topbar { padding: 0 17px; height: 59px; }
   .preview-label, .breadcrumb, .slash { display: none; }
