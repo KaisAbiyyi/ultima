@@ -67,6 +67,10 @@ Internal browser, custom agent logic, telemetry-by-default, broad plugins/galler
 - [OpenAI Codex source](https://github.com/openai/codex)
 - [Execution board](EXECUTION-BOARD.md) · [Performance contract](PERFORMANCE-CONTRACT.md) · [Architecture](ARCHITECTURE.md)
 
+## Product distribution rule (Codex release first)
+
+**Ultima's default desktop experience is Codex**. No other agent, API connector or local model is required to download and use the first product. Future blocks are user-selected downloads and must remain dormant unless activated. All-installed/idle overhead and multi-block-active latency/memory will be mandatory qualification gates when the module system ships. **These commitments do not add tasks or dependencies to the current NC-01–NC-13 scope.** See [Downloadable Block Architecture](MODULE-SYSTEM.md).
+
 ## Ultima beyond the Codex milestone (NOT active scope)
 
 The app's long-term product name is **Ultima**, not Necessary Codex. Existing NC-01–NC-13 task IDs remain stable for the Codex Foundation. Future CoSoS and Mind Place integrations are optional independent adapters with their own acceptance gates **only after those projects stabilize**; Claude Code and Google Antigravity are feasibility/legal research only. This roadmap does not add active integration tasks or require any other project for the Codex release. See [Product Vision](PRODUCT-VISION.md) and [Licensing and Provider Policy](LICENSING-AND-PROVIDERS.md).
