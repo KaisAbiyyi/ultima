@@ -46,6 +46,7 @@ The JSON plan fields are:
 | `duration_ms` | Measured duration, 200 ms through 60 min; S0 requires 60 s. |
 | `sample_interval_ms` | Period 100–5000 ms; minimum two samples. |
 | `repetitions` | 3–20 repetitions; each variant tested sequentially. |
+| Total sample limit | Up to 240,000 samples across all variants and repetitions; adjust interval or repetitions for long S4 runs. |
 | `variants[].id` | Unique CLI/client label. |
 | `variants[].argv` | Command as argument array, launched without a shell. `<SELF>` runs an internal synthetic fixture only. |
 | `variants[].cwd` | Working directory, resolved from plan file directory. |
