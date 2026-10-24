@@ -13,13 +13,26 @@ async function note(value) {
 async function getOfficialReleases() {
   const headers = { Accept: "application/vnd.github+json", "User-Agent": "ultima-nc11-compat" };
   if (process.env.GITHUB_TOKEN) headers.Authorization = "Bearer " + process.env.GITHUB_TOKEN;
-  const response = await fetch("https://api.github.com/repos/openai/codex/releases?per_page=100", {
-    headers, redirect: "error", signal: AbortSignal.timeout(15000)
-  });
-  if (!response.ok) throw new Error("UPSTREAM_FETCH_HTTP_" + response.status);
-  const releases = await response.json();
-  if (!Array.isArray(releases) || releases.length < 1 || releases.length > 100) throw new Error("INVALID_RELEASE_RESPONSE");
-  return releases;
+  // The official /latest endpoint excludes prereleases and avoids the enormous asset
+  // list returned by /releases?per_page=100 (which can cause GitHub HTTP 504).
+  // Still verify the signed-off GitHub URL/tag/flags in latestStableRelease.
+  const url = "https://api.github.com/repos/openai/codex/releases/latest";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers, redirect: "error", signal: AbortSignal.timeout(15000)
+      });
+      if (!response.ok) throw new Error("UPSTREAM_FETCH_HTTP_" + response.status);
+      const release = await response.json();
+      if (!release || typeof release !== "object" || Array.isArray(release))
+        throw new Error("INVALID_RELEASE_RESPONSE");
+      return [release];
+    } catch (error) {
+      if (attempt === 3) throw error;
+      // Bounded retry for transient GitHub/network errors; never report a stale PASS.
+      await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+    }
+  }
 }
 try {
   if (command === "matrix") {
