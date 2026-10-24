@@ -426,7 +426,11 @@ impl Manager {
         let choice = Choice::Managed(version.to_owned());
         // A re-check of the same approved version is a journal no-op.
         // Historic duplicate entries still remain safe for rollback().
-        if self.history()?.last().is_some_and(|entry| entry.choice == choice) {
+        if self
+            .history()?
+            .last()
+            .is_some_and(|entry| entry.choice == choice)
+        {
             return Ok(());
         }
         self.record(choice)
