@@ -17,12 +17,13 @@ fn main() {
         let Ok(input) = input else { break };
         eprintln!("FAKE_TEST_SECRET=never-print-in-app-log");
         if input.contains("fixture/spawnChild") {
-            let child = process::Command::new(std::env::current_exe().unwrap())
+            let mut child = process::Command::new(std::env::current_exe().unwrap())
                 .arg("fixture/child")
                 .spawn()
                 .unwrap();
             println!("{{\"childPid\":{}}}", child.id());
             let _ = io::stdout().flush();
+            std::thread::spawn(move || { let _ = child.wait(); });
             continue;
         }
         if input.contains("fixture/crash") {
