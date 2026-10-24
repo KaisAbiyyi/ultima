@@ -66,6 +66,7 @@ async fn drive(
     mut supervisor: EngineSupervisor,
     mut broker: Broker,
     mut inbox: mpsc::Receiver<Action>,
+    owned_sender: mpsc::Sender<Action>,
 ) {
     let result: Result<(), String> = async {
         broker.begin_initialize().map_err(|_| safe_error("Handshake initialization failed"))?;
@@ -131,10 +132,14 @@ async fn drive(
     // Cleared by the actor only after it exits; never erase a newer session.
     let actor = app.state::<Shared>().actor.clone();
     let mut guard = actor.lock().await;
-    if guard.as_ref().is_some_and(|sender| sender.is_closed()) {
+    let was_current = guard.as_ref().is_some_and(|sender| sender.same_channel(&owned_sender));
+    if was_current {
         *guard = None;
     }
-    emit(&app, json!({"type":"status","state":"disconnected"}));
+    drop(guard);
+    if was_current {
+        emit(&app, json!({"type":"status","state":"disconnected"}));
+    }
 }
 #[tauri::command]
 async fn ultima_connect(
@@ -161,9 +166,9 @@ async fn ultima_connect(
     let broker = Broker::new(Limits::default())
         .map_err(|_| safe_error("Bridge initialization failed"))?;
     let (sender, receiver) = mpsc::channel(16);
-    *guard = Some(sender);
+    *guard = Some(sender.clone());
     drop(guard);
-    tauri::async_runtime::spawn(drive(app, supervisor, broker, receiver));
+    tauri::async_runtime::spawn(drive(app, supervisor, broker, receiver, sender));
     Ok(())
 }
 #[tauri::command]
