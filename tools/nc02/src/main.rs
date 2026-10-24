@@ -14,6 +14,7 @@ use sysinfo::{Pid, ProcessesToUpdate, Signal, System};
 
 const MAX_EVENTS: usize = 10_000;
 const MAX_LINE_BYTES: usize = 1024 * 1024;
+const MAX_TOTAL_SAMPLES: u64 = 240_000;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -199,6 +200,15 @@ fn validate(plan: &Plan) -> Result<(), String> {
     }
     if plan.variants.is_empty() || plan.variants.len() > 8 {
         return Err("variants must be 1..=8".into());
+    }
+    // Worst-case report size is determined before launching any command.
+    // A 60-minute endurance test is still allowed at a suitable sample rate.
+    let samples_per_run = plan.duration_ms.div_ceil(plan.sample_interval_ms);
+    let total_samples = samples_per_run * u64::from(plan.repetitions) * plan.variants.len() as u64;
+    if total_samples > MAX_TOTAL_SAMPLES {
+        return Err(format!(
+            "plan may collect {total_samples} samples; maximum is {MAX_TOTAL_SAMPLES}. Increase sample_interval_ms or reduce repetitions/variants"
+        ));
     }
     let mut ids = HashSet::new();
     for variant in &plan.variants {
@@ -581,5 +591,24 @@ mod tests {
             allow_early_exit: false,
         });
         assert!(validate(&plan).is_err());
+    }
+    #[test]
+    fn bounds_total_telemetry_samples_before_launch() {
+        let mut plan = Plan {
+            schema_version: 1,
+            scenario: "S4".into(),
+            duration_ms: 3_600_000,
+            sample_interval_ms: 100,
+            repetitions: 20,
+            variants: vec![Variant {
+                id: "cli".into(),
+                argv: vec!["codex".into()],
+                cwd: ".".into(),
+                allow_early_exit: false,
+            }],
+        };
+        assert!(validate(&plan).unwrap_err().contains("maximum is"));
+        plan.sample_interval_ms = 500;
+        assert!(validate(&plan).is_ok());
     }
 }
