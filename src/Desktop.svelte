@@ -34,6 +34,8 @@
   let unlisten: (() => void) | null = null;
   let counter = 0;
   const pending = new Map<number, 'models' | 'create' | 'resume' | 'turn' | 'interrupt'>();
+  // IPC notifications can arrive before invoke() resolves; replay only bounded replies.
+  const earlyReplies = new Map<number, Extract<EngineEvent, { type: 'reply' }>>();
   $: shownProjects = projects.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
   $: shownThreads = threads.filter(t => t.project === activeProject && t.title.toLowerCase().includes(search.toLowerCase()));
   $: range = visibleRange(messages.length, scrollTop, viewportHeight, ROW_HEIGHT);
@@ -77,6 +79,7 @@
   async function disconnect() {
     try { await bridge?.disconnect(); } catch { /* disconnected is already safe */ }
     pending.clear();
+    earlyReplies.clear();
     activeTurn = '';
     busy = false;
     status = 'disconnected';
@@ -110,6 +113,8 @@
     try {
       const id = await bridge.call(method, params);
       pending.set(id, kind);
+      const early = earlyReplies.get(id);
+      if (early) { earlyReplies.delete(id); onEngine(early); }
     } catch {
       busy = false;
       pendingPrompt = '';
@@ -151,7 +156,10 @@
     if (event.type === 'reply') {
       const kind = pending.get(event.id);
       pending.delete(event.id);
-      if (!kind) return;
+      if (!kind) {
+        if (event.id > 0 && earlyReplies.size < 16) earlyReplies.set(event.id, event);
+        return;
+      }
       if (!event.ok) {
         errorMessage = 'Codex rejected the ' + kind + ' operation.';
         if (kind === 'turn' || kind === 'create') { busy = false; pendingPrompt = ''; }
