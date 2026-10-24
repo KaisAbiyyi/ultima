@@ -554,6 +554,14 @@ impl Broker {
                     .get("params")
                     .filter(|v| v.is_object())
                     .ok_or(BridgeError::InvalidEnvelope)?;
+                if kind == NotificationKind::ServerRequestResolved {
+                    let id = ["requestId", "serverRequestId", "id"]
+                        .iter()
+                        .find_map(|key| params.get(key).and_then(RpcId::parse));
+                    if let Some(id) = id {
+                        self.approvals.remove(&id);
+                    }
+                }
                 self.push_event(
                     Event::Notification {
                         kind,
