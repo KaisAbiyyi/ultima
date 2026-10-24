@@ -1,5 +1,6 @@
 //! NC-12: opt-in, checksum-verified Codex selection and crash-safe rollback.
 //! No network/download, global PATH changes, shell, or executable overwrite.
+mod health;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -39,9 +40,9 @@ impl From<io::Error> for Error {
 }
 #[derive(Clone, Debug)]
 pub struct Approval {
-    pub version: String,
-    pub release_url: String,
-    pub sha256: String,
+    version: String,
+    release_url: String,
+    sha256: String,
 }
 fn qualified(version: &str) -> bool {
     let Ok(matrix): Result<serde_json::Value, _> =
@@ -62,25 +63,56 @@ fn qualified(version: &str) -> bool {
         })
 }
 impl Approval {
-    /// The SHA-256 must come from an independently verified official release,
-    /// NOT merely a checksum supplied beside an untrusted download.
-    pub fn new(version: &str, url: &str, hash: &str) -> Result<Self, Error> {
-        if !qualified(version)
-            || url != format!("{UPSTREAM}{version}")
-            || hash.len() != 64
-            || !hash
-                .bytes()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-        {
-            return Err(Error::Invalid("approval"));
+    /// Production trust source: a reviewed, immutable official RELEASE ASSET
+    /// with an exact digest, size, download URL, OS and architecture.
+    /// No caller-supplied matching digest can become its own trust anchor.
+    pub fn official() -> Result<Self, Error> {
+        let pins: serde_json::Value = serde_json::from_str(include_str!("../../../protocol/managed-assets.json"))
+            .map_err(|_| Error::Invalid("assets manifest"))?;
+        let target = if cfg!(all(target_os="windows", target_arch="x86_64")) {
+            "x86_64-pc-windows-msvc"
+        } else {
+            return Err(Error::Invalid("unsupported platform"));
+        };
+        if pins["schemaVersion"] != 1 || pins["version"] != "0.164.0" ||
+            pins["source"] != "https://api.github.com/repos/openai/codex/releases/tags/rust-v0.164.0" ||
+            pins["release"] != "https://github.com/openai/codex/releases/tag/rust-v0.164.0" {
+            return Err(Error::Invalid("untrusted manifest"));
         }
-        Ok(Self {
-            version: version.into(),
-            release_url: url.into(),
-            sha256: hash.into(),
-        })
+        let assets = pins["assets"].as_array().ok_or(Error::Invalid("assets"))?;
+        if assets.len()!=1 { return Err(Error::Invalid("asset count")); }
+        let item = assets.iter().find(|i| i["target"]==target).ok_or(Error::Invalid("architecture"))?;
+        let version = pins["version"].as_str().ok_or(Error::Invalid("version"))?;
+        let name = format!("codex-{target}.exe");
+        let url = format!("https://github.com/openai/codex/releases/download/rust-v{version}/{name}");
+        let hash = item["sha256"].as_str().ok_or(Error::Invalid("digest"))?;
+        if !qualified(version) || item["name"]!=name || item["url"]!=url ||
+            item["size"]!=354558768u64 || hash.len()!=64 ||
+            !hash.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+            return Err(Error::Invalid("official asset"));
+        }
+        Self::new(version, pins["release"].as_str().ok_or(Error::Invalid("release"))?, hash)
+    }
+
+    /// Retained API shape but now only accepts the exact official, pinned
+    /// digest for the OS/architecture; arbitrary hash + tag cannot qualify.
+    pub fn new(version: &str, url: &str, hash: &str) -> Result<Self, Error> {
+        let supported_target = cfg!(all(target_os="windows", target_arch="x86_64"));
+        let official_hash = "6f267830b029ee25d9339864aa867cd45de9f8fd4c5ea007d2e63c13a0c66d36";
+        if !supported_target || !qualified(version) || version != "0.164.0" ||
+            url != format!("{UPSTREAM}{version}") || hash != official_hash {
+            return Err(Error::Invalid("trusted official release digest"));
+        }
+        Ok(Self { version: version.into(), release_url: url.into(), sha256: hash.into() })
+    }
+
+    pub fn version(&self) -> &str { &self.version }
+    pub fn digest(&self) -> &str { &self.sha256 }
+    pub fn asset_url(&self) -> &'static str {
+        "https://github.com/openai/codex/releases/download/rust-v0.164.0/codex-x86_64-pc-windows-msvc.exe"
     }
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(
     tag = "kind",
@@ -164,8 +196,8 @@ impl Manager {
         }
         let mut allowed = BTreeMap::new();
         for a in approvals {
-            let a = Approval::new(&a.version, &a.release_url, &a.sha256)?;
-            if allowed.insert(a.version.clone(), a).is_some() {
+            let verified = Approval::new(&a.version, &a.release_url, &a.sha256)?;
+            if allowed.insert(verified.version.clone(), verified).is_some() {
                 return Err(Error::Invalid("dup"));
             }
         }
@@ -341,9 +373,20 @@ impl Manager {
         }
         result
     }
-    /// Affects only next launch; caller must stop old EngineSupervisor first.
-    pub fn activate_managed(&self, version: &str) -> Result<(), Error> {
+    /// The ONLY production managed activation path: read-only bounded live
+    /// initialize/initialized/model-list smoke and confirmed process teardown
+    /// BEFORE journaling the new selection.
+    pub async fn activate_checked(
+        &self, version: &str, project: &Path, project_root: &Path,
+    ) -> Result<(), Error> {
         let _guard = self.lock()?;
+        let path = self.verified(version)?;
+        let trusted = self.root.join("versions").join(version);
+        let config = ultima_app_server_supervisor::EngineConfig::new(
+            &path, &trusted, project, project_root,
+        ).map_err(|_| Error::Invalid("preflight config"))?;
+        health::probe(config).await?;
+        // Detect any concurrent post-smoke binary change.
         self.verified(version)?;
         self.record(Choice::Managed(version.to_owned()))
     }
@@ -366,6 +409,8 @@ impl Manager {
         self.record(choice.clone())?;
         Ok(choice)
     }
+    pub fn selected(&self) -> Choice { self.active() }
+
     pub fn engine_config(
         &self,
         system_exe: &Path,
