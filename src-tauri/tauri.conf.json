@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Ultima",
+  "version": "0.1.0",
+  "identifier": "com.kaisabiyyi.ultima",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "title": "Ultima", "width": 1200, "height": 820, "minWidth": 760, "minHeight": 530, "url": "/?desktop=1" }],
+    "security": { "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost" }
+  },
+  "bundle": { "active": false, "icon": [] }
+}
