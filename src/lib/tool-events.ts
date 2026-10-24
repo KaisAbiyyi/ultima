@@ -76,7 +76,9 @@ function filePreview(raw: unknown, snapshot: Record<string, unknown>): FilePrevi
     const path = entry?.path;
     const diff = entry?.diff;
     if (typeof path !== 'string' || !path.trim() || path.length > MAX_PATH_CHARS ||
-        seen.has(path) || typeof diff !== 'string' || !diff.trim()) return invalid(full, paths);
+        seen.has(path) || typeof diff !== 'string' || !diff.trim() ||
+        entry?.truncated === true || entry?.isTruncated === true ||
+        entry?.partial === true || entry?.hasMore === true) return invalid(full, paths);
     paths.push(path);
     seen.add(path);
     const segment = (full ? '\n\n' : '') + path + '\n' + diff;
