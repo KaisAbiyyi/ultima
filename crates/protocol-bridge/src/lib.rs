@@ -333,10 +333,15 @@ impl Broker {
     }
     /// Interrupting a turn must decline all still-pending requests, never replay them.
     pub fn decline_approvals_for_turn(&mut self, thread_id: &str, turn_id: &str) -> Result<usize> {
-        let ids: Vec<_> = self.approvals.values()
+        let ids: Vec<_> = self
+            .approvals
+            .values()
             .filter(|a| a.thread_id == thread_id && a.turn_id == turn_id)
-            .map(|a| a.id.clone()).collect();
-        for id in &ids { self.decline_approval(id)?; }
+            .map(|a| a.id.clone())
+            .collect();
+        for id in &ids {
+            self.decline_approval(id)?;
+        }
         Ok(ids.len())
     }
 
@@ -471,7 +476,10 @@ impl Broker {
     /// Never auto-accept a tool request. The host should decline on rejection or
     /// terminate this session if its outbound queue cannot accept the decline.
     pub fn decide_exact_approval(
-        &mut self, expected: &Approval, decision: ApprovalDecision, explicit_user_approval: bool,
+        &mut self,
+        expected: &Approval,
+        decision: ApprovalDecision,
+        explicit_user_approval: bool,
     ) -> Result<()> {
         if self.approvals.get(&expected.id) != Some(expected) {
             return Err(BridgeError::UnknownApproval);
