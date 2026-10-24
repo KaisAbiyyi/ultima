@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "scenario": "S0_NATIVE_WINDOWS_IDLE_60S",
+  "duration_ms": 60000,
+  "sample_interval_ms": 500,
+  "repetitions": 3,
+  "variants": [
+    { "id": "codex-cli", "argv": ["codex", "app-server"], "cwd": "../.." },
+    { "id": "ultima-client", "argv": ["PATH_TO_ULTIMA_EXE"], "cwd": "../.." }
+  ]
+}

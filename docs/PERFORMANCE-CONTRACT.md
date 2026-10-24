@@ -24,6 +24,11 @@ These figures are *targets*, not verified facts or promises. If native feasibili
 
 ## Bench scenarios
 
+The [NC-02 process-tree harness](../tools/nc02/README.md) produces repeated CLI/client
+RSS, CPU and stdout timing observations, with a synthetic cross-platform CI smoke.
+Stdout timing is a transport proxy; native UI first-paint, input and event-to-paint
+gates remain independently NOT_RUN until the actual desktop can be instrumented.
+
 1. **S0:** clean process; cold start, login resolved; idle 60 s; measure RAM/CPU/start time.
 2. **S1:** small repository; one streamed question and model answer; event latency and input latency.
 3. **S2:** 100+ tool events, approvals, cancellation, errors and retries; correctness and backpressure.

@@ -1,0 +1,48 @@
+name: NC-02 benchmark harness
+
+on:
+  push:
+    paths:
+      - "tools/nc02/**"
+      - ".github/workflows/nc02-baseline.yml"
+  pull_request:
+    paths:
+      - "tools/nc02/**"
+      - ".github/workflows/nc02-baseline.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-harness:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: tools/nc02
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check Rust formatting
+        run: cargo fmt --check
+      - name: Test parsing, bounds and metric calculations
+        run: cargo test --locked
+      - name: Synthetic process-tree smoke (not native product acceptance)
+        run: cargo run --locked --release -- --plan synthetic-smoke.json --out ../../artifacts/nc02/synthetic-report.json
+      - name: Verify report schema and claims
+        shell: pwsh
+        run: |
+          $r = Get-Content ../../artifacts/nc02/synthetic-report.json -Raw | ConvertFrom-Json
+          if ($r.status -ne 'MEASURED' -or $r.native_windows_gate -ne 'NOT_RUN') { throw 'Invalid report status' }
+          if ($r.runs.Count -ne 6 -or ($r.runs | Where-Object { -not $_.valid }).Count -ne 0) { throw 'Invalid repetition count' }
+          if (($r.runs | Where-Object { $_.samples.Count -lt 2 }).Count -gt 0) { throw 'Insufficient process samples' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nc02-synthetic-${{ matrix.os }}
+          path: artifacts/nc02/synthetic-report.json
+          if-no-files-found: ignore

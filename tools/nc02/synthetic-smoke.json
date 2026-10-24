@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "scenario": "SYNTHETIC_CI_ONLY",
+  "duration_ms": 1200,
+  "sample_interval_ms": 200,
+  "repetitions": 3,
+  "variants": [
+    { "id": "synthetic-cli", "argv": ["<SELF>", "fixture", "idle"], "cwd": "." },
+    { "id": "synthetic-client", "argv": ["<SELF>", "fixture", "stream"], "cwd": "." }
+  ]
+}
