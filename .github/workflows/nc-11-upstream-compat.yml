@@ -82,6 +82,8 @@ jobs:
               exit 1
             fi
             export PATH="$(dirname "$native"):$PATH"
+            # Independently verify the native binary selected for the smoke.
+            node scripts/nc-11-compat.mjs verify-version "${{ matrix.version }}" "$(codex --version)"
           fi
           node scripts/nc-11-compat.mjs smoke-installed "${{ matrix.version }}"
       - uses: actions/upload-artifact@v4
