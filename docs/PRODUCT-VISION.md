@@ -6,6 +6,16 @@
 
 **Ultima** is the product/desktop shell and orchestration surface. **Codex** is its *first* agent integration, not its permanent identity. The original Necessary Codex work is now **Ultima: Codex Foundation**. Existing `NC-01` to `NC-13` task IDs, claims, dependencies and acceptance remain unchanged; avoid churn and false completion. Version 0.x must still deliver a strong standalone Codex client.
 
+## Codex-default distribution and separately released downloadable blocks (owner decision)
+
+Users download **Ultima with Codex as the default selected agent**. Every other block is an explicitly optional download: Gemini/Antigravity, future CoSoS, future Mind Place, **Custom API Agent (BYOK)**, and **Local Agent** for user-managed inference such as Ollama/LM Studio. A model endpoint does not itself provide a coding-agent loop; agent tools and approvals need an explicit, separately permissioned runtime. Claude is exploratory through legal documented interfaces, not a required open-source component.
+
+**CoSoS and Mind Place stay standalone products forever.** Their own repositories, release tags, asset checksums, changelogs, licenses, schemas and update cadences are the source of truth. Ultima allows users to select and pin a **specific verified upstream GitHub Release** or connect to an already-running standalone version, rather than embedding their source or updating them implicitly. CoSoS and Mind Place are both HOLD until they independently ship compatible qualified service/adapter artifacts. **Mind Place archive data is never silently migrated or downgraded** merely because a user changes the client/adapter version.
+
+**Performance with ALL blocks installed is a shipping gate.** Installed does not mean loaded or running. Idle blocks must not boot engines, preload models, spawn sidecars or poll servers. Only requested blocks activate; measure CPU/GPU/RAM/latency for multiple active blocks honestly. The existing NC-01–NC-13 Codex roadmap is unchanged, and none of these future integrations is now claimable.
+
+See [Downloadable Module System](MODULE-SYSTEM.md).
+
 ## Integration ladder — deliberately not scheduled as current tasks
 
 1. **Now — Codex Foundation:** Deliver current 4-phase, 13-unit plan: official `codex app-server`, Tauri/Svelte/Rust, low RAM/CPU/startup/streaming latency, native Windows tests, upstream version compatibility. This is the sole active implementation scope.
