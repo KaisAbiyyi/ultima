@@ -1,15 +1,28 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod lifecycle;
+
 use std::path::Path;
-use std::sync::Arc;
-use tauri::{Emitter, Manager, State};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
+use tauri::{Emitter, State};
+use tokio::sync::{mpsc, oneshot, watch};
 use ultima_app_server_supervisor::{EngineConfig, EngineSupervisor, OutputEvent};
 use ultima_protocol_bridge::{Broker, ClientMethod, Event, Limits, NotificationKind, Phase};
 use serde_json::{json, Value};
+use lifecycle::{SessionGate, GateError, StartError};
 
-#[derive(Default)]
+#[derive(Clone)]
+struct EngineHandle {
+    tx: mpsc::Sender<Action>,
+    closed: watch::Receiver<Option<bool>>,
+}
 struct Shared {
-    actor: Arc<Mutex<Option<mpsc::Sender<Action>>>>,
+    gate: Arc<SessionGate<EngineHandle>>,
+    next_session: AtomicU64,
+}
+impl Default for Shared {
+    fn default() -> Self {
+        Self { gate: Arc::new(SessionGate::default()), next_session: AtomicU64::new(0) }
+    }
 }
 enum Action {
     Call(ClientMethod, Value, oneshot::Sender<Result<u64, String>>),
@@ -19,13 +32,13 @@ fn safe_error(reason: &str) -> String {
     // Never forward arbitrary child stderr or protocol messages containing credentials.
     reason.to_owned()
 }
-fn emit(app: &tauri::AppHandle, value: Value) {
+fn emit(app: &tauri::AppHandle, session: u64, mut value: Value) {
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("session".to_owned(), json!(session));
+    }
     let _ = app.emit("ultima:engine", value);
 }
-async fn flush(
-    broker: &mut Broker,
-    supervisor: &mut EngineSupervisor,
-) -> Result<(), String> {
+async fn flush(broker: &mut Broker, supervisor: &mut EngineSupervisor) -> Result<(), String> {
     while let Some(line) = broker.take_outbound() {
         let value: Value = serde_json::from_slice(&line)
             .map_err(|_| safe_error("Invalid outbound frame"))?;
@@ -34,12 +47,12 @@ async fn flush(
     }
     Ok(())
 }
-fn emit_broker_event(app: &tauri::AppHandle, event: Event) -> Option<Value> {
+fn broker_event(event: Event) -> Option<Value> {
     match event {
         Event::Reply { id, method, outcome } => {
             let (ok, result) = match outcome {
                 Ok(value) => (true, value),
-                Err(_) => (false, Value::Null), // Do not leak upstream error message.
+                Err(_) => (false, Value::Null),
             };
             Some(json!({"type":"reply", "id":id, "method":format!("{method:?}"), "ok":ok, "result":result}))
         }
@@ -55,25 +68,25 @@ fn emit_broker_event(app: &tauri::AppHandle, event: Event) -> Option<Value> {
             };
             Some(json!({"type":name,"params":params}))
         }
-        Event::Approval(approval) => {
-            emit(app, json!({"type":"approvalBlocked","kind":format!("{:?}",approval.kind)}));
-            None // The caller MUST explicitly decline below; NC-07 provides real approvals.
-        }
+        Event::Approval(_) => None, // Caller always explicitly declines before forwarding.
     }
 }
 async fn drive(
     app: tauri::AppHandle,
+    gate: Arc<SessionGate<EngineHandle>>,
+    session: u64,
     mut supervisor: EngineSupervisor,
     mut broker: Broker,
     mut inbox: mpsc::Receiver<Action>,
-    owned_sender: mpsc::Sender<Action>,
+    closed: watch::Sender<Option<bool>>,
 ) {
     let result: Result<(), String> = async {
         broker.begin_initialize().map_err(|_| safe_error("Handshake initialization failed"))?;
         flush(&mut broker, &mut supervisor).await?;
-        emit(&app, json!({"type":"status","state":"connecting"}));
+        emit(&app, session, json!({"type":"status","state":"connecting"}));
         loop {
             tokio::select! {
+                biased;
                 action = inbox.recv() => {
                     match action {
                         Some(Action::Call(method, params, reply)) => {
@@ -101,17 +114,17 @@ async fn drive(
                                 broker.acknowledge_initialized()
                                     .map_err(|_| safe_error("Handshake failed"))?;
                                 flush(&mut broker, &mut supervisor).await?;
-                                emit(&app, json!({"type":"status","state":"ready"}));
+                                emit(&app, session, json!({"type":"status","state":"ready"}));
                             }
                             while let Some(event) = broker.take_event() {
                                 match event {
                                     Event::Approval(ref approval) => {
                                         broker.decline_approval(&approval.id)
                                             .map_err(|_| safe_error("Permission denial failed"))?;
-                                        emit(&app, json!({"type":"approvalBlocked","kind":format!("{:?}",approval.kind)}));
+                                        emit(&app, session, json!({"type":"approvalBlocked","kind":format!("{:?}",approval.kind)}));
                                     }
                                     other => {
-                                        if let Some(value) = emit_broker_event(&app, other) { emit(&app, value); }
+                                        if let Some(value) = broker_event(other) { emit(&app, session, value); }
                                     }
                                 }
                             }
@@ -125,29 +138,27 @@ async fn drive(
         }
         Ok(())
     }.await;
+
     if let Err(reason) = result {
-        emit(&app, json!({"type":"status","state":"error","message":reason}));
+        emit(&app, session, json!({"type":"status","state":"error","message":reason}));
     }
-    let _ = supervisor.stop().await;
-    // Cleared by the actor only after it exits; never erase a newer session.
-    let actor = app.state::<Shared>().actor.clone();
-    let mut guard = actor.lock().await;
-    let was_current = guard.as_ref().is_some_and(|sender| sender.same_channel(&owned_sender));
-    if was_current {
-        *guard = None;
-    }
-    drop(guard);
-    if was_current {
-        emit(&app, json!({"type":"status","state":"disconnected"}));
+    // The stop signal is NOT completion. Notify observers only after supervisor.stop().
+    let clean = supervisor.stop().await.is_ok();
+    let _ = closed.send(Some(clean));
+    // A disconnect owns the Stopping sentinel; spontaneous EOF owns Running.
+    if gate.finish_unexpected(session, clean).await {
+        emit(&app, session, if clean {
+            json!({"type":"status","state":"disconnected"})
+        } else {
+            json!({"type":"status","state":"error","message":"Engine shutdown could not be confirmed; restart Ultima before reconnecting."})
+        });
     }
 }
 #[tauri::command]
 async fn ultima_connect(
     app: tauri::AppHandle, state: State<'_, Shared>,
     executable: String, project: String,
-) -> Result<(), String> {
-    // User must explicitly select each executable and project directory; no PATH search,
-    // shell invocation, credential harvesting, or ambient directory traversal.
+) -> Result<u64, String> {
     if executable.len() > 4096 || project.len() > 4096 {
         return Err(safe_error("Path too long"));
     }
@@ -159,17 +170,23 @@ async fn ultima_connect(
     let exe_parent = exe.parent().ok_or("Missing executable parent")?;
     let config = EngineConfig::new(exe, exe_parent, cwd, cwd)
         .map_err(|_| safe_error("Executable or project not accessible"))?;
-    let mut guard = state.actor.lock().await;
-    if guard.is_some() { return Err(safe_error("Disconnect current engine first")); }
-    let mut supervisor = EngineSupervisor::new(config);
-    supervisor.start().map_err(|_| safe_error("Failed to launch trusted Codex"))?;
     let broker = Broker::new(Limits::default())
         .map_err(|_| safe_error("Bridge initialization failed"))?;
-    let (sender, receiver) = mpsc::channel(16);
-    *guard = Some(sender.clone());
-    drop(guard);
-    tauri::async_runtime::spawn(drive(app, supervisor, broker, receiver, sender));
-    Ok(())
+    let session = state.next_session.fetch_add(1, Ordering::Relaxed)
+        .checked_add(1).ok_or("Session identifiers exhausted")?;
+    let (supervisor, receiver, shutdown_tx) = state.gate.start(session, || {
+        let mut supervisor = EngineSupervisor::new(config);
+        supervisor.start().map_err(|_| safe_error("Failed to launch trusted Codex"))?;
+        let (tx, rx) = mpsc::channel(16);
+        let (shutdown_tx, shutdown_rx) = watch::channel(None);
+        Ok::<_, String>((EngineHandle { tx, closed: shutdown_rx }, (supervisor, rx, shutdown_tx)))
+    }).await.map_err(|error| match error {
+        StartError::Gate(GateError::Busy) => safe_error("Engine is still running or shutting down"),
+        StartError::Gate(GateError::Poisoned) => safe_error("Previous engine shutdown unconfirmed; restart Ultima"),
+        StartError::Start(reason) => reason,
+    })?;
+    tauri::async_runtime::spawn(drive(app, state.gate.clone(), session, supervisor, broker, receiver, shutdown_tx));
+    Ok(session)
 }
 #[tauri::command]
 async fn ultima_call(
@@ -183,19 +200,44 @@ async fn ultima_call(
         "turn/interrupt" => ClientMethod::TurnInterrupt,
         _ => return Err(safe_error("Unsupported method")),
     };
-    let sender = state.actor.lock().await.clone().ok_or("Not connected")?;
+    let (_, handle) = state.gate.current().await.ok_or("Engine is not ready")?;
     let (tx, rx) = oneshot::channel();
-    sender.send(Action::Call(allowed, params, tx)).await
+    handle.tx.send(Action::Call(allowed, params, tx)).await
         .map_err(|_| safe_error("Engine closed"))?;
     rx.await.map_err(|_| safe_error("Engine command unavailable"))?
 }
 #[tauri::command]
-async fn ultima_disconnect(state: State<'_, Shared>) -> Result<(), String> {
-    let sender = state.actor.lock().await.take();
-    if let Some(sender) = sender {
-        sender.send(Action::Stop).await.map_err(|_| safe_error("Engine closed"))?;
+async fn ultima_disconnect(app: tauri::AppHandle, state: State<'_, Shared>) -> Result<(), String> {
+    let (session, handle) = match state.gate.begin_stop().await {
+        Ok(Some(v)) => v,
+        Ok(None) => return Ok(()),
+        Err(GateError::Busy) => return Err(safe_error("Engine shutdown already in progress")),
+        Err(GateError::Poisoned) => return Err(safe_error("Previous shutdown unconfirmed; restart Ultima")),
+    };
+    // Detached teardown guarantees the gate is eventually updated even if IPC caller cancels.
+    let gate = state.gate.clone();
+    let (reply, completion) = oneshot::channel();
+    tauri::async_runtime::spawn(async move {
+        let _ = handle.tx.send(Action::Stop).await;
+        let mut monitor = handle.closed;
+        let clean = loop {
+            let observed = { *monitor.borrow_and_update() };
+            if let Some(ok) = observed { break ok; }
+            if monitor.changed().await.is_err() { break false; }
+        };
+        if gate.finish_stop(session, clean).await {
+            emit(&app, session, if clean {
+                json!({"type":"status","state":"disconnected"})
+            } else {
+                json!({"type":"status","state":"error","message":"Engine shutdown could not be confirmed; restart Ultima before reconnecting."})
+            });
+        }
+        let _ = reply.send(clean);
+    });
+    match completion.await {
+        Ok(true) => Ok(()),
+        _ => Err(safe_error("Engine shutdown unconfirmed; reconnect blocked")),
     }
-    Ok(())
 }
 fn main() {
     tauri::Builder::default()
