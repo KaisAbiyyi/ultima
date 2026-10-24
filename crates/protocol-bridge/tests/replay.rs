@@ -277,7 +277,8 @@ fn nc07_one_time_explicit_accept_never_replays() {
     let Event::Approval(req) = b.take_event().unwrap() else {
         panic!("expected approval")
     };
-    b.decide_exact_approval(&req, ApprovalDecision::Accept, true).unwrap();
+    b.decide_exact_approval(&req, ApprovalDecision::Accept, true)
+        .unwrap();
     let accepted: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
     assert_eq!(accepted["id"], "accept1");
     assert_eq!(accepted["result"]["decision"], "accept");
