@@ -1,0 +1,29 @@
+name: NC-05 one-time cloud rustfmt
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/protocol-bridge/**"
+      - ".github/workflows/nc-05-cloud-format.yml"
+permissions:
+  contents: write
+jobs:
+  rustfmt-owned-branch:
+    if: github.event.pull_request.head.repo.full_name == 'KaisAbiyyi/ultima' && github.event.pull_request.head.ref == 'feat/nc-05-typed-jsonl-bridge'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/nc-05-typed-jsonl-bridge
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --manifest-path crates/protocol-bridge/Cargo.toml
+      - name: Commit only rustfmt changes
+        shell: bash
+        run: |
+          git add crates/protocol-bridge/src/lib.rs crates/protocol-bridge/tests/replay.rs
+          if ! git diff --cached --quiet; then
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'style(nc-05): apply rustfmt in GitHub cloud'
+            git push origin HEAD:refs/heads/feat/nc-05-typed-jsonl-bridge
+          fi
