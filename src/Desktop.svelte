@@ -5,7 +5,7 @@
   import { resolveShortcut } from './lib/shortcuts';
   import { nativeBridge, desktopAvailable, type EngineBridge, type EngineEvent } from './lib/desktop-bridge';
   import { EngineSessionFence } from './lib/engine-session-fence';
-  import { canApprove, parseApproval, sameApproval, trackTool, type ApprovalRequest, type ToolItem } from './lib/tool-events';
+  import { approvalToolIdentity, canApprove, matchesApprovalEvidence, parseApproval, sameApproval, toolIdentity, trackTool, type ApprovalRequest, type ToolItem } from './lib/tool-events';
   import { addThread, appendDelta, appendProject, cappedMessages, restoreProjects, restoreThreads, restoreThreadMessages, saveMetadata, type Project, type Thread } from './lib/desktop-state';
 
   const ROW_HEIGHT = 88;
@@ -52,9 +52,11 @@
   $: shownMessages = messages.slice(range.start, range.end);
   $: selectedProject = projects.find(p => p.path === activeProject);
   $: currentApproval = approvals[0] ?? null;
-  $: currentTool = currentApproval ? toolItems.find(t => t.id === currentApproval.itemId) : undefined;
+  $: currentTool = currentApproval ? toolItems.find(t => matchesApprovalEvidence(currentApproval, t)) : undefined;
+  $: currentApprovalKey = currentApproval ? approvalToolIdentity(currentApproval) : '';
   $: canAccept = !!currentApproval && canApprove(currentApproval, toolItems) &&
-    (currentApproval.kind !== 'fileChange' || expandedDiffId === currentApproval.itemId) &&
+    currentApproval.threadId === activeThread && currentApproval.turnId === activeTurn &&
+    (currentApproval.kind !== 'fileChange' || expandedDiffId === currentApprovalKey) &&
     reviewedApproval && !approvalBusy && status === 'ready';
 
   function persist() {
@@ -250,7 +252,8 @@
         void disconnect();
         return;
       }
-      if (status !== 'ready' || request.threadId !== activeThread || approvals.length >= 16) {
+      if (status !== 'ready' || request.threadId !== activeThread || request.turnId !== activeTurn ||
+          approvals.length >= 16) {
         denyWithoutPrompt(request, event.session);
         return;
       }
@@ -270,10 +273,15 @@
       return;
     }
     if (event.type === 'itemStarted' || event.type === 'itemCompleted' || event.type === 'commandOutput') {
-      if (event.params.threadId && event.params.threadId !== activeThread) return;
+      // Missing provenance is NOT proof. Never combine same itemId from another turn.
+      if (event.params.threadId !== activeThread || event.params.turnId !== activeTurn) return;
       const item = event.params.item;
       const itemId = typeof item === 'object' && item && 'id' in item ? item.id : event.params.itemId;
-      if (currentApproval && itemId === currentApproval.itemId) reviewedApproval = false;
+      if (currentApproval && event.params.threadId === currentApproval.threadId &&
+          event.params.turnId === currentApproval.turnId && itemId === currentApproval.itemId) {
+        reviewedApproval = false;
+        expandedDiffId = '';
+      }
       toolItems = trackTool(toolItems, event.type, event.params);
       return;
     }
@@ -488,13 +496,13 @@
             <pre class="nc07-evidence">{currentTool.command}</pre>
           {:else if currentTool && currentApproval.kind === 'fileChange' && currentTool.kind === 'fileChange'}
             <p>{currentTool.paths.join(', ') || 'Paths not available'}</p>
-            <button class="secondary-action" onclick={() => expandedDiffId = expandedDiffId === currentApproval?.itemId ? '' : currentApproval?.itemId ?? ''}>Review file diff</button>
-            {#if expandedDiffId === currentApproval.itemId}<pre class="nc07-evidence">{currentTool.diff || 'No diff provided by server.'}</pre>{/if}
+            <button class="secondary-action" onclick={() => expandedDiffId = expandedDiffId === currentApprovalKey ? '' : currentApprovalKey}>Review file diff</button>
+            {#if expandedDiffId === currentApprovalKey}<pre class="nc07-evidence">{currentTool.diff || 'No diff provided by server.'}</pre>{/if}
           {:else}
             <p class="nc07-warning">The App Server has not provided a verifiable command or diff preview. Accept is unavailable.</p>
           {/if}
           {#if currentTool?.truncated}<p class="nc07-warning">Preview was truncated. Decline this request unless the full action can be reviewed.</p>{/if}
-          <label class="nc07-review"><input type="checkbox" bind:checked={reviewedApproval} disabled={!canApprove(currentApproval, toolItems) || (currentApproval.kind === 'fileChange' && expandedDiffId !== currentApproval.itemId)} /> I reviewed this specific action</label>
+          <label class="nc07-review"><input type="checkbox" bind:checked={reviewedApproval} disabled={!canApprove(currentApproval, toolItems) || (currentApproval.kind === 'fileChange' && expandedDiffId !== currentApprovalKey)} /> I reviewed this specific action</label>
           <div class="nc07-actions">
             <button class="secondary-action" disabled={approvalBusy} onclick={() => void decideApproval('decline')}>Decline</button>
             <button class="secondary-action" disabled={!canAccept} onclick={() => void decideApproval('accept')}>Allow once</button>
@@ -505,14 +513,14 @@
       {#if toolItems.length}
         <section class="nc07-tools" aria-label="Recent tool activity" data-testid="nc07-tools">
           <h2>Recent tools <span>{toolItems.length} / 16</span></h2>
-          {#each [...toolItems].reverse() as item (item.id)}
+          {#each [...toolItems].reverse() as item (toolIdentity(item))}
             <div class="nc07-tool-row"><span>{item.kind === 'command' ? 'Command' : item.kind === 'fileChange' ? 'File changes' : 'Tool'} · {item.state}</span>
               <span>{item.kind === 'command' ? item.command.slice(0, 100) : item.paths.join(', ').slice(0, 100)}</span>
-              {#if item.output}<button class="secondary-action" onclick={() => expandedOutputId = expandedOutputId === item.id ? '' : item.id}>{expandedOutputId === item.id ? 'Hide output' : 'Show output'}</button>{/if}
-              {#if item.diff}<button class="secondary-action" onclick={() => expandedDiffId = expandedDiffId === item.id ? '' : item.id}>{expandedDiffId === item.id ? 'Hide diff' : 'Show diff'}</button>{/if}
+              {#if item.output}<button class="secondary-action" onclick={() => expandedOutputId = expandedOutputId === toolIdentity(item) ? '' : toolIdentity(item)}>{expandedOutputId === toolIdentity(item) ? 'Hide output' : 'Show output'}</button>{/if}
+              {#if item.diff}<button class="secondary-action" onclick={() => expandedDiffId = expandedDiffId === toolIdentity(item) ? '' : toolIdentity(item)}>{expandedDiffId === toolIdentity(item) ? 'Hide diff' : 'Show diff'}</button>{/if}
               {#if item.truncated}<small>Truncated</small>{/if}
-              {#if expandedOutputId === item.id}<pre class="nc07-evidence">{item.output}</pre>{/if}
-              {#if expandedDiffId === item.id}<pre class="nc07-evidence">{item.diff}</pre>{/if}
+              {#if expandedOutputId === toolIdentity(item)}<pre class="nc07-evidence">{item.output}</pre>{/if}
+              {#if expandedDiffId === toolIdentity(item)}<pre class="nc07-evidence">{item.diff}</pre>{/if}
             </div>
           {/each}
         </section>
