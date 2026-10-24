@@ -21,7 +21,6 @@
   let composerEl: HTMLTextAreaElement;
   let searchEl: HTMLInputElement;
   let streamTimer: number | undefined;
-  let measureObserver: ResizeObserver | undefined;
 
   $: range = visibleRange(messages.length, scrollTop, viewportHeight, ROW_HEIGHT);
   $: visibleMessages = messages.slice(range.start, range.end);
@@ -48,6 +47,16 @@
     if (streamTimer !== undefined) window.clearInterval(streamTimer);
     streamTimer = undefined;
     streaming = false;
+  }
+
+  // The feed is destroyed for an empty thread and created again on restore.
+  // An element action reconnects measurements to each new feed instance.
+  function observeFeed(node: HTMLDivElement) {
+    const updateHeight = () => { viewportHeight = node.clientHeight; };
+    updateHeight();
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateHeight) : undefined;
+    observer?.observe(node);
+    return { destroy: () => observer?.disconnect() };
   }
 
   async function sendMessage() {
@@ -110,13 +119,8 @@
     let saved: string | null = null;
     try { saved = localStorage.getItem('ultima-prototype-theme'); } catch { /* continue with default */ }
     applyTheme(saved === 'light' ? 'light' : 'dark');
-    if (typeof ResizeObserver !== 'undefined') {
-      measureObserver = new ResizeObserver(() => { viewportHeight = listEl?.clientHeight ?? 600; });
-      measureObserver.observe(listEl);
-    }
-    viewportHeight = listEl?.clientHeight ?? 600;
     void tick().then(scrollToLatest);
-    return () => { stopStream(); measureObserver?.disconnect(); };
+    return () => { stopStream(); };
   });
 </script>
 
@@ -213,7 +217,9 @@
             <button class="secondary-action" onclick={() => void restoreFixture()}>Load 10k message fixture</button>
           </div>
         {:else}
-          <div class="feed" bind:this={listEl} onscroll={(event) => (scrollTop = event.currentTarget.scrollTop)} role="feed" aria-label="Synthetic conversation history" aria-busy={streaming} tabindex="0" data-testid="message-feed">
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+          <!-- The virtualized feed must be keyboard-focusable for native arrow/PageUp/PageDown scrolling. -->
+          <div class="feed" bind:this={listEl} use:observeFeed onscroll={(event) => (scrollTop = event.currentTarget.scrollTop)} role="feed" aria-label="Synthetic conversation history" aria-busy={streaming} tabindex="0" data-testid="message-feed">
             <div class="virtual-canvas" style:height={messages.length * ROW_HEIGHT + 'px'}>
               {#each visibleMessages as message, offset (message.id)}
                 <article class:user-message={message.role === 'user'} class="message-row" style:top={(range.start + offset) * ROW_HEIGHT + 'px'} aria-posinset={range.start + offset + 1} aria-setsize={messages.length} data-testid="message-row">
