@@ -156,7 +156,7 @@ fn canonical_paths_enforce_both_trusted_roots() {
 async fn windows_job_contains_and_kills_grandchild() {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, WAIT_OBJECT_0},
-        System::Threading::{OpenProcess, WaitForSingleObject, SYNCHRONIZE},
+        System::Threading::{OpenProcess, WaitForSingleObject},
     };
     let paths = TestPaths::new();
     let mut supervisor = EngineSupervisor::new(paths.config());
@@ -176,7 +176,7 @@ async fn windows_job_contains_and_kills_grandchild() {
     let pid = serde_json::from_str::<serde_json::Value>(&line).unwrap()["childPid"]
         .as_u64()
         .unwrap() as u32;
-    let child = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+    let child = unsafe { OpenProcess(0x0010_0000, 0, pid) };
     assert!(!child.is_null(), "child process must exist before teardown");
     supervisor.stop().await.unwrap();
     let status = unsafe { WaitForSingleObject(child, 5000) };
