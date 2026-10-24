@@ -60,3 +60,53 @@ pub fn restore_system(app: &AppHandle) -> Result<(), String> {
 pub fn rollback(app: &AppHandle) -> Result<(), String> {
     manager(app)?.rollback().map(|_| ()).map_err(sanitize)
 }
+
+/// A failed managed launch is recovered only when the manager really moved
+/// away from the failed version and its persisted effective selection agrees.
+pub(crate) fn is_safe_recovery(
+    failed_version: &str,
+    recovered: &Choice,
+    effective: &Choice,
+) -> bool {
+    recovered == effective
+        && match recovered {
+            Choice::System => true,
+            Choice::Managed(version) => version != failed_version,
+        }
+}
+
+pub fn rollback_after_failure(app: &AppHandle, failed_version: &str) -> Result<(), String> {
+    let manager = manager(app)?;
+    let recovered = manager.rollback().map_err(sanitize)?;
+    if !is_safe_recovery(failed_version, &recovered, &manager.selected()) {
+        return Err(sanitize("same or unverified selection"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_safe_recovery;
+    use ultima_runtime_manager::Choice;
+
+    #[test]
+    fn failure_recovery_requires_distinct_and_verified_effective_choice() {
+        let failed = "0.164.0";
+        assert!(!is_safe_recovery(
+            failed,
+            &Choice::Managed(failed.into()),
+            &Choice::Managed(failed.into()),
+        ));
+        assert!(!is_safe_recovery(
+            failed,
+            &Choice::Managed("0.163.0".into()),
+            &Choice::System,
+        ));
+        assert!(is_safe_recovery(failed, &Choice::System, &Choice::System));
+        assert!(is_safe_recovery(
+            failed,
+            &Choice::Managed("0.163.0".into()),
+            &Choice::Managed("0.163.0".into()),
+        ));
+    }
+}
