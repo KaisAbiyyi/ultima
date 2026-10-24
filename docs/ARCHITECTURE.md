@@ -19,6 +19,16 @@ OpenAI Codex Core
 - **UI:** Svelte/Tauri rather than rebuilding Codex core. WebView2 can still cost RAM: measure full process tree, use laziness/virtualization.
 - **Managed engine (optional in Phase 04):** independent version channel with official release verification, pinned known-good version, staged promote after contract+native smoke, rollback. Engine and app versions are separate; never assume newer upstream can be adopted safely or all new UI features appear automatically.
 
+## Downloadable modules — explicit product contract (not implemented)
+
+Ultima should ship with **Codex preselected as the default agent integration**. The user alone decides whether to **download and activate** Gemini/Antigravity, CoSoS, Mind Place, BYOK Custom API Agent, Local Agent or future authorized providers. A preselected Codex experience does not authorize silently bundling provider binaries or extracting existing app credentials.
+
+**Installed ≠ Loaded ≠ Running.** Only validate small module manifest metadata at startup; do not import provider UI, spawn subprocesses, allocate model runtime, start network polling or initialize background services for inactive blocks. Activate on user demand. Destroy owned process trees, streams and cache buffers at session end (never terminate user-owned local inference servers). Verify update provenance, per-module compatibility and permissions, with rollback. The same release must pass native performance qualification **with all optional blocks installed but idle**, plus multiple-active-block tests.
+
+Distinguish **agent adapter** (preexisting agent loop), **model connector** (BYOK/local inference endpoint), and **context/memory connector** (Mind Place). A model endpoint/API key does not supply autonomous coding features; those need an explicit tool/approval/sandbox layer with observable agent capabilities.
+
+See [Downloadable Block Architecture](MODULE-SYSTEM.md) and [Product Vision](PRODUCT-VISION.md).
+
 ## Future provider boundary (NOT implemented)
 
 Ultima's eventual host can expose capability-negotiated, lazily activated provider adapters: Codex (first), possible CoSoS (once stable), possible Mind Place read-only-by-default continuity (once stable), and legally authorized third-party agent SDKs. Keep configuration and credentials isolated; never proxy approvals or bypass auth. No cross-provider process starts on idle. See [staged Product Vision](PRODUCT-VISION.md).
