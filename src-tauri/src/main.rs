@@ -302,3 +302,23 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("Ultima desktop could not start");
 }
+
+#[cfg(test)]
+mod nc07_approval_tests {
+    use super::*;
+    #[test]
+    fn only_full_approval_identity_is_accepted() {
+        let approved = json!({"id":"a","kind":"command","threadId":"t","turnId":"z","itemId":"i","startedAtMs":15});
+        let parsed = parse_approval(&approved).unwrap();
+        assert_eq!(parsed.id, RpcId::String("a".to_string()));
+        assert_eq!(parsed.kind, ApprovalKind::Command);
+        for invalid in [
+            json!({"id":"a","kind":"unknown","threadId":"t","turnId":"z","itemId":"i","startedAtMs":15}),
+            json!({"id":"a","kind":"command","threadId":"t","turnId":"z","itemId":"","startedAtMs":15}),
+            json!({"id":"a","kind":"command","threadId":"t","turnId":"z","itemId":"i"}),
+            json!({"id":-1,"kind":"command","threadId":"t","turnId":"z","itemId":"i","startedAtMs":15}),
+         ].iter() {
+            assert!(parse_approval(invalid).is_err());
+        }
+    }
+}
