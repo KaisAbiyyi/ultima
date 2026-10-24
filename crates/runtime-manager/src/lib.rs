@@ -429,20 +429,39 @@ impl Manager {
         let _guard = self.lock()?;
         self.record(Choice::System)
     }
+    /// Roll back to the newest DISTINCT, currently verified previous runtime,
+    /// or System. Repeated journal entries for the failing version must never
+    /// select that same version again. A System selection is a safe terminal
+    /// fallback: repeated rollback is idempotent, not a managed reactivation.
     pub fn rollback(&self) -> Result<Choice, Error> {
         let _guard = self.lock()?;
         let entries = self.history()?;
-        let previous = if entries.len() < 2 {
-            Choice::System
-        } else {
-            entries[entries.len() - 2].choice.clone()
+        let current = entries.last().map(|entry| &entry.choice);
+        let fallback = match current {
+            Some(Choice::Managed(failing)) => entries
+                .iter()
+                .rev()
+                .skip(1)
+                .find_map(|entry| match &entry.choice {
+                    Choice::System => Some(Choice::System),
+                    Choice::Managed(version)
+                        if version != failing && self.verified(version).is_ok() =>
+                    {
+                        Some(Choice::Managed(version.clone()))
+                    }
+                    // Never restore the same version, an unapproved binary,
+                    // or a candidate whose digest/integrity no longer verifies.
+                    _ => None,
+                })
+                .unwrap_or(Choice::System),
+            _ => Choice::System,
         };
-        let choice = match previous {
-            Choice::Managed(ref v) if self.verified(v).is_err() => Choice::System,
-            _ => previous,
-        };
-        self.record(choice.clone())?;
-        Ok(choice)
+        // Avoid writing redundant System records (including an empty journal).
+        // This also prevents a second rollback from re-enabling a failed build.
+        if current != Some(&fallback) {
+            self.record(fallback.clone())?;
+        }
+        Ok(fallback)
     }
     pub fn selected(&self) -> Choice {
         self.active()
