@@ -14,6 +14,7 @@
 - [Canonical dependency and parallel execution board](docs/EXECUTION-BOARD.md)
 - [Performance + UX qualification budgets](docs/PERFORMANCE-CONTRACT.md)
 - [NC-02 reproducible CPU/RAM/latency benchmark harness](tools/nc02/README.md)
+- [NC-10 local Windows qualification and evidence boundaries](docs/NC-10-NATIVE-QUALIFICATION.md)
 - [Architecture and upstream update policy](docs/ARCHITECTURE.md)
 - [Licensing / provider integration review](docs/LICENSING-AND-PROVIDERS.md)
 - [Notion Project Hub](https://app.notion.com/p/403c4a6aaf738104addaf3358440d7aa)

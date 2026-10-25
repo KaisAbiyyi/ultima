@@ -6,6 +6,7 @@
   import { nativeBridge, desktopAvailable, type EngineBridge, type EngineEvent, type ManagedRuntimeStatus } from './lib/desktop-bridge';
   import { EngineSessionFence } from './lib/engine-session-fence';
   import { FrameDeltas } from './lib/frame-deltas';
+  import { NativePerformance } from './lib/native-performance';
   import { readerPage, rowPreview, ROW_PREVIEW_CHARS } from './lib/message-paging';
   import { approvalToolIdentity, canApprove, canApproveInActiveTurn, matchesApprovalEvidence, parseApproval, sameApproval, toolIdentity, trackTool, type ApprovalRequest, type ToolItem } from './lib/tool-events';
   import { addThread, appendDelta, appendProject, cappedMessages, restoreProjects, restoreThreads, restoreThreadMessages, saveMetadata, type Project, type Thread } from './lib/desktop-state';
@@ -55,6 +56,9 @@
   let runtimeSource = '';
   let runtimeBusy = false;
   let counter = 0;
+  const performanceProbe = new NativePerformance(() => performance.now(), callback => {
+    void tick().then(() => requestAnimationFrame(() => requestAnimationFrame(callback)));
+  });
   const pending = new Map<number, 'models' | 'create' | 'resume' | 'turn' | 'interrupt'>();
   // IPC notifications can arrive before invoke() resolves; replay only bounded replies.
   const earlyReplies = new Map<number, Extract<EngineEvent, { type: 'reply' }>>();
@@ -459,6 +463,7 @@
       if (typeof delta !== 'string') return;
       const last = messages[messages.length - 1];
       if (!last || last.role !== 'assistant') return;
+      performanceProbe.observe('stream');
       if (streamTargetId && streamTargetId !== last.id) frames.clear();
       streamTargetId = last.id;
       if (!frames.push(delta)) {
@@ -531,6 +536,17 @@
     if (action === 'new-thread') void newThread();
   }
   onMount(() => {
+    // Numeric-only, inactive API for an explicitly attached local qualification
+    // debugger. It cannot invoke engine actions or inspect conversation text.
+    const probeWindow = window as Window & { __ultimaPerformance?: {
+      start: () => void; stop: () => void; snapshot: () => ReturnType<NativePerformance['snapshot']>
+    } };
+    const probeApi = { start: () => performanceProbe.start(), stop: () => performanceProbe.stop(),
+      snapshot: () => performanceProbe.snapshot() };
+    probeWindow.__ultimaPerformance = probeApi;
+    void tick().then(() => requestAnimationFrame(() => requestAnimationFrame(() => {
+      performance.mark('ultima:shell-ready');
+    })));
     projects = restoreProjects(k => localStorage.getItem(k));
     threads = restoreThreads(k => localStorage.getItem(k));
     activeProject = projects[0]?.path ?? '';
@@ -553,6 +569,8 @@
       }).catch(() => { errorMessage = 'Desktop IPC is unavailable.'; });
     }
     return () => {
+      performanceProbe.stop();
+      if (probeWindow.__ultimaPerformance === probeApi) delete probeWindow.__ultimaPerformance;
       disposed = true;
       navMedia.removeEventListener('change', updateNavMedia);
       connectionEpoch++
@@ -695,7 +713,7 @@
         </section>
       {/if}
     </section>
-    <div class="composer-area"><div class="composer-shell" class:busy><label for="composer" class="sr-only">Message to Codex</label><textarea id="composer" bind:this={composerEl} bind:value={draft} onkeydown={keydown} oncompositionstart={() => composing = true} oncompositionend={compositionEnd} aria-keyshortcuts="Control+L Meta+L" maxlength="8000" rows="2" placeholder="Ask Codex to build something…" disabled={busy || status !== 'ready'}></textarea><div class="composer-bottom"><span class="composer-mode">◇ Codex <span class="mode-separator"></span>{model || 'Default model'}</span>
+    <div class="composer-area"><div class="composer-shell" class:busy><label for="composer" class="sr-only">Message to Codex</label><textarea id="composer" bind:this={composerEl} bind:value={draft} oninput={() => performanceProbe.observe('input')} onkeydown={keydown} oncompositionstart={() => composing = true} oncompositionend={compositionEnd} aria-keyshortcuts="Control+L Meta+L" maxlength="8000" rows="2" placeholder="Ask Codex to build something…" disabled={busy || status !== 'ready'}></textarea><div class="composer-bottom"><span class="composer-mode">◇ Codex <span class="mode-separator"></span>{model || 'Default model'}</span>
       {#if busy}<button class="send-button stop-button" aria-label="Interrupt Codex turn" onclick={() => void stop()}><span class="stop-icon"></span></button>{:else}<button class="send-button" aria-label="Send message to Codex" disabled={status !== 'ready' || !draft.trim()} onclick={() => void send()}>↑</button>{/if}
     </div></div><div class="under-composer"><p>Enter to send · Shift+Enter newline · Ctrl/⌘+K search · Ctrl/⌘+L composer</p><span>LOCAL STDIO · NO BUILT-IN BROWSER</span></div></div>
   </main>
