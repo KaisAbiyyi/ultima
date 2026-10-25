@@ -180,3 +180,47 @@ Ultima Rust parent contributes approximately 26 MiB, subject to CDP and
 shared-page counting limitations. The original 150 MiB budget is unchanged.
 Native replacement baseline, full-hour run, native history and presentation,
 owner verification, packaging and hosted CI remain unaccepted.
+
+## Root-cause follow-up — upstream turn failure and WebView base RSS
+
+An isolated, real official Codex App Server 0.164.0 JSONL diagnostic performed
+`initialize → thread/start → turn/start` using the same no-tools fixture.
+The engine emitted `turn/completed` with `status=failed` and error-message
+category **usage limit**, with no completed assistant text item. The failure
+occurred without Ultima UI. Treat the resulting native user-facing blank turn
+as an upstream quota failure; bypassing an account limit is outside the app.
+The production UI now classifies the authoritative final turn status using a
+fixed allowlist and renders safe, actionable error text. Arbitrary upstream
+error messages and account details are never echoed. The NC-10 model driver
+identifies `NATIVE_UPSTREAM_USAGE_LIMIT` separately from a genuinely
+successful but textless completion and must abort impossible model stress
+until Codex upstream access is available.
+
+Chromium `userMessage` notifications were also incorrectly retained as
+generic tool items, explaining an unrelated misleading `Tool · complete`
+row. The tool list now excludes assistant, reasoning and user message items.
+
+On the same native binary `39b2d7c7…1df280`, the role-aware Windows sampler
+measured both RSS and private committed memory; the RSS acceptance gate was
+**not** changed. A disposable connected-CDP project-switch smoke showed
+WebView2 browser, GPU, renderer, utilities and crash-handler processes rather
+than six independent WebViews. The WebView2 GPU process alone showed roughly
+115 MiB RSS / 101 MiB private commit in that sample. Readings:
+
+- Disconnected Ultima shell, **without CDP**: WebView2 RSS average 329.0 MiB,
+  private commit 150.8 MiB across 12 settled samples.
+- Disposable **about:blank page with CDP**, no engine: WebView2 RSS average
+  329.7 MiB, private commit 150.1 MiB across 11 settled samples.
+- Previous matched CLI/desktop exact-source idle: **444.3 MiB incremental
+  RSS p95**, 150 MiB budget FAIL; CPU idle PASS at sampler resolution.
+
+The nearly identical blank-page WebView2 RSS suggests most active-view
+working-set overhead belongs to Chromium/WebView2 itself, rather than the
+Ultima Svelte application. These ~30 s diagnostics are **not** replacements
+for matched 3×120 s acceptance, and private commit is **not** private working
+set nor a substitute for the agreed RSS metric. Microsoft recommends keeping
+hardware acceleration enabled; production browser flags that compromise
+security/isolation or GPU performance have not been introduced. An alternate
+native rendering shell needs an architecture/performance qualification before
+it can replace the WebView UI while keeping Codex functionality, accessibility,
+approval boundaries and upstream compatibility. The 150 MiB limit stays open.

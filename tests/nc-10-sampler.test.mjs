@@ -27,11 +27,16 @@ test('NC-10 Windows sampler includes its live root and descendants, excludes an 
       assert.ok(samples.length >= 2);
       for (const sample of samples) {
         assert.ok(sample.rssBytes > 0);
+        assert.ok(sample.privateCommitBytes > 0);
         assert.ok(sample.processCount >= 1);
         assert.ok(sample.tree.some(process => process.pid === root.pid));
         assert.ok(sample.tree.some(process => process.pid === descendantPid));
         assert.ok(sample.tree.every(process => process.pid !== unrelated.pid));
         assert.equal(sample.rssBytes, sample.tree.reduce((n, process) => n + process.rssBytes, 0));
+        assert.equal(sample.privateCommitBytes, sample.tree.reduce((n, process) => n + process.privateCommitBytes, 0));
+        assert.ok(sample.tree.every(process =>
+          typeof process.privateCommitBytes === 'number' && process.privateCommitBytes >= 0 &&
+          process.role === 'other' && !('commandLine' in process)));
       }
     } finally {
       if (root.exitCode === null) execFileSync('taskkill.exe', ['/PID', String(root.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });

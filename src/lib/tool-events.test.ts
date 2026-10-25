@@ -111,7 +111,7 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
   });
 
   it('does not misclassify final assistant and reasoning items as tools', () => {
-    for (const type of ['agentMessage', 'reasoning']) {
+    for (const type of ['agentMessage', 'reasoning', 'userMessage']) {
       expect(trackTool([], 'itemStarted', itemEvent('t', 'z', type, type, {}))).toEqual([]);
       expect(trackTool([], 'itemCompleted', itemEvent('t', 'z', type, type, { text: 'OK' }))).toEqual([]);
     }

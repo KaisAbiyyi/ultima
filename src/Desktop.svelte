@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { createMessage, type UIMessage } from './lib/history';
+  import { classifyTurnOutcome, turnOutcomeMessage, type TurnOutcome } from './lib/turn-outcome';
   import { visibleRange } from './lib/virtual';
   import { isTextComposing, resolveShortcut, shouldSendComposer } from './lib/shortcuts';
   import { nativeBridge, desktopAvailable, type EngineBridge, type EngineEvent, type ManagedRuntimeStatus } from './lib/desktop-bridge';
@@ -17,6 +18,7 @@
   let activeProject = '';
   let activeThread = '';
   let activeTurn = '';
+  let lastTurnOutcome: TurnOutcome = 'none';
   let pendingPrompt = '';
   let messages: UIMessage[] = [];
   let projectInput = '';
@@ -305,6 +307,7 @@
     return typeof id === 'string' && id.length <= 256 ? id : '';
   }
   async function dispatchTurn(text: string) {
+    lastTurnOutcome = 'none';
     discardStream();
     followTail = true;
     if (!activeThread) { errorMessage = 'Thread was not created.'; busy = false; return; }
@@ -461,7 +464,13 @@
     }
     if (event.type === 'turnCompleted') {
       if (params.threadId && params.threadId !== activeThread) return;
-      if (params.turnId && activeTurn && params.turnId !== activeTurn) return;
+      const finalTurn = params.turn && typeof params.turn === 'object' ?
+        (params.turn as Record<string, unknown>).id : params.turnId;
+      if (!activeTurn || finalTurn !== activeTurn) return;
+      lastTurnOutcome = classifyTurnOutcome(params);
+      if (lastTurnOutcome !== 'completed') {
+        errorMessage = turnOutcomeMessage(lastTurnOutcome) || 'Codex returned an invalid terminal turn status.';
+      }
       frames.drain();
       streamTargetId = '';
       busy = false;
@@ -490,6 +499,7 @@
   async function newThread() {
     if (busy) { errorMessage = 'Stop the active turn before opening another thread.'; return; }
     activeThread = '';
+    lastTurnOutcome = 'none';
     discardStream();
     closeReader();
     messages = [];
@@ -505,6 +515,7 @@
     if (busy) { errorMessage = 'Stop the active turn before resuming.'; return; }
     if (thread.project !== activeProject) await chooseProject(thread.project);
     activeThread = thread.id;
+    lastTurnOutcome = 'none';
     discardStream();
     closeReader();
     messages = [];
@@ -628,7 +639,7 @@
     </header>
     <section class="conversation" aria-labelledby="conversation-title">
       <div class="conversation-head"><p class="eyebrow">CODEX / LOCAL APP SERVER</p><h1 id="conversation-title">{activeThread ? (threads.find(t => t.id === activeThread)?.title ?? 'Codex conversation') : 'Build with clarity'}<span class="heading-period">.</span></h1><p class="conversation-subtitle">{activeThread ? 'Thread resumes through your existing Codex session.' : 'Select a project and connect your Codex installation to begin.'}</p>
-        <div class="conversation-meta"><span data-testid="nc06-message-count">{messages.length} messages</span><span class="meta-divider"></span><span>{busy ? 'Streaming' : status === 'ready' ? 'Ready' : 'Not connected'}</span></div>
+        <div class="conversation-meta" data-turn-outcome={lastTurnOutcome}><span data-testid="nc06-message-count">{messages.length} messages</span><span class="meta-divider"></span><span>{busy ? 'Streaming' : status === 'ready' ? 'Ready' : 'Not connected'}</span></div>
       </div>
       {#if errorMessage}<p class="nc06-error" role="alert">{errorMessage}<button aria-label="Dismiss error" onclick={() => errorMessage = ''}>×</button></p>{/if}
       {#if status !== 'ready'}

@@ -99,7 +99,7 @@ export function trackTool(items: ToolItem[], type: 'itemStarted' | 'itemComplete
   if (!p || !identity(p.threadId) || !identity(p.turnId)) return items;
   const item = record(p.item);
   // Agent text and internal reasoning items are not tool executions.
-  if (item?.type === 'agentMessage' || item?.type === 'reasoning') return items;
+  if (item?.type === 'agentMessage' || item?.type === 'reasoning' || item?.type === 'userMessage') return items;
   const id = item?.id ?? p.itemId;
   if (!identity(id)) return items;
   const key = JSON.stringify([p.threadId, p.turnId, id]);

@@ -15,7 +15,7 @@ try {
     while ($timer.ElapsedMilliseconds -le $DurationMs -and -not (Test-Path -LiteralPath $StopFile)) {
         $rootProcess = Get-Process -Id $RootProcessId -ErrorAction SilentlyContinue
         if (-not $rootProcess -or $rootProcess.StartTime.ToUniversalTime().Ticks -ne $rootStarted) { break }
-        $processRows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate)
+        $processRows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate,CommandLine)
         $owned = [Collections.Generic.HashSet[int]]::new()
         [void]$owned.Add($RootProcessId)
         do {
@@ -28,6 +28,7 @@ try {
         } while ($changed)
         $elapsed = $timer.Elapsed.TotalMilliseconds
         $rss = 0L
+        $privateCommit = 0L
         $cpuDelta = 0.0
         $currentCpu = @{}
         $tree = @()
@@ -40,10 +41,20 @@ try {
             $currentCpu[$identityKey] = $cpuSeconds
             if ($previousCpu.ContainsKey($identityKey)) { $cpuDelta += [Math]::Max(0, $cpuSeconds - $previousCpu[$identityKey]) }
             $rss += $processValue.WorkingSet64
-            $tree += @{ pid = $processValue.Id; parentPid = [int]$processRow.ParentProcessId; name = $processValue.ProcessName; rssBytes = $processValue.WorkingSet64 }
+            $privateCommit += $processValue.PrivateMemorySize64
+            # Record Chromium process role only; raw process command lines can
+            # contain credentials and paths and must never appear in receipts.
+            $role = 'other'
+            if ($processValue.ProcessName -eq 'msedgewebview2') {
+                $role = 'browser'
+                if ($processRow.CommandLine -match '--type=(renderer|gpu-process|utility|crashpad-handler)(?:\s|\x22|$)') {
+                    $role = $Matches[1]
+                }
+            }
+            $tree += @{ pid = $processValue.Id; parentPid = [int]$processRow.ParentProcessId; name = $processValue.ProcessName; role = $role; rssBytes = $processValue.WorkingSet64; privateCommitBytes = $processValue.PrivateMemorySize64 }
         }
         $cpuPercent = if ($previousTime -gt 0 -and $elapsed -gt $previousTime) { $cpuDelta / (($elapsed - $previousTime) / 1000) * 100 } else { 0 }
-        $writer.WriteLine((@{ elapsedMs = [Math]::Round($elapsed); rssBytes = $rss; cpuPercent = $cpuPercent; processCount = $tree.Count; tree = $tree } | ConvertTo-Json -Compress -Depth 4))
+        $writer.WriteLine((@{ elapsedMs = [Math]::Round($elapsed); rssBytes = $rss; privateCommitBytes = $privateCommit; cpuPercent = $cpuPercent; processCount = $tree.Count; tree = $tree } | ConvertTo-Json -Compress -Depth 4))
         $writer.Flush()
         $previousCpu = $currentCpu
         $previousTime = $elapsed

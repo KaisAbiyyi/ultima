@@ -175,6 +175,15 @@ async function turn(page, report) {
     const count = Number(document.querySelector('[data-testid="nc06-message-count"]')?.textContent?.split(' ')[0]);
     return count >= before + 2 && document.querySelector('[data-testid="nc06-feed"]')?.getAttribute('aria-busy') === 'false';
   }, beforeCount, { timeout: 120000 });
+  const outcome = await page.locator('.conversation-meta').getAttribute('data-turn-outcome');
+  if (outcome !== 'completed') {
+    const error = Error('Official engine ended the turn without a successful completion status');
+    error.code = outcome === 'usage-limit' ? 'NATIVE_UPSTREAM_USAGE_LIMIT' :
+      outcome === 'unauthorized' ? 'NATIVE_UPSTREAM_UNAUTHORIZED' :
+      outcome === 'network' ? 'NATIVE_UPSTREAM_CONNECTION_FAILED' :
+      'NATIVE_TURN_FAILED';
+    throw error;
+  }
   if (await page.getByRole('alert').count()) throw Error('Desktop reported a turn error');
   const hasAnswer = await page.evaluate(() => {
     const answer = [...document.querySelectorAll('.message-row:not(.user-message) .message-content p')].at(-1)?.textContent?.trim();
@@ -325,6 +334,7 @@ async function collect(config, output, report) {
         composerDisabled: document.querySelector('#composer')?.disabled,
         messageCount: Number(document.querySelector('[data-testid="nc06-message-count"]')?.textContent?.split(' ')[0]) || 0,
         toolCount: document.querySelectorAll('.nc07-tool-row').length,
+        turnOutcome: document.querySelector('.conversation-meta')?.getAttribute('data-turn-outcome') ?? 'unavailable',
         hasAssistantText: !!answer && answer !== 'Thinking…' && answer !== 'No text reply returned by Codex.'
       };
     }).catch(() => ({ status: 'page-unavailable' }));
