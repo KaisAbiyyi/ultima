@@ -13,15 +13,17 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(root, '../..');
 const exe = path.join(root, 'target', 'release', 'ultima-native-renderer-spike.exe');
 const mode = process.argv[2] ?? 'empty';
-if (!['empty', 'history', 'connected', 'connected-history'].includes(mode)) {
-  throw Error('Usage: node benchmark.mjs empty|history|connected|connected-history');
+if (!['empty', 'history', 'connected', 'connected-history', 'cli'].includes(mode)) {
+  throw Error('Usage: node benchmark.mjs empty|history|connected|connected-history|cli [--full-idle]');
 }
-const requiresCodex = mode.startsWith('connected');
+const cliOnly = mode === 'cli';
+const requiresCodex = mode.startsWith('connected') || cliOnly;
 const fixture = requiresCodex
   ? JSON.parse(await readFile(path.join(repo, 'artifacts/nc10/project-smoke-plan.json'), 'utf8'))
   : null;
 const repetitions = 3;
-const durationMs = 45_000; // Pilot: 15s warm-up + 30s observation per repetition.
+const durationMs = process.argv.includes('--full-idle') ? 120_000 : 45_000;
+const warmupMs = durationMs === 120_000 ? 60_000 : 15_000;
 const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
 const executableSha256 = createHash('sha256').update(await readFile(exe)).digest('hex');
 const dir = path.join(root, 'results', mode + '-' + sourceSha.slice(0, 8) + '-' + Date.now());
@@ -36,8 +38,47 @@ const sourceDirty = execFileSync('git', ['status', '--porcelain=v1', '--untracke
 const report = {
   kind: 'NC10_RENDERER_ONLY_DIAGNOSTIC_NOT_PRODUCT_ACCEPTANCE',
   sourceSha, sourceDirty, binarySha256: executableSha256, mode, durationMs,
-  warmupMs: 15_000, samples: [],
+  warmupMs, samples: [],
 };
+
+async function initializeOfficialAppServer(app) {
+  await new Promise((resolve, reject) => {
+    let buffered = '';
+    const timeout = setTimeout(() => reject(Error('Official app-server initialize timed out')), 15_000);
+    const onData = bytes => {
+      buffered += bytes.toString('utf8');
+      if (buffered.length > 1024 * 1024) {
+        clearTimeout(timeout);
+        reject(Error('Oversized official initialization output'));
+        return;
+      }
+      let split;
+      while ((split = buffered.indexOf('\n')) >= 0) {
+        const line = buffered.slice(0, split);
+        buffered = buffered.slice(split + 1);
+        let event;
+        try { event = JSON.parse(line); } catch { continue; }
+        if (event.id !== 1) continue;
+        clearTimeout(timeout);
+        app.stdout.off('data', onData);
+        if (event.error) reject(Error('Official app-server initialize returned an error'));
+        else {
+          app.stdin.write(JSON.stringify({ method: 'initialized', params: {} }) + '\n');
+          // Keep draining stdout with bounded memory, never persist protocol
+          // payloads, conversation contents, account identifiers or stderr.
+          app.stdout.resume();
+          resolve();
+        }
+        return;
+      }
+    };
+    app.stdout.on('data', onData);
+    app.stdin.write(JSON.stringify({
+      id: 1, method: 'initialize',
+      params: { clientInfo: { name: 'ultima', title: 'Ultima', version: '0.1.0' }, capabilities: { experimentalApi: false } },
+    }) + '\n');
+  });
+}
 for (let run = 1; run <= repetitions; run++) {
   const out = path.join(dir, 'run-' + run);
   await mkdir(out);
@@ -47,11 +88,17 @@ for (let run = 1; run <= repetitions; run++) {
   if (fixture) {
     flags.push('--codex-exe=' + fixture.codex, '--project=' + fixture.projects[0]);
   }
-  const app = spawn(exe, flags, { cwd: root, windowsHide: true, stdio: 'ignore' });
+  const app = cliOnly
+    ? spawn(fixture.codex, ['app-server'], {
+      cwd: fixture.projects[0], windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'],
+    })
+    : spawn(exe, flags, { cwd: root, windowsHide: true, stdio: 'ignore' });
   let sampler;
   try {
     await once(app, 'spawn');
-    if (requiresCodex) {
+    if (cliOnly) {
+      await initializeOfficialAppServer(app);
+    } else if (requiresCodex) {
       let ready = false;
       for (let attempt = 0; attempt < 25; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 400));
@@ -83,7 +130,7 @@ for (let run = 1; run <= repetitions; run++) {
     for await (const line of createInterface({ input: createReadStream(output) })) {
       if (line.trim()) samples.push(JSON.parse(line));
     }
-    const settled = samples.filter(sample => sample.elapsedMs >= 15_000 && sample.elapsedMs <= durationMs);
+    const settled = samples.filter(sample => sample.elapsedMs >= warmupMs && sample.elapsedMs <= durationMs);
     if (settled.length < 10 || settled.some(sample => sample.processCount < 1)) {
       throw Error('Insufficient living-window sample coverage');
     }

@@ -24,8 +24,12 @@ Use the same NC-10 sampler for a 3-repeat renderer pilot (45 seconds per repetit
 node experiments/native-renderer/benchmark.mjs empty
 node experiments/native-renderer/benchmark.mjs history
 node experiments/native-renderer/benchmark.mjs connected
+node experiments/native-renderer/benchmark.mjs cli --full-idle
+node experiments/native-renderer/benchmark.mjs connected --full-idle
 ```
 
 The connected mode reads only the user's existing ignored `artifacts/nc10/project-smoke-plan.json` and verifies that the official Codex child remains present in every settled sample. It does not ask Codex for an answer and cannot bypass upstream usage limits. Results are machine-local under ignored `experiments/native-renderer/results/` and carry the binary SHA256. Any uncommitted source is flagged `sourceDirty`; results must never be presented as a clean exact-commit qualification if that flag is true.
+
+The `cli` mode launches the same exact official Codex executable and performs only the official initialize/initialized handshake through its stdio JSONL protocol. The `--full-idle` option uses the actual NC-10 idle observation window (60 seconds settlement, 60 seconds measurement). Compare three native and CLI repetitions with the same version, machine, power settings and fixture. This still establishes only **system-engine connected idle parity**, not streaming/approval/recovery parity.
 
 Memory readings from this program are **renderer-only diagnostics**, not the NC-10 matched official-Codex idle gate. Before choosing it for Ultima, reproduce the complete process-tree benchmark with the real official Codex App Server, continuous event stream, exact turn/user/approval identities, 10k-history event-to-frame timing, Windows IME and screen-reader behavior, and cleanup/rollback.
