@@ -2,6 +2,20 @@
 
 This is a stand-alone Rust/egui Windows window for measuring active idle memory **without WebView2**. Its default mode has no Codex connection; an explicitly opted-in probe can initialize the official App Server. It cannot send model turns, store real history, execute tools or approve operations. The project rail, chat viewport, keyboard editor and disabled approval mock are real native widgets; fixtures are local.
 
+## Native minimalist UI reference
+
+The UI reproduces the visual hierarchy of the supplied `minimalist_codex_wrapper_ui.html`: inset rounded obsidian sidebar, expandable project/chat groups, narrow session breadcrumb, minimal execution stream and pinned prompt composer with context, permissions and model/effort positions. Launch the executable without fixture flags for a **reference-content preview**. Use `--fixture-empty` to render the identical UI shell without illustrative conversation items, or `--fixture-history=10000` to stress virtualized history.
+
+Performance and security choices:
+
+- Native egui with local OS/default fonts; **no HTML, WebView2, Tailwind CDN, Google Fonts, icon font, external assets or remote CSS**. Tiny icons use native vector lines and circles.
+- No perpetual animation, timer, polling loop or background render. Only UI interaction and bounded engine status change request repaint.
+- **10,000 maximum** synthetic history rows, only visible rows painted; **8,192-character** maximum draft.
+- Fake models, token rates, preset API keys and artificial “patch applied” behavior from the reference HTML are **not** imported. Model/access popovers are informational, Send, Apply, mounting a new project and Dictation are explicitly disabled until authenticated functionality exists.
+- The preview sample conversation is clearly marked illustrative. No real Codex history is accessed by the visual layer.
+
+The uploaded file is a visual reference, **not** a production implementation or upstream feature contract. UI matching must not weaken approval policy, memory budget or application boundaries.
+
 The renderer uses `eframe = 0.33.3` with only glow, default fonts and AccessKit. It retains the repo's Apache-2.0 license compatibility. No production runtime code or permission boundary is replaced.
 
 When provided *both* `--codex-exe=<absolute trusted executable>` and `--project=<absolute directory>`, the spike starts a read-only live handshake with the official Codex App Server, reusing Ultima's Rust `EngineSupervisor`, `Broker` and shared generation-fenced `SessionGate`. It exposes no model-turn, tool execution, or approval acceptance controls; any unexpected server approval is denied. The engine is owned by a Windows Job and shuts down on the UI's exit. The connection state is displayed in the top bar. This is a transport **probe**, not NC-07 implementation parity or a production runtime selector.

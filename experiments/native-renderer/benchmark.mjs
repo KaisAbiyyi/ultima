@@ -85,6 +85,7 @@ for (let run = 1; run <= repetitions; run++) {
   const output = path.join(out, 'tree.jsonl');
   const stop = path.join(out, 'stop');
   const flags = mode.endsWith('history') ? ['--fixture-history=10000'] : [];
+  if (!mode.endsWith('history')) flags.push('--fixture-empty');
   if (fixture) {
     flags.push('--codex-exe=' + fixture.codex, '--project=' + fixture.projects[0]);
   }
