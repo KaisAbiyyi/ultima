@@ -1,0 +1,49 @@
+name: NC-09 keyboard accessibility and visual QA
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/e2e/**'
+      - '.github/workflows/nc-09-accessibility.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/e2e/**'
+      - '.github/workflows/nc-09-accessibility.yml'
+  workflow_dispatch:
+jobs:
+  keyboard-and-screenshots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: npm run check
+      - run: npm run test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nc09-keyboard-visual-matrix
+          path: |
+            test-results/**/*.png
+            test-results/**/*.zip
+          if-no-files-found: warn
+  windows-frontend:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: npm run check
+      - run: npm run test
+      - run: npm run build
