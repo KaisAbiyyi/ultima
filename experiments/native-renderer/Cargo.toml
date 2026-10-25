@@ -13,6 +13,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 ultima-app-server-supervisor = { path = "../../crates/app-server-supervisor" }
 ultima-protocol-bridge = { path = "../../crates/protocol-bridge" }
+ultima-native-session = { path = "../../crates/native-session" }
 
 [profile.release]
 lto = "thin"

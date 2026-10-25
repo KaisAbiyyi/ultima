@@ -14,3 +14,4 @@ serde_json = "1"
 ultima-app-server-supervisor = { path = "../crates/app-server-supervisor" }
 ultima-protocol-bridge = { path = "../crates/protocol-bridge" }
 ultima-runtime-manager = { path = "../crates/runtime-manager" }
+ultima-native-session = { path = "../crates/native-session" }

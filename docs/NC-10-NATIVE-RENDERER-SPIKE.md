@@ -96,10 +96,14 @@ Evidence provenance:
 
 ## Blocking parity work
 
-1. Extract the Tauri-specific native session actor, `SessionGate`,
-   disconnect/reconnect fencing and backpressure into a shared Rust host
-   library. The current experiment supports only one read-only system Codex
-   lifecycle; it does not own the managed-runtime selector/rollback.
+1. **Shared SessionGate extracted** into
+   `crates/native-session` with its seven original generation fencing,
+   shutdown confirmation and poisoning regression tests preserved; both
+   Tauri and egui reference this crate. Remaining: extract the Tauri-specific
+   full actor (disconnect/reconnect event multiplexing, exact approval
+   identity, backpressure and managed-runtime rollback) into a shared Rust
+   host implementation. The experiment presently supports only one
+   read-only system Codex lifecycle.
 2. Port validated atomic command/file-diff previews, exact thread/turn/tool
    evidence, revocable approve-once, fail-closed decline, and cancellation
    semantics from `src/lib/tool-events.ts` and `src/Desktop.svelte` before

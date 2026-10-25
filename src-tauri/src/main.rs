@@ -1,8 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-mod lifecycle;
 mod runtime;
 
-use lifecycle::{GateError, SessionGate, StartError};
+use ultima_native_session::{GateError, SessionGate, StartError};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::{

@@ -1,0 +1,13 @@
+[package]
+name = "ultima-native-session"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Host-neutral generation-fenced native engine session gate for Ultima"
+
+[dependencies]
+tokio = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }

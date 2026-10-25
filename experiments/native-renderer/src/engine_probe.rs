@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use tokio::sync::oneshot;
 use ultima_app_server_supervisor::{EngineConfig, EngineSupervisor, OutputEvent};
+use ultima_native_session::SessionGate;
 use ultima_protocol_bridge::{Broker, Event, Limits, Phase};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,7 +67,17 @@ async fn drive(
         return;
     };
     let mut supervisor = EngineSupervisor::new(config);
-    if supervisor.start().is_err() {
+    // Same generation-fenced start/stop policy as the Tauri host. This
+    // standalone probe permits only one generation and no reconnect UI.
+    let gate = SessionGate::<u64>::default();
+    if gate
+        .start(1, || {
+            supervisor.start().map_err(|_| ())?;
+            Ok::<_, ()>((1_u64, ()))
+        })
+        .await
+        .is_err()
+    {
         notify(&status, &ctx, ProbeStatus::Failed);
         return;
     }
@@ -105,8 +116,16 @@ async fn drive(
         }
     }
     .await;
+    let stopping = result.is_ok() && matches!(gate.begin_stop().await, Ok(Some((1, _))));
+    // Regardless of the gate result, terminate the owned engine before
+    // emitting a terminal UI state or dropping the Rust async runtime.
     let clean = supervisor.stop().await.is_ok();
-    if result.is_err() || !clean {
+    let finalized = if result.is_ok() && stopping {
+        gate.finish_stop(1, clean).await
+    } else {
+        gate.finish_unexpected(1, clean && result.is_err()).await
+    };
+    if result.is_err() || !clean || !finalized {
         notify(&status, &ctx, ProbeStatus::Failed);
     } else {
         notify(&status, &ctx, ProbeStatus::Stopped);

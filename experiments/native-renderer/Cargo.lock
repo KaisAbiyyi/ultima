@@ -2602,7 +2602,15 @@ dependencies = [
  "serde_json",
  "tokio",
  "ultima-app-server-supervisor",
+ "ultima-native-session",
  "ultima-protocol-bridge",
+]
+
+[[package]]
+name = "ultima-native-session"
+version = "0.1.0"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]

@@ -3872,8 +3872,16 @@ dependencies = [
  "tauri-build",
  "tokio",
  "ultima-app-server-supervisor",
+ "ultima-native-session",
  "ultima-protocol-bridge",
  "ultima-runtime-manager",
+]
+
+[[package]]
+name = "ultima-native-session"
+version = "0.1.0"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]
