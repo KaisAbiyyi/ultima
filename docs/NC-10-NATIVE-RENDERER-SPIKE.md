@@ -118,6 +118,30 @@ Evidence provenance:
    reproduced directly against the official Codex App Server. The shell
    cannot bypass that limit.
 
+## Shared lifecycle extraction verification
+
+Commit `14c0c40cb37e59f236c861eb902fdac474708b67` moved the
+unchanged `SessionGate` implementation from the Tauri binary into the
+host-neutral `crates/native-session` crate. Tauri imports it directly;
+the egui probe uses the same generation-fenced start/confirmed-stop policy.
+
+The original seven SessionGate Rust tests passed at their new location;
+four Tauri runtime/approval tests passed; 50/50 frontend unit tests and
+16/16 native evidence/Windows tests passed. The production Tauri Windows
+release built from the clean new commit has binary SHA256
+`e4e25659738e33e416ebf9be0052b0b1bd9c9d1ffd81f8bbe75475922b64e7ff`;
+its no-model smoke verified 3/3 project switches (PARTIAL receipt by design).
+
+The egui read-only 3×45s post-extraction diagnostic had
+**214.97 MiB total RSS p95** and sampled CPU 0% with official Codex
+present in all settled observations. This is consistent with the prior
+215.03 MiB short pilot. It does not replace the successful 3×120s
+feasibility measurement.
+
+The shared crate remains *process-local*: cross-app single-instance
+coordination, full actor extraction, approval evidence, model turns,
+managed rollback and production renderer migration remain open.
+
 ## Decision gate
 
 The candidate meets the first **read-only matched idle feasibility**
