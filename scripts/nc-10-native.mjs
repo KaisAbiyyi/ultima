@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { evaluateQualification, statistics } from './nc-10-evidence.mjs';
 import { createOutputDirectory, requireStressProjects, fingerprintFixtures } from './nc-10-support.mjs';
+import { closeOwned } from './nc-10-processes.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ownedChildren = new Set();
@@ -114,13 +115,6 @@ async function sampler(child, folder, durationMs) {
     return { samples, valid: !failed && code === 0 && samples.length >= 2 };
   };
 }
-async function closeOwned(child) {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
-  // This PID is a live child handle created by this runner; never enumerate and
-  // kill by executable name, user data directory or arbitrary PID from a plan.
-  try { execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); }
-  catch { if (child.exitCode === null && child.signalCode === null) throw Error('Owned process shutdown unconfirmed'); }
-}
 async function desktop(config, folder, report) {
   // Isolated profile: never modify the owner's normal WebView storage.
   const child = trackedSpawn(config.exe, [], { cwd: config.projects[0], windowsHide: false, stdio: 'ignore', env: { ...process.env,
@@ -171,11 +165,15 @@ async function inputProbe(page) {
 }
 async function turn(page) {
   const composer = page.getByRole('textbox', { name: 'Message to Codex' });
+  const beforeCount = Number((await page.getByTestId('nc06-message-count').textContent()).split(' ')[0]);
   await composer.fill('Reply with exactly OK. Do not use any tools, read files, run commands, or change files.');
   await page.getByRole('button', { name: 'Send message to Codex', exact: true }).click();
   // Require both a rendered assistant answer and end-of-turn acknowledgement.
-  await page.waitForFunction(() => [...document.querySelectorAll('.message-row:not(.user-message) .message-content p')]
-    .some(row => row.textContent?.trim() === 'OK'), undefined, { timeout: 120000 });
+  await page.waitForFunction(before => {
+    const count = Number(document.querySelector('[data-testid="nc06-message-count"]')?.textContent?.split(' ')[0]);
+    const answer = [...document.querySelectorAll('.message-row:not(.user-message) .message-content p')].at(-1)?.textContent?.trim();
+    return count >= before + 2 && !!answer && answer !== 'Thinking…';
+  }, beforeCount, { timeout: 120000 });
   await composer.waitFor({ state: 'visible' });
   await waitFor(async () => await composer.isEnabled(), 120000);
   if (await page.getByRole('alert').count()) throw Error('Desktop reported a turn error');
@@ -184,8 +182,10 @@ async function resumeStoredThread(page) {
   const thread = page.locator('button.history-link').first();
   if (await thread.count() === 0) return false;
   await thread.click();
-  await page.waitForFunction(() => [...document.querySelectorAll('.message-row:not(.user-message) .message-content p')]
-    .some(row => row.textContent?.trim() === 'OK'));
+  await page.waitForFunction(() => {
+    const answer = [...document.querySelectorAll('.message-row:not(.user-message) .message-content p')].at(-1)?.textContent?.trim();
+    return !!answer && answer !== 'Thinking…';
+  });
   if (await page.getByRole('alert').count()) throw Error('Durable thread resume failed');
   return true;
 }

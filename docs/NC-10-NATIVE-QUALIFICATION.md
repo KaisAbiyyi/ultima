@@ -141,3 +141,13 @@ buttons remain visible during teardown and the application correctly refuses
 a premature selection. Collector errors now classify the receipt FAIL rather
 than PARTIAL. Freeze a new source/artifact receipt and repeat both idle and
 full-duration endurance; no target or workload gate is weakened.
+
+A second runner race was reproduced at cleanup: the OS child had exited but its
+Node exit callback was queued behind synchronous `taskkill`. Cleanup now awaits
+the original child handle's exit event, including an already-completed native
+exit; a still-live/unconfirmed child fails after a bounded 5 s wait. Two real
+Windows process regressions failed before this repair and passed after it.
+Three short native CLI/desktop diagnostic pairs then completed cleanup; they
+are explicitly not accepted 120 s baseline or 60-minute endurance evidence.
+The dedicated suite is 16/16. The turn driver requires a new non-placeholder
+assistant row and completion acknowledgement, not a stale prior `OK` row.

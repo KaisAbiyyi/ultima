@@ -6,7 +6,7 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "test:protocol": "node --test tests/nc-01-contract.test.mjs",
-    "test:native-evidence": "node --test tests/nc-10-evidence.test.mjs tests/nc-10-support.test.mjs tests/nc-10-sampler.test.mjs",
+    "test:native-evidence": "node --test tests/nc-10-evidence.test.mjs tests/nc-10-support.test.mjs tests/nc-10-sampler.test.mjs tests/nc-10-processes.test.mjs",
     "qualify:native": "node scripts/nc-10-native.mjs",
     "smoke:protocol": "node scripts/nc-01-smoke.mjs",
     "dev": "vite",
