@@ -5,6 +5,9 @@ export const MAX_PROJECTS = 12;
 export const MAX_THREADS = 50;
 export const MAX_RENDER_HISTORY = 5000;
 export const MAX_TEXT_BYTES = 2 * 1024 * 1024;
+// UI-owned snapshots only; full durable transcripts remain in Codex.
+export const MAX_RETAINED_TEXT_CHARS = 8 * 1024 * 1024;
+export const MAX_HISTORY_ITEM_CHARS = 64 * 1024;
 export interface Project { path: string; name: string }
 export interface Thread { id: string; project: string; title: string; model: string }
 export function projectFromPath(raw: string): Project | null {
@@ -25,7 +28,17 @@ export function addThread(threads: Thread[], thread: Thread): Thread[] {
   return [thread, ...threads.filter((item) => item.id !== thread.id)].slice(0, MAX_THREADS);
 }
 export function cappedMessages(messages: UIMessage[]): UIMessage[] {
-  return messages.length > MAX_RENDER_HISTORY ? messages.slice(-MAX_RENDER_HISTORY) : messages;
+  // Work backwards to retain only the newest messages fitting BOTH budgets.
+  // Never build a transient many-gigabyte UI array from restored history.
+  let begin = messages.length;
+  let chars = 0;
+  for (let i = messages.length - 1; i >= 0 && messages.length - i <= MAX_RENDER_HISTORY; i--) {
+    const size = messages[i].text.length;
+    if (size > MAX_RETAINED_TEXT_CHARS - chars) break;
+    chars += size;
+    begin = i;
+  }
+  return begin === 0 ? messages : messages.slice(begin);
 }
 export function appendDelta(current: string, delta: string): string {
   if (current.length + delta.length > MAX_TEXT_BYTES) throw Error('Stream exceeded safe UI text limit');
@@ -56,22 +69,37 @@ export function restoreThreadMessages(raw: unknown): UIMessage[] {
   const thread = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).thread : undefined;
   const turns = thread && typeof thread === 'object' ? (thread as Record<string, unknown>).turns : undefined;
   if (!Array.isArray(turns)) return [];
-  const messages: UIMessage[] = [];
-  for (const [index, turn] of turns.slice(-MAX_RENDER_HISTORY).entries()) {
+  const newestFirst: UIMessage[] = [];
+  let retainedChars = 0;
+  // Walk backwards and stop as soon as the UI budget is filled. Slicing a
+  // giant history first can create unbounded transient arrays on resume.
+  function take(role: 'user' | 'assistant', text: string, key: string): boolean {
+    const preview = text.length > MAX_HISTORY_ITEM_CHARS
+      ? text.slice(0, MAX_HISTORY_ITEM_CHARS) + '\\n[Preview limited; full text remains in Codex.]'
+      : text;
+    if (preview.length > MAX_RETAINED_TEXT_CHARS - retainedChars) return false;
+    newestFirst.push({ id: key, role, text: preview, at: 'History' });
+    retainedChars += preview.length;
+    return newestFirst.length < MAX_RENDER_HISTORY;
+  }
+  for (let ti = turns.length - 1; ti >= 0 && newestFirst.length < MAX_RENDER_HISTORY; ti--) {
+    const turn = turns[ti];
     if (!turn || typeof turn !== 'object') continue;
     const record = turn as Record<string, unknown>;
-    const input = Array.isArray(record.input) ? record.input : [];
-    for (const value of input) {
-      if (!value || typeof value !== 'object' || typeof value.text !== 'string') continue;
-      messages.push({ id: 'resume-user-' + index + '-' + messages.length, role: 'user', text: value.text.slice(0, MAX_TEXT_BYTES), at: 'History' });
-    }
     const items = Array.isArray(record.items) ? record.items : [];
-    for (const item of items) {
+    for (let j = items.length - 1; j >= 0; j--) {
+      const item = items[j];
       if (!item || typeof item !== 'object') continue;
       const value = item as Record<string, unknown>;
       if (value.type !== 'agentMessage' || typeof value.text !== 'string') continue;
-      messages.push({ id: 'resume-assistant-' + index + '-' + messages.length, role: 'assistant', text: value.text.slice(0, MAX_TEXT_BYTES), at: 'History' });
+      if (!take('assistant', value.text, 'resume-assistant-' + ti + '-' + j)) return newestFirst.reverse();
+    }
+    const input = Array.isArray(record.input) ? record.input : [];
+    for (let j = input.length - 1; j >= 0; j--) {
+      const value = input[j];
+      if (!value || typeof value !== 'object' || typeof value.text !== 'string') continue;
+      if (!take('user', value.text, 'resume-user-' + ti + '-' + j)) return newestFirst.reverse();
     }
   }
-  return cappedMessages(messages);
+  return newestFirst.reverse();
 }

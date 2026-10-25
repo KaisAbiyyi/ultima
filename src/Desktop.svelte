@@ -5,6 +5,8 @@
   import { isTextComposing, resolveShortcut, shouldSendComposer } from './lib/shortcuts';
   import { nativeBridge, desktopAvailable, type EngineBridge, type EngineEvent } from './lib/desktop-bridge';
   import { EngineSessionFence } from './lib/engine-session-fence';
+  import { FrameDeltas } from './lib/frame-deltas';
+  import { readerPage, rowPreview, ROW_PREVIEW_CHARS } from './lib/message-paging';
   import { approvalToolIdentity, canApprove, canApproveInActiveTurn, matchesApprovalEvidence, parseApproval, sameApproval, toolIdentity, trackTool, type ApprovalRequest, type ToolItem } from './lib/tool-events';
   import { addThread, appendDelta, appendProject, cappedMessages, restoreProjects, restoreThreads, restoreThreadMessages, saveMetadata, type Project, type Thread } from './lib/desktop-state';
 
@@ -40,6 +42,10 @@
   let theme: 'dark' | 'light' = 'dark';
   let scrollTop = 0;
   let viewportHeight = 600;
+  let followTail = true;
+  let streamTargetId = '';
+  let readerId = '';
+  let readerPosition = 0;
   let feedEl: HTMLDivElement;
   let composerEl: HTMLTextAreaElement;
   let searchEl: HTMLInputElement;
@@ -50,11 +56,37 @@
   // IPC notifications can arrive before invoke() resolves; replay only bounded replies.
   const earlyReplies = new Map<number, Extract<EngineEvent, { type: 'reply' }>>();
   const fence = new EngineSessionFence<EngineEvent>();
+  const frames = new FrameDeltas(
+    callback => requestAnimationFrame(callback),
+    frame => cancelAnimationFrame(frame),
+    text => {
+      const last = messages[messages.length - 1];
+      if (!last || last.role !== 'assistant' || last.id !== streamTargetId) return;
+      try {
+        messages = cappedMessages([...messages.slice(0, -1), {
+          ...last, text: appendDelta(last.text, text)
+        }]);
+        // Follow only while the reader is pinned to the bottom. Never yank
+        // keyboard/mouse scroll back to the latest message.
+        void tick().then(() => { if (followTail) scrollLatest(); });
+      } catch {
+        errorMessage = 'Stream reached the bounded UI limit; disconnect to stop the engine.';
+        void disconnect();
+      }
+    }
+  );
+  function discardStream() {
+    frames.clear();
+    streamTargetId = '';
+  }
+  function closeReader() { readerId = ''; readerPosition = 0; }
   let connectionEpoch = 0;
   $: shownProjects = projects.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
   $: shownThreads = threads.filter(t => t.project === activeProject && t.title.toLowerCase().includes(search.toLowerCase()));
   $: range = visibleRange(messages.length, scrollTop, viewportHeight, ROW_HEIGHT);
   $: shownMessages = messages.slice(range.start, range.end);
+  $: readerMessage = readerId ? messages.find(m => m.id === readerId) : undefined;
+  $: page = readerMessage ? readerPage(readerMessage.text, readerPosition) : null;
   $: selectedProject = projects.find(p => p.path === activeProject);
   $: currentApproval = approvals[0] ?? null;
   $: currentTool = currentApproval ? toolItems.find(t => matchesApprovalEvidence(currentApproval, t)) : undefined;
@@ -104,6 +136,11 @@
     if (!feedEl) return;
     feedEl.scrollTop = Math.max(0, feedEl.scrollHeight - feedEl.clientHeight);
     scrollTop = feedEl.scrollTop;
+    followTail = true;
+  }
+  function onFeedScroll(node: HTMLDivElement) {
+    scrollTop = node.scrollTop;
+    followTail = node.scrollHeight - node.scrollTop - node.clientHeight <= 128;
   }
   function measureFeed(node: HTMLDivElement) {
     const update = () => { viewportHeight = node.clientHeight; };
@@ -131,6 +168,8 @@
     }
     const epoch = ++connectionEpoch;
     fence.beginDisconnect();
+    discardStream();
+    closeReader();
     pending.clear();
     earlyReplies.clear();
     approvals = [];
@@ -161,7 +200,10 @@
       if (status !== 'disconnected') return;
       activeProject = path;
       activeThread = '';
+      discardStream();
+      closeReader();
       messages = [];
+      followTail = true;
     }
     if (navOpen) closeNavigation();
     persist();
@@ -172,6 +214,8 @@
     if (!bridge) { errorMessage = 'Tauri desktop host unavailable. Browser mode cannot run Codex.'; return; }
     const epoch = ++connectionEpoch;
     fence.beginConnect();
+    discardStream();
+    closeReader();
     pending.clear();
     earlyReplies.clear();
     approvals = [];
@@ -200,6 +244,11 @@
     try {
       const id = await bridge.call(method, params);
       if (fence.session !== session) return; // stale invoke acknowledgement
+      if (pending.size >= 32) {
+        errorMessage = 'Too many unanswered engine requests; disconnecting to limit retained state.';
+        void disconnect();
+        return;
+      }
       pending.set(id, kind);
       const early = earlyReplies.get(id);
       if (early) { earlyReplies.delete(id); onEngine(early); }
@@ -224,6 +273,8 @@
     return typeof id === 'string' && id.length <= 256 ? id : '';
   }
   async function dispatchTurn(text: string) {
+    discardStream();
+    followTail = true;
     if (!activeThread) { errorMessage = 'Thread was not created.'; busy = false; return; }
     const last = messages[messages.length - 1];
     if (!last || last.role !== 'user' || last.text !== text) {
@@ -265,6 +316,7 @@
       if (event.state === 'ready') void request('model/list', {}, 'models');
       if (event.state === 'disconnected' || event.state === 'error') {
         busy = false; activeTurn = '';
+        discardStream();
         approvals = []; toolItems = []; reviewedApproval = false;
         if (event.state === 'disconnected') {
           fence.beginDisconnect();
@@ -341,7 +393,9 @@
       if (kind === 'resume') {
         const id = threadId(event.result);
         if (id !== activeThread) { errorMessage = 'Resume returned the wrong thread.'; return; }
+        discardStream();
         messages = restoreThreadMessages(event.result);
+        followTail = true;
         void tick().then(scrollLatest);
       }
       if (kind === 'interrupt') { errorMessage = 'Interrupt requested; awaiting engine acknowledgement.'; }
@@ -349,6 +403,8 @@
     }
     const params = event.params;
     if (event.type === 'turnStarted') {
+      frames.drain();
+      streamTargetId = '';
       const thread = params.threadId;
       if (thread && thread !== activeThread) return;
       const turn = params.turn;
@@ -358,6 +414,9 @@
     }
     if (event.type === 'turnCompleted') {
       if (params.threadId && params.threadId !== activeThread) return;
+      if (params.turnId && activeTurn && params.turnId !== activeTurn) return;
+      frames.drain();
+      streamTargetId = '';
       busy = false;
       activeTurn = '';
       // A completed turn must not leave an actionable stale approval card.
@@ -367,23 +426,26 @@
     }
     if (event.type === 'delta') {
       if (params.threadId && params.threadId !== activeThread) return;
+      if (params.turnId && activeTurn && params.turnId !== activeTurn) return;
       const delta = params.delta;
       if (typeof delta !== 'string') return;
       const last = messages[messages.length - 1];
       if (!last || last.role !== 'assistant') return;
-      try {
-        messages = [...messages.slice(0, -1), { ...last, text: appendDelta(last.text, delta) }];
-        void tick().then(scrollLatest);
-      } catch {
-        errorMessage = 'Stream reached the bounded UI limit; disconnect to stop the engine.';
-        void disconnect();
+      if (streamTargetId && streamTargetId !== last.id) frames.clear();
+      streamTargetId = last.id;
+      if (!frames.push(delta)) {
+        errorMessage = 'Codex sent more stream data than one paint frame can safely retain.';
+        void disconnect(); // do not silently lose agent output
       }
     }
   }
   async function newThread() {
     if (busy) { errorMessage = 'Stop the active turn before opening another thread.'; return; }
     activeThread = '';
+    discardStream();
+    closeReader();
     messages = [];
+    followTail = true;
     toolItems = [];
     approvals = [];
     reviewedApproval = false;
@@ -395,7 +457,10 @@
     if (busy) { errorMessage = 'Stop the active turn before resuming.'; return; }
     if (thread.project !== activeProject) await chooseProject(thread.project);
     activeThread = thread.id;
+    discardStream();
+    closeReader();
     messages = [];
+    followTail = true;
     toolItems = [];
     approvals = [];
     reviewedApproval = false;
@@ -461,6 +526,11 @@
     return () => {
       disposed = true;
       navMedia.removeEventListener('change', updateNavMedia);
+      connectionEpoch++
+      fence.beginDisconnect();
+      discardStream();
+      pending.clear();
+      earlyReplies.clear();
       unlisten?.();
       void bridge?.disconnect();
     };
@@ -512,15 +582,29 @@
         {#if messages.length === 0}<div class="empty-state"><span class="empty-orbit" aria-hidden="true">✳</span><h2>Start a Codex thread.</h2><p>Recent thread IDs are saved locally, but message content comes from the Codex App Server.</p></div>
         {:else}
           <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-          <div class="feed" bind:this={feedEl} use:measureFeed onscroll={e => scrollTop = e.currentTarget.scrollTop} role="feed" aria-label="Codex conversation" aria-busy={busy} tabindex="0" data-testid="nc06-feed">
+          <div class="feed" bind:this={feedEl} use:measureFeed onscroll={e => onFeedScroll(e.currentTarget)} role="feed" aria-label="Codex conversation" aria-busy={busy} tabindex="0" data-testid="nc06-feed">
             <div class="virtual-canvas" style:height={messages.length * ROW_HEIGHT + 'px'}>
               {#each shownMessages as message, offset (message.id)}
                 <article class="message-row" class:user-message={message.role === 'user'} style:top={(range.start + offset) * ROW_HEIGHT + 'px'} aria-posinset={range.start + offset + 1} aria-setsize={messages.length} data-testid="nc06-row">
-                  <div class="message-avatar">{message.role === 'user' ? 'Y' : 'U'}</div><div class="message-content"><div class="message-line"><span class="message-author">{message.role === 'user' ? 'You' : 'Codex'}</span></div><p>{message.text || 'Thinking…'}</p></div>
+                  <div class="message-avatar">{message.role === 'user' ? 'Y' : 'U'}</div><div class="message-content"><div class="message-line"><span class="message-author">{message.role === 'user' ? 'You' : 'Codex'}</span>{#if message.text.length > ROW_PREVIEW_CHARS}<button class="nc08-read" onclick={() => { readerId = message.id; readerPosition = 0; }}>Read message</button>{/if}</div><p>{rowPreview(message.text) || 'Thinking…'}</p></div>
                 </article>
               {/each}
             </div>
           </div>
+        {/if}
+        {#if readerMessage && page}
+          <section class="nc08-reader" aria-label="Message reader" data-testid="nc08-reader">
+            <div class="nc08-reader-head">
+              <strong>{readerMessage.role === 'user' ? 'You' : 'Codex'} · Message detail</strong>
+              <button class="secondary-action" aria-label="Close message reader" onclick={closeReader}>Close</button>
+            </div>
+            <p>Page {page.page + 1} of {page.pages} · text rendered on demand</p>
+            <pre>{page.text}</pre>
+            <div class="nc08-reader-controls">
+              <button class="secondary-action" disabled={!page.hasPrevious} onclick={() => readerPosition--}>Previous</button>
+              <button class="secondary-action" disabled={!page.hasNext} onclick={() => readerPosition++}>Next</button>
+            </div>
+          </section>
         {/if}
       </div>
       {#if currentApproval}
