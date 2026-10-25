@@ -42,6 +42,15 @@ node experiments/native-renderer/benchmark.mjs cli --full-idle
 node experiments/native-renderer/benchmark.mjs connected --full-idle
 ```
 
+The strict diagnostic guard below rejects source/binary mismatches, missing
+Codex samples, partial runs and idle RSS overhead above **150 MiB**. It does
+not claim active-turn or production NC-10 acceptance:
+
+```powershell
+node experiments/native-renderer/check-idle-budget.mjs <cli-report.json> <connected-report.json>
+node --test experiments/native-renderer/tests/check-idle-budget.test.mjs
+```
+
 The connected mode reads only the user's existing ignored `artifacts/nc10/project-smoke-plan.json` and verifies that the official Codex child remains present in every settled sample. It does not ask Codex for an answer and cannot bypass upstream usage limits. Results are machine-local under ignored `experiments/native-renderer/results/` and carry the binary SHA256. Any uncommitted source is flagged `sourceDirty`; results must never be presented as a clean exact-commit qualification if that flag is true.
 
 The `cli` mode launches the same exact official Codex executable and performs only the official initialize/initialized handshake through its stdio JSONL protocol. The `--full-idle` option uses the actual NC-10 idle observation window (60 seconds settlement, 60 seconds measurement). Compare three native and CLI repetitions with the same version, machine, power settings and fixture. This still establishes only **system-engine connected idle parity**, not streaming/approval/recovery parity.

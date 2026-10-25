@@ -142,6 +142,60 @@ The shared crate remains *process-local*: cross-app single-instance
 coordination, full actor extraction, approval evidence, model turns,
 managed rollback and production renderer migration remain open.
 
+## Minimalist Codex wrapper UI reference — local design follow-up
+
+The owner's `minimalist_codex_wrapper_ui.html` was reimplemented as **native
+egui widgets**, not embedded HTML or WebView2. Source `afc5c7a494559aea01a24848e25a501011cdc931`
+contains an inset obsidian sidebar with expandable project/chat fixture tree,
+sidebar collapse, keyboard search, breadcrumb header, reference conversation/
+patch-preview, anchored composer, read-only permissions and informational
+model/effort selector. Icons are native vector primitives; no remote fonts,
+Tailwind runtime, CDN requests, scripted animations or retained browser
+renderer exist. Demo buttons never claim to execute a patch, authorize a
+tool or change Codex permission. The only live Codex integration is the
+same optional read-only official App Server handshake.
+
+Visual QA used a real Windows native 1216×859 screenshot kept locally at
+`experiments/native-renderer/results/minimal-ui-afc5c7a.png` (ignored,
+owner machine only). This shows the supplied design's hierarchy and does
+not imply feature parity.
+
+**Native idle benchmark — updated UI, clean-source source/binary verified**
+
+- Windows source: `afc5c7a494559aea01a24848e25a501011cdc931`
+- Native executable SHA256:
+  `609c934b831b8ad6f1e24e3c2e1507b8d5dac4f22120c308bff9a29163a8606f`
+- 10,000 locally generated rows, three 45-second renderer-only runs:
+  **93.03 MiB RSS p95** of run p95s, sampled idle CPU **0%**.
+  Previous simpler egui layout was 93.57 MiB RSS p95 in the same pilot
+  scenario: ~0.54 MiB difference, too small to characterize as a large
+  optimization but not a regression.
+- Three full 120-second CLI repetitions, each 60 s warm-up and 60 s
+  observation, official Codex present in every settled sample:
+  **113.93 MiB RSS p95**, sampled idle CPU **0%**. The first CLI run had
+  a transient engine RSS spike; its median was ~67.43 MiB.
+- Three full 120-second native UI + official Codex repetitions under the
+  same fixture/version/machine, all child Codex samples present:
+  **207.78 MiB RSS p95**, sampled idle CPU **0%**.
+- **Read-only candidate incremental RSS = 207.78 - 113.93 =
+  93.85 MiB**, with **56.15 MiB** remaining below the unchanged
+  150 MiB limit. Its `check-idle-budget.mjs` fail-closed budget guard
+  reports **PASS** for the *read-only candidate only*, with four node
+  regression tests PASS.
+
+The second connected repetition had a temporary total process-tree RSS
+increase to ~214 MiB, while the egui host remained ~92.07 MiB; the official
+Codex child increased from ~57.81 to ~112.24 MiB. This demonstrates engine
+fluctuation rather than a visual-renderer leak within those samples.
+Measurements are sequential across modes, not simultaneous/interleaved.
+Full real-turn streaming, patch preview, approvals, active performance and
+accessibility remain NOT_RUN. The earlier Tauri/WebView2 product RAM FAIL
+is not retroactively closed.
+
+Local ignored reports: `experiments/native-renderer/results/history-afc5c7a4-1792913001376/report.json`,
+`experiments/native-renderer/results/connected-afc5c7a4-1792913171999/report.json`,
+`experiments/native-renderer/results/cli-afc5c7a4-1792913567347/report.json`.
+
 ## Decision gate
 
 The candidate meets the first **read-only matched idle feasibility**
