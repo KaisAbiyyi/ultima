@@ -224,3 +224,20 @@ security/isolation or GPU performance have not been introduced. An alternate
 native rendering shell needs an architecture/performance qualification before
 it can replace the WebView UI while keeping Codex functionality, accessibility,
 approval boundaries and upstream compatibility. The 150 MiB limit stays open.
+
+## Independent native Rust renderer feasibility
+
+See [NC-10 native renderer spike](NC-10-NATIVE-RENDERER-SPIKE.md). The isolated
+egui/AccessKit UI with the existing Rust official-Codex supervisor/broker
+measured **92.72 MiB incremental RSS p95** above the official initialized
+App Server CLI baseline, in two groups of three 120-second matched-workload
+repetitions (60 s settled observation each). Both exact-source reports had
+official engine presence throughout; sampled CPU was 0% in both. Native Rust
+therefore has materially better **idle feasibility** than WebView2 with
+roughly 57 MiB headroom against the original 150 MiB ceiling.
+
+This does **not** close the NC-10 product RAM gate. The prototype is read-only,
+with no active model turns, permission parity, real Codex history, full
+accessibility acceptance or packaged release. Existing Tauri/WebView2 retains
+its measured FAIL; the experimental renderer has no product acceptance yet.
+The rest of NC-10 remains blocked by the unfinished parity and workload gates.
