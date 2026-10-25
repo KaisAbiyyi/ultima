@@ -27,7 +27,9 @@ pub struct SessionGate<T> {
 
 impl<T: Clone> Default for SessionGate<T> {
     fn default() -> Self {
-        Self { slot: Mutex::new(Slot::Empty) }
+        Self {
+            slot: Mutex::new(Slot::Empty),
+        }
     }
 }
 
@@ -50,6 +52,25 @@ impl<T: Clone> SessionGate<T> {
         Ok(runtime)
     }
 
+    /// Administrative runtime changes require an EMPTY gate. A stopping or
+    /// poisoned generation is not safe to replace, even if current() is None.
+    /// Poison an empty slot when a failed managed launch cannot be rolled back.
+    /// This prevents retrying a suspect runtime until the host is restarted.
+    pub async fn poison_idle(&self) {
+        let mut slot = self.slot.lock().await;
+        if matches!(&*slot, Slot::Empty) {
+            *slot = Slot::Poisoned;
+        }
+    }
+
+    pub async fn require_idle(&self) -> Result<(), GateError> {
+        match &*self.slot.lock().await {
+            Slot::Empty => Ok(()),
+            Slot::Poisoned => Err(GateError::Poisoned),
+            _ => Err(GateError::Busy),
+        }
+    }
+
     pub async fn current(&self) -> Option<(u64, T)> {
         match &*self.slot.lock().await {
             Slot::Running { generation, handle } => Some((*generation, handle.clone())),
@@ -66,8 +87,7 @@ impl<T: Clone> SessionGate<T> {
             Slot::Stopping { .. } => return Err(GateError::Busy),
             Slot::Running { .. } => {}
         }
-        if let Slot::Running { generation, handle } =
-            std::mem::replace(&mut *slot, Slot::Poisoned)
+        if let Slot::Running { generation, handle } = std::mem::replace(&mut *slot, Slot::Poisoned)
         {
             *slot = Slot::Stopping { generation };
             Ok(Some((generation, handle)))
@@ -117,7 +137,9 @@ mod tests {
                 let previous = alive.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(previous, 0, "overlapping process trees");
                 Ok::<_, ()>((generation as usize, ()))
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
             let (id, _) = gate.begin_stop().await.unwrap().unwrap();
             let (release, stopped) = oneshot::channel::<()>();
             let gate_clone = gate.clone();
@@ -130,7 +152,8 @@ mod tests {
             assert_eq!(
                 gate.start(generation + 1000, || -> Result<(usize, ()), ()> {
                     panic!("must not spawn before stop has completed")
-                }).await,
+                })
+                .await,
                 Err(StartError::Gate(GateError::Busy))
             );
             release.send(()).unwrap();
@@ -151,11 +174,15 @@ mod tests {
                 gate.start(generation, || {
                     spawned.fetch_add(1, Ordering::SeqCst);
                     Ok::<_, ()>((generation as usize, ()))
-                }).await.is_ok()
+                })
+                .await
+                .is_ok()
             }));
         }
         let mut successes = 0;
-        for worker in workers { successes += usize::from(worker.await.unwrap()); }
+        for worker in workers {
+            successes += usize::from(worker.await.unwrap());
+        }
         assert_eq!(successes, 1);
         assert_eq!(spawned.load(Ordering::SeqCst), 1);
     }
@@ -168,7 +195,10 @@ mod tests {
         assert!(gate.finish_stop(generation, false).await);
         assert!(gate.current().await.is_none());
         assert_eq!(
-            gate.start(2, || -> Result<(usize, ()), ()> { panic!("must fail closed") }).await,
+            gate.start(2, || -> Result<(usize, ()), ()> {
+                panic!("must fail closed")
+            })
+            .await,
             Err(StartError::Gate(GateError::Poisoned))
         );
     }
@@ -186,13 +216,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_update_rejected_while_running_or_stopping() {
+        let gate = SessionGate::<usize>::default();
+        assert_eq!(gate.require_idle().await, Ok(()));
+        gate.start(7, || Ok::<_, ()>((7, ()))).await.unwrap();
+        assert_eq!(gate.require_idle().await, Err(GateError::Busy));
+        let (generation, _) = gate.begin_stop().await.unwrap().unwrap();
+        assert_eq!(gate.require_idle().await, Err(GateError::Busy));
+        assert!(gate.finish_stop(generation, true).await);
+        assert_eq!(gate.require_idle().await, Ok(()));
+        gate.start(8, || Ok::<_, ()>((8, ()))).await.unwrap();
+        assert!(gate.finish_unexpected(8, false).await);
+        assert_eq!(gate.require_idle().await, Err(GateError::Poisoned));
+    }
+
+    #[tokio::test]
+    async fn failed_managed_recovery_poisoned_idle_before_retry() {
+        let gate = SessionGate::<usize>::default();
+        gate.poison_idle().await;
+        assert_eq!(gate.require_idle().await, Err(GateError::Poisoned));
+        assert_eq!(
+            gate.start(99, || -> Result<(usize, ()), ()> {
+                panic!("must not spawn after failed rollback")
+            })
+            .await,
+            Err(StartError::Gate(GateError::Poisoned))
+        );
+    }
+
+    #[tokio::test]
     async fn spontaneous_failed_teardown_stays_poisoned() {
         let gate = SessionGate::<usize>::default();
         gate.start(1, || Ok::<_, ()>((1, ()))).await.unwrap();
         assert!(gate.finish_unexpected(1, false).await);
-        assert_eq!(
-            gate.begin_stop().await,
-            Err(GateError::Poisoned)
-        );
+        assert_eq!(gate.begin_stop().await, Err(GateError::Poisoned));
     }
 }

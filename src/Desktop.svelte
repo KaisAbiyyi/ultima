@@ -3,7 +3,7 @@
   import { createMessage, type UIMessage } from './lib/history';
   import { visibleRange } from './lib/virtual';
   import { isTextComposing, resolveShortcut, shouldSendComposer } from './lib/shortcuts';
-  import { nativeBridge, desktopAvailable, type EngineBridge, type EngineEvent } from './lib/desktop-bridge';
+  import { nativeBridge, desktopAvailable, type EngineBridge, type EngineEvent, type ManagedRuntimeStatus } from './lib/desktop-bridge';
   import { EngineSessionFence } from './lib/engine-session-fence';
   import { FrameDeltas } from './lib/frame-deltas';
   import { readerPage, rowPreview, ROW_PREVIEW_CHARS } from './lib/message-paging';
@@ -51,6 +51,9 @@
   let searchEl: HTMLInputElement;
   let bridge: EngineBridge | null = null;
   let unlisten: (() => void) | null = null;
+  let runtimeInfo: ManagedRuntimeStatus | null = null;
+  let runtimeSource = '';
+  let runtimeBusy = false;
   let counter = 0;
   const pending = new Map<number, 'models' | 'create' | 'resume' | 'turn' | 'interrupt'>();
   // IPC notifications can arrive before invoke() resolves; replay only bounded replies.
@@ -207,6 +210,31 @@
     }
     if (navOpen) closeNavigation();
     persist();
+  }
+  async function refreshRuntime() {
+    if (!bridge) return;
+    try { runtimeInfo = await bridge.runtimeStatus(); }
+    catch { runtimeInfo = null; }
+  }
+  async function runtimeAction(operation: 'stage' | 'activate' | 'system' | 'rollback') {
+    if (!bridge || runtimeBusy || status === 'connecting' || status === 'disconnecting' || status === 'ready') {
+      errorMessage = 'Disconnect the active Codex session before changing runtimes.';
+      return;
+    }
+    runtimeBusy = true;
+    errorMessage = '';
+    try {
+      if (operation === 'stage') await bridge.runtimeStage(runtimeSource.trim());
+      if (operation === 'activate') {
+        if (!selectedProject) throw Error('Select project');
+        await bridge.runtimeActivate(selectedProject.path);
+      }
+      if (operation === 'system') await bridge.runtimeSystem();
+      if (operation === 'rollback') await bridge.runtimeRollback();
+      await refreshRuntime();
+    } catch {
+      errorMessage = 'Managed runtime operation rejected. Verify official asset, checksum and disconnect state.';
+    } finally { runtimeBusy = false; }
   }
   async function connect() {
     if (status === 'connecting' || status === 'disconnecting' || status === 'ready') return;
@@ -519,6 +547,7 @@
       void nativeBridge().then(async native => {
         if (disposed) return;
         bridge = native;
+        void refreshRuntime();
         const remove = await native.listen(onEngine);
         if (disposed) remove(); else unlisten = remove;
       }).catch(() => { errorMessage = 'Desktop IPC is unavailable.'; });
@@ -575,6 +604,26 @@
           <input id="nc06-executable" placeholder="C:\path\to\codex.exe" bind:value={executable} autocomplete="off"/>
           <p>Only the selected executable is launched via stdio in the selected project. Ultima never collects your Codex credentials.</p>
           <button class="secondary-action" disabled={!selectedProject || status === 'connecting' || status === 'disconnecting' || !executable.trim() || !desktopAvailable()} onclick={() => void connect()}>Connect to Codex</button>
+          {#if desktopAvailable()}
+            <details aria-label="Optional managed Codex runtime">
+              <summary>Optional verified Codex runtime (system default)</summary>
+              <p data-testid="nc12-runtime-state">Selection: {runtimeInfo?.mode ?? 'unknown'} {runtimeInfo?.version ?? ''}</p>
+              {#if runtimeInfo?.managedSupported}
+                <p>Only pinned Codex {runtimeInfo.pinnedVersion} is qualified. No automatic downloads or changes to global Codex.</p>
+                {#if runtimeInfo.assetUrl}
+                  <a href={runtimeInfo.assetUrl} target="_blank" rel="noopener noreferrer">Official upstream x64 Windows asset</a>
+                {/if}
+                <label for="nc12-source">Previously downloaded official executable (absolute path)</label>
+                <input id="nc12-source" bind:value={runtimeSource} placeholder="C:\\path\\to\\codex-x86_64-pc-windows-msvc.exe" autocomplete="off"/>
+                <button class="secondary-action" disabled={runtimeBusy || !runtimeSource.trim() || status === 'connecting' || status === 'disconnecting'} onclick={() => void runtimeAction('stage')}>Verify & stage</button>
+                <button class="secondary-action" disabled={runtimeBusy || !selectedProject || status === 'connecting' || status === 'disconnecting'} onclick={() => void runtimeAction('activate')}>Healthcheck & select managed</button>
+                <button class="secondary-action" disabled={runtimeBusy || status === 'connecting' || status === 'disconnecting'} onclick={() => void runtimeAction('rollback')}>Rollback selection</button>
+              {:else}
+                <p>Managed runtime currently supported only for Windows x64. System Codex remains available.</p>
+              {/if}
+              <button class="secondary-action" disabled={runtimeBusy || status === 'connecting' || status === 'disconnecting'} onclick={() => void runtimeAction('system')}>Use system Codex</button>
+            </details>
+          {/if}
           {#if !desktopAvailable()}<p data-testid="nc06-browser-limit">Browser preview only — launch the Tauri desktop to connect.</p>{/if}
         </div>
       {:else}<div class="nc06-engine"><button class="secondary-action" onclick={() => void disconnect()}>Disconnect engine</button><label for="nc06-model">Model</label><select id="nc06-model" bind:value={model} disabled={busy}><option value="">Engine default</option>{#each models as option}<option value={option}>{option}</option>{/each}</select></div>{/if}
