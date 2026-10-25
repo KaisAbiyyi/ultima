@@ -2,14 +2,20 @@
 mod lifecycle;
 mod runtime;
 
+use lifecycle::{GateError, SessionGate, StartError};
+use serde_json::{json, Value};
 use std::path::Path;
-use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use tauri::{Emitter, State};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use ultima_app_server_supervisor::{EngineSupervisor, OutputEvent};
-use ultima_protocol_bridge::{Approval, ApprovalDecision, ApprovalKind, Broker, ClientMethod, Event, Limits, NotificationKind, Phase, RpcId};
-use serde_json::{json, Value};
-use lifecycle::{SessionGate, GateError, StartError};
+use ultima_protocol_bridge::{
+    Approval, ApprovalDecision, ApprovalKind, Broker, ClientMethod, Event, Limits,
+    NotificationKind, Phase, RpcId,
+};
 
 #[derive(Clone)]
 struct EngineHandle {
@@ -32,28 +38,48 @@ impl Default for Shared {
 }
 enum Action {
     Call(ClientMethod, Value, oneshot::Sender<Result<u64, String>>),
-    Decision(Approval, ApprovalDecision, oneshot::Sender<Result<(), String>>),
+    Decision(
+        Approval,
+        ApprovalDecision,
+        oneshot::Sender<Result<(), String>>,
+    ),
     Stop,
 }
 /// A decision must match the complete immutable server request (not merely its id).
 fn parse_approval(value: &Value) -> Result<Approval, String> {
     let id: RpcId = serde_json::from_value(value.get("id").cloned().ok_or("Approval ID missing")?)
         .map_err(|_| safe_error("Invalid approval ID"))?;
-    let id_valid = match &id { RpcId::Number(_) => true, RpcId::String(s) => !s.is_empty() && s.len() <= 128 };
-    if !id_valid { return Err(safe_error("Invalid approval ID")); }
+    let id_valid = match &id {
+        RpcId::Number(_) => true,
+        RpcId::String(s) => !s.is_empty() && s.len() <= 128,
+    };
+    if !id_valid {
+        return Err(safe_error("Invalid approval ID"));
+    }
     let field = |name| -> Result<String, String> {
-        value.get(name).and_then(Value::as_str)
+        value
+            .get(name)
+            .and_then(Value::as_str)
             .filter(|s| !s.is_empty() && s.len() <= 256)
-            .map(str::to_owned).ok_or_else(|| safe_error("Invalid approval identity"))
+            .map(str::to_owned)
+            .ok_or_else(|| safe_error("Invalid approval identity"))
     };
     let kind = match value.get("kind").and_then(Value::as_str) {
         Some("command") => ApprovalKind::Command,
         Some("fileChange") => ApprovalKind::FileChange,
         _ => return Err(safe_error("Invalid approval kind")),
     };
-    Ok(Approval { id, kind, thread_id: field("threadId")?, turn_id: field("turnId")?,
-        item_id: field("itemId")?, started_at_ms: value.get("startedAtMs")
-            .and_then(Value::as_u64).ok_or("Invalid approval timestamp")? })
+    Ok(Approval {
+        id,
+        kind,
+        thread_id: field("threadId")?,
+        turn_id: field("turnId")?,
+        item_id: field("itemId")?,
+        started_at_ms: value
+            .get("startedAtMs")
+            .and_then(Value::as_u64)
+            .ok_or("Invalid approval timestamp")?,
+    })
 }
 fn safe_error(reason: &str) -> String {
     // Never forward arbitrary child stderr or protocol messages containing credentials.
@@ -350,21 +376,41 @@ async fn ultima_call(
     };
     let (_, handle) = state.gate.current().await.ok_or("Engine is not ready")?;
     let (tx, rx) = oneshot::channel();
-    handle.tx.send(Action::Call(allowed, params, tx)).await
+    handle
+        .tx
+        .send(Action::Call(allowed, params, tx))
+        .await
         .map_err(|_| safe_error("Engine closed"))?;
-    rx.await.map_err(|_| safe_error("Engine command unavailable"))?
+    rx.await
+        .map_err(|_| safe_error("Engine command unavailable"))?
 }
 #[tauri::command]
-async fn ultima_approval(state: State<'_, Shared>, session: u64, request: Value, decision: String) -> Result<(), String> {
-    if decision != "accept" && decision != "decline" { return Err(safe_error("Unsupported decision")); }
+async fn ultima_approval(
+    state: State<'_, Shared>,
+    session: u64,
+    request: Value,
+    decision: String,
+) -> Result<(), String> {
+    if decision != "accept" && decision != "decline" {
+        return Err(safe_error("Unsupported decision"));
+    }
     let approval = parse_approval(&request)?;
     let (current, handle) = state.gate.current().await.ok_or("Engine is not ready")?;
-    if current != session { return Err(safe_error("Stale engine session")); }
+    if current != session {
+        return Err(safe_error("Stale engine session"));
+    }
     let (tx, rx) = oneshot::channel();
-    let decision = if decision == "accept" { ApprovalDecision::Accept } else { ApprovalDecision::Decline };
-    handle.tx.try_send(Action::Decision(approval, decision, tx))
+    let decision = if decision == "accept" {
+        ApprovalDecision::Accept
+    } else {
+        ApprovalDecision::Decline
+    };
+    handle
+        .tx
+        .try_send(Action::Decision(approval, decision, tx))
         .map_err(|_| safe_error("Engine decision queue unavailable"))?;
-    rx.await.map_err(|_| safe_error("Engine decision dropped"))?
+    rx.await
+        .map_err(|_| safe_error("Engine decision dropped"))?
 }
 #[tauri::command]
 async fn ultima_disconnect(app: tauri::AppHandle, state: State<'_, Shared>) -> Result<(), String> {
@@ -372,7 +418,9 @@ async fn ultima_disconnect(app: tauri::AppHandle, state: State<'_, Shared>) -> R
         Ok(Some(v)) => v,
         Ok(None) => return Ok(()),
         Err(GateError::Busy) => return Err(safe_error("Engine shutdown already in progress")),
-        Err(GateError::Poisoned) => return Err(safe_error("Previous shutdown unconfirmed; restart Ultima")),
+        Err(GateError::Poisoned) => {
+            return Err(safe_error("Previous shutdown unconfirmed; restart Ultima"))
+        }
     };
     // Detached teardown guarantees the gate is eventually updated even if IPC caller cancels.
     let gate = state.gate.clone();
@@ -470,7 +518,17 @@ async fn ultima_runtime_rollback(
 fn main() {
     tauri::Builder::default()
         .manage(Shared::default())
-        .invoke_handler(tauri::generate_handler![ultima_connect, ultima_call, ultima_approval, ultima_disconnect, ultima_runtime_status, ultima_runtime_stage, ultima_runtime_activate, ultima_runtime_system, ultima_runtime_rollback])
+        .invoke_handler(tauri::generate_handler![
+            ultima_connect,
+            ultima_call,
+            ultima_approval,
+            ultima_disconnect,
+            ultima_runtime_status,
+            ultima_runtime_stage,
+            ultima_runtime_activate,
+            ultima_runtime_system,
+            ultima_runtime_rollback
+        ])
         .run(tauri::generate_context!())
         .expect("Ultima desktop could not start");
 }
