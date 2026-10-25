@@ -1,6 +1,7 @@
 import { mount } from 'svelte';
 import './app.css';
 import './nc06.css';
+import './nc09.css';
 
 const desktop = new URLSearchParams(window.location.search).get('desktop') === '1';
 const target = document.getElementById('app')!;
