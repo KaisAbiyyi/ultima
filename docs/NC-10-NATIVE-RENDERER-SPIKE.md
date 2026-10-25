@@ -198,6 +198,21 @@ Local ignored reports: `experiments/native-renderer/results/history-afc5c7a4-179
 
 ## Decision gate
 
+### Native UI reference alignment (October 25, 2026)
+
+The supplied `minimalist_codex_wrapper_ui.html` was re-audited for closer
+visual alignment. The Rust-only renderer now centers the conversation at
+768px, renders the actual reference TypeScript patch with 18.5px lines,
+uses the source's 768px wrapper / 16px composer padding / 262px sidebar,
+draws chevrons natively, and provides a two-layer read-only model/effort
+popover and ghost navigation. Segoe UI and Cascadia Mono are loaded from the
+**host's already installed Windows fonts** when present, without bundling
+those font assets. The mock remains offline and read-only. The Windows
+reference QA screenshot is retained under ignored
+`experiments/native-renderer/results/minimal-ui-fidelity-final.png`.
+No claim of browser-exact pixel fidelity, functional model choice or NC-10
+product acceptance is made.
+
 The candidate meets the first **read-only matched idle feasibility**
 threshold. Continue the shared Rust session and permission implementation,
 then retest CPU, latency and full-memory headroom under active real-product

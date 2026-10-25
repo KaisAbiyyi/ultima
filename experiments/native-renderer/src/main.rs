@@ -6,13 +6,15 @@ mod icons;
 mod theme;
 
 use eframe::egui::{
-    self, Align, CornerRadius, FontId, Frame, Key, Layout, Margin, RichText, ScrollArea, Stroke,
-    TextEdit,
+    self, Align, Color32, CornerRadius, FontId, Frame, Key, Layout, Margin, RichText, ScrollArea,
+    Sense, Stroke, TextEdit, Vec2,
 };
 use engine_probe::{EngineProbe, ProbeStatus};
 use icons::Icon;
 use std::path::PathBuf;
-use theme::{body, mono, small, BORDER, CANVAS, GREEN, MUTED, RAISED, SECONDARY, SURFACE, TEXT};
+use theme::{
+    body, mono, small, BORDER, CANVAS, GREEN, HOVER, MUTED, RAISED, SECONDARY, SURFACE, TEXT,
+};
 
 const MAX_HISTORY_ROWS: usize = 10_000;
 const MAX_DRAFT_CHARS: usize = 8 * 1024;
@@ -26,6 +28,111 @@ const PROJECT_THREADS: [[&str; 2]; 3] = [
     ["NC-10 renderer feasibility", "Session gate extraction"],
 ];
 const CHAT_TITLES: [&str; 2] = ["Regex semver git tag filter", "SQLite WAL pragma tuning"];
+const REFERENCE_PATCH: &str = r#"import { StringDecoder } from 'node:string_decoder';
+
+export function createJsonLineParser(onFrame: (msg: unknown) => void) {
+  const decoder = new StringDecoder('utf8');
+  let carry = '';
+
+  return (chunk: Buffer) => {
+    carry += decoder.write(chunk);
+    const lines = carry.split('\n');
+    carry = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      onFrame(JSON.parse(line));
+    }
+  };
+}"#;
+
+// Egui performs layout and painting; these compact native rows reproduce the
+// reference's 28px ghost-navigation rows, rather than pill-shaped buttons.
+fn ghost_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    selected: bool,
+    indent: f32,
+    disclosure: Option<bool>,
+) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 27.0), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label)
+    });
+    if selected || response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(8),
+            Color32::from_white_alpha(if selected { 14 } else { 7 }),
+        );
+    }
+    let color = if selected {
+        TEXT
+    } else if response.hovered() {
+        SECONDARY
+    } else {
+        MUTED
+    };
+    if let Some(expanded) = disclosure {
+        let c = rect.left_center() + egui::vec2(14.0, 0.0);
+        let stroke = Stroke::new(1.35, MUTED);
+        let points = if expanded {
+            [
+                c + egui::vec2(-3.0, -1.5),
+                c + egui::vec2(0.0, 1.5),
+                c + egui::vec2(3.0, -1.5),
+            ]
+        } else {
+            [
+                c + egui::vec2(-1.5, -3.0),
+                c + egui::vec2(1.5, 0.0),
+                c + egui::vec2(-1.5, 3.0),
+            ]
+        };
+        ui.painter().line_segment([points[0], points[1]], stroke);
+        ui.painter().line_segment([points[1], points[2]], stroke);
+    } else if indent > 0.0 {
+        let x = rect.left() + 15.0;
+        ui.painter().line_segment(
+            [
+                egui::pos2(x, rect.top() - 1.0),
+                egui::pos2(x, rect.bottom() + 1.0),
+            ],
+            Stroke::new(1.0, BORDER),
+        );
+    }
+    ui.painter().text(
+        rect.left_center()
+            + egui::vec2(
+                if disclosure.is_some() {
+                    28.0
+                } else {
+                    9.0 + indent
+                },
+                0.0,
+            ),
+        egui::Align2::LEFT_CENTER,
+        label,
+        FontId::proportional(11.7),
+        color,
+    );
+    if selected && disclosure.is_none() {
+        ui.painter()
+            .circle_filled(rect.right_center() - egui::vec2(9.0, 0.0), 2.1, TEXT);
+    }
+    response
+}
+
+fn centered_width(ui: &mut egui::Ui, max_width: f32, add: impl FnOnce(&mut egui::Ui)) {
+    let total = ui.available_width();
+    let content = total.min(max_width).max(1.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(((total - content) * 0.5).max(0.0));
+        ui.allocate_ui_with_layout(Vec2::new(content, 0.0), Layout::top_down(Align::Min), add);
+    });
+}
 
 struct ChatRow {
     from_user: bool,
@@ -141,7 +248,7 @@ impl RendererSpike {
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
-        let width = if self.sidebar_collapsed { 43.0 } else { 238.0 };
+        let width = if self.sidebar_collapsed { 42.0 } else { 238.0 };
         let available_h = ui.available_height() - 2.0;
         theme::panel().show(ui, |ui| {
             ui.set_min_height(available_h - 25.0);
@@ -176,7 +283,12 @@ impl RendererSpike {
                         .font(FontId::monospace(12.0))
                         .strong(),
                 );
-                ui.label(small("native"));
+                ui.label(
+                    RichText::new("native")
+                        .font(FontId::monospace(10.0))
+                        .color(MUTED)
+                        .background_color(RAISED),
+                );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if icons::button(ui, Icon::Sidebar, "Collapse sidebar (Ctrl+B)").clicked() {
                         self.sidebar_collapsed = true;
@@ -187,23 +299,42 @@ impl RendererSpike {
                 });
             });
             ui.add_space(10.0);
-            let new_chat = egui::Button::new(
-                RichText::new("+    New Chat                                        Ctrl+N")
-                    .color(TEXT)
-                    .size(11.0),
-            )
-            .fill(RAISED)
-            .stroke(Stroke::new(1.0, BORDER))
-            .corner_radius(CornerRadius::same(10));
-            if ui
-                .add_sized([ui.available_width(), 31.0], new_chat)
-                .clicked()
-            {
+            let (new_rect, new_response) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::click());
+            ui.painter().rect(
+                new_rect,
+                CornerRadius::same(11),
+                if new_response.hovered() {
+                    HOVER
+                } else {
+                    RAISED
+                },
+                Stroke::new(1.0, BORDER),
+                egui::StrokeKind::Middle,
+            );
+            ui.painter().text(
+                new_rect.left_center() + egui::vec2(12.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                "+   New Chat",
+                FontId::proportional(12.0),
+                TEXT,
+            );
+            ui.painter().text(
+                new_rect.right_center() - egui::vec2(12.0, 0.0),
+                egui::Align2::RIGHT_CENTER,
+                "Ctrl+N",
+                FontId::monospace(10.0),
+                MUTED,
+            );
+            new_response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New Chat (Ctrl+N)")
+            });
+            if new_response.clicked() {
                 self.new_preview();
             }
-            ui.add_space(12.0);
+            ui.add_space(14.0);
 
-            let remaining = (ui.available_height() - 73.0).max(80.0);
+            let remaining = (ui.available_height() - 77.0).max(80.0);
             ScrollArea::vertical()
                 .id_salt("sidebar-navigation")
                 .max_height(remaining)
@@ -223,55 +354,33 @@ impl RendererSpike {
                     });
                     ui.add_space(3.0);
                     for idx in 0..PROJECTS.len() {
-                        ui.horizontal(|ui| {
-                            let mark = if self.expanded[idx] { "v" } else { ">" };
-                            if ui.add(egui::Button::new(mark).frame(false)).clicked() {
-                                self.expanded[idx] = !self.expanded[idx];
-                            }
-                            let selected = !self.standalone && self.project == idx;
-                            let label = egui::Button::new(
-                                RichText::new(PROJECTS[idx]).size(11.5).color(if selected {
-                                    TEXT
-                                } else {
-                                    SECONDARY
-                                }),
-                            )
-                            .frame(false);
-                            let choice = ui.add_enabled(self.engine.is_none(), label);
-                            if choice.clicked() {
+                        let selected = !self.standalone && self.project == idx;
+                        let choice =
+                            ghost_row(ui, PROJECTS[idx], selected, 0.0, Some(self.expanded[idx]));
+                        if choice.clicked() {
+                            self.expanded[idx] = !self.expanded[idx];
+                            if self.engine.is_none() {
                                 self.project = idx;
                                 self.standalone = false;
                                 self.selected_thread = 0;
-                                self.expanded[idx] = true;
                             }
-                        });
+                        }
                         if self.expanded[idx] {
-                            ui.indent(("project-thread", idx), |ui| {
-                                for (thread, name) in PROJECT_THREADS[idx].iter().enumerate() {
-                                    let selected = !self.standalone
-                                        && self.project == idx
-                                        && self.selected_thread == thread;
-                                    let text = RichText::new(*name).size(11.0).color(if selected {
-                                        TEXT
-                                    } else {
-                                        MUTED
-                                    });
-                                    if ui
-                                        .add_enabled(
-                                            self.engine.is_none(),
-                                            egui::Button::new(text).frame(false),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.project = idx;
-                                        self.selected_thread = thread;
-                                        self.standalone = false;
-                                    }
+                            for (thread, name) in PROJECT_THREADS[idx].iter().enumerate() {
+                                let active = !self.standalone
+                                    && self.project == idx
+                                    && self.selected_thread == thread;
+                                if ghost_row(ui, name, active, 18.0, None).clicked()
+                                    && self.engine.is_none()
+                                {
+                                    self.project = idx;
+                                    self.selected_thread = thread;
+                                    self.standalone = false;
                                 }
-                            });
+                            }
                         }
                     }
-                    ui.add_space(19.0);
+                    ui.add_space(18.0);
                     ui.horizontal(|ui| {
                         ui.label(mono("CHATS"));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -279,15 +388,15 @@ impl RendererSpike {
                         });
                     });
                     for (idx, title) in CHAT_TITLES.iter().enumerate() {
-                        if ui
-                            .add_enabled(
-                                self.engine.is_none(),
-                                egui::Button::new(
-                                    RichText::new(*title).size(11.0).color(SECONDARY),
-                                )
-                                .frame(false),
-                            )
-                            .clicked()
+                        if ghost_row(
+                            ui,
+                            title,
+                            self.standalone && self.selected_thread == idx,
+                            0.0,
+                            None,
+                        )
+                        .clicked()
+                            && self.engine.is_none()
                         {
                             self.standalone = true;
                             self.selected_thread = idx;
@@ -295,18 +404,50 @@ impl RendererSpike {
                     }
                 });
             ui.separator();
-            if ui
-                .add_sized(
-                    [ui.available_width(), 33.0],
-                    egui::Button::new(
-                        RichText::new("dev@local     ·     Settings")
-                            .size(11.0)
-                            .color(SECONDARY),
-                    )
-                    .frame(false),
-                )
-                .clicked()
-            {
+            let (rect, response) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 50.0), Sense::click());
+            if response.hovered() {
+                ui.painter()
+                    .rect_filled(rect, CornerRadius::same(10), HOVER);
+            }
+            let avatar = egui::Rect::from_min_size(
+                rect.left_top() + egui::vec2(5.0, 11.0),
+                Vec2::splat(26.0),
+            );
+            ui.painter().rect(
+                avatar,
+                CornerRadius::same(7),
+                HOVER,
+                Stroke::new(1.0, BORDER),
+                egui::StrokeKind::Middle,
+            );
+            ui.painter().text(
+                avatar.center(),
+                egui::Align2::CENTER_CENTER,
+                "dv",
+                FontId::monospace(11.0),
+                TEXT,
+            );
+            ui.painter().text(
+                rect.left_top() + egui::vec2(40.0, 17.0),
+                egui::Align2::LEFT_CENTER,
+                "dev@local",
+                FontId::proportional(12.0),
+                TEXT,
+            );
+            ui.painter()
+                .circle_filled(rect.left_top() + egui::vec2(43.0, 33.0), 3.0, GREEN);
+            ui.painter().text(
+                rect.left_top() + egui::vec2(51.0, 33.0),
+                egui::Align2::LEFT_CENTER,
+                "Profile & settings",
+                FontId::monospace(10.0),
+                MUTED,
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Profile & settings")
+            });
+            if response.clicked() {
                 self.overlay = Overlay::Settings;
             }
         });
@@ -323,7 +464,7 @@ impl RendererSpike {
                 }
                 if self.show_reference {
                     ui.label(
-                        RichText::new("+18 / -3")
+                        RichText::new("+28 / -6")
                             .font(FontId::monospace(10.0))
                             .color(GREEN),
                     );
@@ -334,71 +475,99 @@ impl RendererSpike {
 
     fn demo_conversation(&mut self, ui: &mut egui::Ui) {
         ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.separator();
-            ui.label(
-                RichText::new("you")
-                    .font(FontId::monospace(11.0))
-                    .color(MUTED),
-            );
-        });
-        ui.label(RichText::new(
-            "Buat parser stream stdout untuk wrapper Codex agar chunk JSON tidak terpotong saat di-pipe ke UI."
-        ).color(TEXT).size(13.0));
-        ui.add_space(30.0);
+        Frame::new()
+            .inner_margin(Margin { left: 11, right: 0, top: 0, bottom: 0 })
+            .stroke(Stroke { width: 0.0, color: Color32::TRANSPARENT })
+            .show(ui, |ui| {
+                let top = ui.cursor().top();
+                ui.label(mono("you"));
+                ui.add_space(4.0);
+                ui.label(RichText::new(
+                    "Buat parser stream stdout untuk wrapper codex agar chunk JSON tidak terpotong saat di-pipe ke UI."
+                ).size(13.0).color(TEXT));
+                let bottom = ui.min_rect().bottom();
+                ui.painter().line_segment(
+                    [egui::pos2(ui.min_rect().left() - 9.0, top + 1.0),
+                     egui::pos2(ui.min_rect().left() - 9.0, bottom - 1.0)],
+                    Stroke::new(2.0, Color32::from_gray(67)),
+                );
+            });
+        ui.add_space(35.0);
         egui::CollapsingHeader::new(
-            RichText::new("Thought for 1.4s · inspect JSONL boundaries")
-                .font(FontId::monospace(10.5))
+            RichText::new("Thought for 1.4s")
+                .font(FontId::monospace(11.0))
                 .color(MUTED),
         )
         .default_open(false)
         .show(ui, |ui| {
             ui.label(body(
-                "Reference fixture only. No private reasoning or live model output.",
+                "Reference fixture · inspected stream UTF-8 boundary handling.",
             ));
         });
+        ui.add_space(7.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(mono("codex"));
+            ui.spacing_mut().item_spacing.x = 7.0;
+            ui.label(
+                RichText::new("codex")
+                    .font(FontId::monospace(11.0))
+                    .color(TEXT),
+            );
             ui.label(small("·"));
-            ui.label(mono("read_file(\"src/ipc/stream.ts\")"));
+            ui.label(mono("read_file(\"src/ipc/stream.ts\") · 48 lines"));
             ui.label(
                 RichText::new("+18  -3")
                     .font(FontId::monospace(10.0))
-                    .color(GREEN),
+                    .color(GREEN)
+                    .background_color(RAISED),
             );
         });
-        ui.add_space(5.0);
-        ui.label(body(
-            "Gunakan buffer untuk menyimpan sisa frame JSONL sebelum mengurai setiap baris:",
-        ));
-        ui.add_space(9.0);
+        ui.add_space(11.0);
+        ui.label(RichText::new(
+            "Gunakan `StringDecoder` dengan sisa buffer baris terakhir agar setiap frame JSON terjamin utuh sebelum di-parse:"
+        ).size(13.0).color(SECONDARY));
+        ui.add_space(13.0);
         Frame::new()
             .fill(SURFACE)
             .stroke(Stroke::new(1.0, BORDER))
             .corner_radius(CornerRadius::same(11))
-            .inner_margin(Margin::same(12))
+            .inner_margin(Margin::symmetric(13, 10))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(mono("patch preview · reference only"));
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    ui.label(mono("patch preview"));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.add(egui::Button::new("copy").frame(false)).clicked() {
-                            ui.ctx().copy_text(
-                                "fn push_chunk(buffer: &mut String, chunk: &str) { buffer.push_str(chunk); }".to_owned()
-                            );
+                            ui.ctx().copy_text(REFERENCE_PATCH.to_owned());
                         }
                         ui.add_enabled(false, egui::Button::new("apply").frame(false))
                             .on_hover_text("No edits can be applied from this read-only prototype");
                     });
                 });
+                ui.add_space(3.0);
                 ui.separator();
-                ui.add(egui::Label::new(RichText::new(
-                    "fn push_chunk(buffer: &mut String, chunk: &str) {\n    buffer.push_str(chunk);\n    // Decode complete JSONL frames only.\n}"
-                ).font(FontId::monospace(12.0)).color(TEXT)).selectable(true));
+                ui.add_space(10.0);
+                ScrollArea::horizontal()
+                    .id_salt("reference-ts")
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        // The HTML reference uses text-xs/leading-relaxed;
+                        // its line boxes are taller than egui's default.
+                        for line in REFERENCE_PATCH.lines() {
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(ui.available_width().max(400.0), 18.5),
+                                Layout::left_to_right(Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        RichText::new(if line.is_empty() { " " } else { line })
+                                            .font(FontId::monospace(11.5))
+                                            .color(TEXT),
+                                    );
+                                },
+                            );
+                        }
+                    });
+                ui.add_space(6.0);
             });
-        ui.add_space(10.0);
-        ui.label(small(
-            "Illustrative content from the supplied design — not a real Codex response.",
-        ));
     }
 
     fn empty_conversation(&mut self, ui: &mut egui::Ui) {
@@ -446,12 +615,13 @@ impl RendererSpike {
                 .id_salt("empty-or-reference")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.set_max_width(745.0);
-                    if self.show_reference {
-                        self.demo_conversation(ui);
-                    } else {
-                        self.empty_conversation(ui);
-                    }
+                    centered_width(ui, 768.0, |ui| {
+                        if self.show_reference {
+                            self.demo_conversation(ui);
+                        } else {
+                            self.empty_conversation(ui);
+                        }
+                    });
                 });
             return;
         }
@@ -461,29 +631,32 @@ impl RendererSpike {
             .id_salt("native-fixture-chat")
             .auto_shrink([false, false])
             .show_rows(ui, 49.0, self.history.len(), |ui, rows| {
-                ui.set_max_width(745.0);
-                for i in rows {
-                    let row = &self.history[i];
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(if row.from_user { "you" } else { "codex" })
-                                .font(FontId::monospace(11.0))
-                                .color(if row.from_user { TEXT } else { SECONDARY }),
-                        );
-                        ui.label(RichText::new(&row.preview).size(12.0).color(SECONDARY));
-                    });
-                    ui.add_space(14.0);
-                }
+                centered_width(ui, 768.0, |ui| {
+                    for i in rows {
+                        let row = &self.history[i];
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(if row.from_user { "you" } else { "codex" })
+                                    .font(FontId::monospace(11.0))
+                                    .color(if row.from_user { TEXT } else { SECONDARY }),
+                            );
+                            ui.label(RichText::new(&row.preview).size(12.0).color(SECONDARY));
+                        });
+                        ui.add_space(14.0);
+                    }
+                });
             });
     }
 
     fn composer(&mut self, ui: &mut egui::Ui) {
-        let content_w = ui.available_width().min(745.0);
+        // Reference: max-w-3xl (768px) composer wrapper with px-4 (16px)
+        // applied on both sides. The visual input box is therefore 736px.
+        let content_w = (ui.available_width().min(768.0) - 32.0).max(280.0);
         ui.vertical_centered(|ui| {
             ui.set_max_width(content_w);
             ui.horizontal(|ui| {
                 ui.menu_button(
-                    RichText::new(format!(">  {}", self.active_project()))
+                    RichText::new(format!("▱  {}", self.active_project()))
                         .font(FontId::monospace(11.0))
                         .color(SECONDARY),
                     |ui| {
@@ -497,32 +670,54 @@ impl RendererSpike {
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(mono(if self.engine.is_some() {
-                        "official app-server  ·  read-only"
+                        "official app-server · read-only"
                     } else {
-                        "local preview  ·  no engine"
+                        "~/workspace/codex-wrapper-ui · main*"
                     }));
                 });
             });
             ui.add_space(4.0);
             theme::compose().show(ui, |ui| {
                 ui.add_sized(
-                    [ui.available_width(), 52.0],
+                    [ui.available_width(), 48.0],
                     TextEdit::multiline(&mut self.draft)
                         .frame(false)
                         .hint_text("Ask Codex to inspect files, apply a patch, or run a command...")
                         .desired_rows(2)
                         .char_limit(MAX_DRAFT_CHARS),
                 );
-                ui.add_space(8.0);
+                ui.add_space(7.0);
                 ui.horizontal(|ui| {
                     ui.menu_button(
                         RichText::new("●  Read-Only").color(SECONDARY).size(11.0),
                         |ui| {
-                            ui.label(RichText::new("Sandbox permission").color(MUTED).size(10.0));
-                            ui.label(body("Read-Only · native prototype"));
-                            ui.add_enabled(false, egui::Button::new("Auto-Edit"));
-                            ui.add_enabled(false, egui::Button::new("Full Access"));
-                            ui.label(small("Permissions cannot be escalated in this UI."));
+                            ui.set_min_width(222.0);
+                            ui.label(mono("SANDBOX PERMISSION"));
+                            ui.separator();
+                            for (name, detail) in [
+                                ("Full Access", "Read, write files & execute shell"),
+                                ("Auto-Edit", "Apply patches, ask before shell"),
+                                ("Read-Only", "Inspect without mutations"),
+                            ] {
+                                ui.add_enabled_ui(false, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new("●").size(11.0).color(
+                                            if name == "Read-Only" {
+                                                SECONDARY
+                                            } else {
+                                                MUTED
+                                            },
+                                        ));
+                                        ui.vertical(|ui| {
+                                            ui.label(RichText::new(name).size(11.5).color(TEXT));
+                                            ui.label(small(detail));
+                                        });
+                                    });
+                                });
+                                ui.add_space(4.0);
+                            }
+                            ui.separator();
+                            ui.label(small("Reference preview. Permissions stay read-only."));
                         },
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -533,16 +728,60 @@ impl RendererSpike {
                             icons::button(ui, Icon::Mic, "Dictation not implemented")
                         });
                         ui.menu_button(
-                            RichText::new("▂▅  Codex  ·  engine default  ⌄")
-                                .font(FontId::monospace(11.0))
-                                .color(SECONDARY),
+                            RichText::new(if self.engine.is_some() {
+                                "▂▅  Codex · default  ⌄"
+                            } else {
+                                "▂▅  o4-mini · high  ⌄"
+                            })
+                            .font(FontId::monospace(11.0))
+                            .color(SECONDARY),
                             |ui| {
-                                ui.label(mono("1  SELECT MODEL"));
-                                ui.label(body("Managed by official Codex App Server"));
-                                ui.add_space(8.0);
-                                ui.label(mono("2  REASONING EFFORT"));
+                                ui.set_min_width(265.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(mono("1  SELECT MODEL"));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        ui.label(small("codex-core"));
+                                    });
+                                });
+                                for (name, subtitle) in [
+                                    ("o4-mini", "Fast reasoning & low latency"),
+                                    ("o3", "Deep multi-file synthesis"),
+                                    ("gpt-4.1", "Direct instruction following"),
+                                ] {
+                                    ui.add_enabled_ui(false, |ui| {
+                                        ui.vertical(|ui| {
+                                            ui.label(
+                                                RichText::new(name)
+                                                    .font(FontId::monospace(11.0))
+                                                    .color(TEXT),
+                                            );
+                                            ui.label(small(subtitle));
+                                        });
+                                    });
+                                    ui.add_space(4.0);
+                                }
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    ui.label(mono("2  REASONING EFFORT"));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        ui.label(small("preview only"));
+                                    });
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 3.0;
+                                    for option in ["low", "med", "high", "max"] {
+                                        ui.add_enabled(
+                                            false,
+                                            egui::Button::new(
+                                                RichText::new(option).font(FontId::monospace(10.0)),
+                                            )
+                                            .fill(if option == "high" { HOVER } else { SURFACE }),
+                                        );
+                                    }
+                                });
+                                ui.add_space(5.0);
                                 ui.label(small(
-                                    "Read-only probe does not query model capabilities.",
+                                    "Visual reference only; model and effort cannot be changed.",
                                 ));
                             },
                         );
@@ -649,7 +888,7 @@ impl eframe::App for RendererSpike {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
 
-        let sidebar_width = if self.sidebar_collapsed { 70.0 } else { 266.0 };
+        let sidebar_width = if self.sidebar_collapsed { 70.0 } else { 270.0 };
         egui::SidePanel::left("ultima-sidebar")
             .exact_width(sidebar_width)
             .resizable(false)
@@ -724,6 +963,7 @@ fn main() -> eframe::Result {
         "Ultima Native Renderer Spike",
         options,
         Box::new(move |cc| {
+            theme::use_system_fonts(&cc.egui_ctx);
             theme::configure(&cc.egui_ctx);
             let engine = exe
                 .clone()

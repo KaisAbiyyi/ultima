@@ -16,6 +16,25 @@ Performance and security choices:
 
 The uploaded file is a visual reference, **not** a production implementation or upstream feature contract. UI matching must not weaken approval policy, memory budget or application boundaries.
 
+### Closer source-fidelity pass (October 25, 2026)
+
+The native mock now uses the actual reference TypeScript JSONL example instead
+of the previous Rust placeholder, with relaxed 18.5px code line height, user
+message left rule, centered max-768px conversation, the 768px composer parent
+and its own 16px horizontal inset (736px input box), narrower ghost rows,
+native vector disclosure arrows, profile avatar and two-level model/effort
+menu. We follow the original obsidian palette and 262px inset sidebar.
+Windows installs supply Segoe UI and Cascadia Mono *at runtime* when present;
+neither font is embedded, uploaded or redistributed; egui bundled defaults
+remain available elsewhere.
+
+Two differences are intentionally retained: the OS's native titlebar and the
+read-only safety state in place of the reference's mock Full Access permission.
+This is a **native source-inspired recreation**, not a pixel-perfect browser
+render. Browser CSS line metrics and interactive voice/model/patch services
+cannot be exactly reproduced without changing engines or adding backend
+features. No model execution, patch apply or permissions were enabled.
+
 The renderer uses `eframe = 0.33.3` with only glow, default fonts and AccessKit. It retains the repo's Apache-2.0 license compatibility. No production runtime code or permission boundary is replaced.
 
 When provided *both* `--codex-exe=<absolute trusted executable>` and `--project=<absolute directory>`, the spike starts a read-only live handshake with the official Codex App Server, reusing Ultima's Rust `EngineSupervisor`, `Broker` and shared generation-fenced `SessionGate`. It exposes no model-turn, tool execution, or approval acceptance controls; any unexpected server approval is denied. The engine is owned by a Windows Job and shuts down on the UI's exit. The connection state is displayed in the top bar. This is a transport **probe**, not NC-07 implementation parity or a production runtime selector.

@@ -1,6 +1,10 @@
 //! Offline-only design tokens translated from minimalist_codex_wrapper_ui.html.
 //! No Tailwind runtime, remote fonts, browser process or permanent animation.
-use eframe::egui::{self, Color32, CornerRadius, FontId, Frame, Margin, RichText, Stroke};
+use eframe::egui::{
+    self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Frame, Margin,
+    RichText, Stroke,
+};
+use std::sync::Arc;
 
 pub const CANVAS: Color32 = Color32::from_rgb(9, 9, 11);
 pub const SURFACE: Color32 = Color32::from_rgb(14, 14, 17);
@@ -11,6 +15,39 @@ pub const TEXT: Color32 = Color32::from_rgb(238, 238, 240);
 pub const SECONDARY: Color32 = Color32::from_rgb(158, 158, 166);
 pub const MUTED: Color32 = Color32::from_rgb(105, 105, 114);
 pub const GREEN: Color32 = Color32::from_rgb(104, 211, 159);
+
+/// Read already-installed Windows font files at runtime, never vendor fonts or
+/// fetch remote assets. egui default bundled fonts remain the safe fallback.
+/// Segoe UI and Cascadia Mono approximate the reference's Inter/JetBrains.
+pub fn use_system_fonts(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+    let root = std::path::Path::new(r"C:\Windows\Fonts");
+    let prop = root.join("segoeui.ttf");
+    let mono = root.join("CascadiaMono.ttf");
+    if let Ok(bytes) = std::fs::read(prop) {
+        fonts.font_data.insert(
+            "ultima-proportional".to_owned(),
+            Arc::new(FontData::from_owned(bytes)),
+        );
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .insert(0, "ultima-proportional".to_owned());
+    }
+    if let Ok(bytes) = std::fs::read(mono) {
+        fonts.font_data.insert(
+            "ultima-mono".to_owned(),
+            Arc::new(FontData::from_owned(bytes)),
+        );
+        fonts
+            .families
+            .entry(FontFamily::Monospace)
+            .or_default()
+            .insert(0, "ultima-mono".to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
 
 pub fn configure(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
@@ -37,8 +74,8 @@ pub fn configure(ctx: &egui::Context) {
     visuals.widgets.hovered.corner_radius = CornerRadius::same(9);
     visuals.widgets.active.corner_radius = CornerRadius::same(9);
     style.visuals = visuals;
-    style.spacing.item_spacing = egui::vec2(7.0, 6.0);
-    style.spacing.button_padding = egui::vec2(8.0, 5.0);
+    style.spacing.item_spacing = egui::vec2(5.0, 5.0);
+    style.spacing.button_padding = egui::vec2(7.0, 4.0);
     style.spacing.window_margin = Margin::same(12);
     style
         .text_styles
@@ -66,7 +103,7 @@ pub fn body(text: impl Into<String>) -> RichText {
 
 pub fn mono(text: impl Into<String>) -> RichText {
     RichText::new(text.into())
-        .font(FontId::monospace(11.0))
+        .font(FontId::monospace(10.5))
         .color(SECONDARY)
 }
 
@@ -75,7 +112,7 @@ pub fn panel() -> Frame {
         .fill(SURFACE)
         .stroke(Stroke::new(1.0, BORDER))
         .corner_radius(CornerRadius::same(15))
-        .inner_margin(Margin::same(12))
+        .inner_margin(Margin::same(10))
 }
 
 pub fn compose() -> Frame {
