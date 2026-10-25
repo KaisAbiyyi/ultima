@@ -19,6 +19,9 @@ test('NC-10 missing and synthetic evidence never produce a native PASS', () => {
     assert.equal(result.gates.some(gate => gate.status === 'PASS'), false);
   }
 });
+test('NC-10 collection errors are FAIL and cannot masquerade as an unperformed gate', () => {
+  assert.equal(evaluateQualification({ collectionFailure: { stage: 'endurance-project-switch' } }).status, 'FAIL');
+});
 const sha = 'a'.repeat(64);
 const identity = { platform: 'win32', physicalWindows: true, sourceSha: 'b'.repeat(40),
   dirty: false, artifactSha256: sha, codexSha256: sha, codexVersion: 'test-version',

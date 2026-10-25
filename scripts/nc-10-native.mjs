@@ -202,11 +202,25 @@ async function recoverOwnedRuntime(app, config) {
   const restartRecovery = await resumeStoredThread(app.page);
   return { pauseResume, restartRecovery, boundary: 'clean-disconnect-resume-and-owned-engine-crash-resume' };
 }
+async function switchProject(page, project) {
+  const disconnect = page.getByRole('button', { name: 'Disconnect engine', exact: true });
+  if (await disconnect.count()) {
+    await disconnect.click();
+    // The project button stays clickable while teardown is pending, but the
+    // application correctly rejects that premature selection. Await the real
+    // host acknowledgement before asking it to change the working directory.
+    await page.waitForFunction(() => document.querySelector('.nc06-status')?.textContent === 'disconnected');
+  }
+  await page.locator('button.project-item').filter({ hasText: path.basename(project) }).first().click();
+  await page.waitForFunction(expected => document.querySelector('button.project-item[aria-current="page"]')?.getAttribute('title') === expected, project);
+  await page.getByRole('button', { name: 'Connect to Codex', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.nc06-status')?.textContent === 'ready');
+}
 async function collect(config, output, report) {
   const mode = config.mode ?? 'smoke';
-  if (!['smoke', 'idle', 'stress'].includes(mode)) throw Error('Unsupported native mode');
+  if (!['smoke', 'idle', 'stress', 'project-smoke'].includes(mode)) throw Error('Unsupported native mode');
   if (mode === 'stress' && config.allowModelTurns !== true) throw Error('Stress requires explicit allowModelTurns in the private plan');
-  if (mode === 'stress') requireStressProjects(config.projects);
+  if (mode === 'stress' || mode === 'project-smoke') requireStressProjects(config.projects);
   if (mode === 'idle') {
     report.idle = { matched: true, cli: [], desktop: [] };
     for (let repetition = 0; repetition < 3; repetition++) {
@@ -242,23 +256,29 @@ async function collect(config, output, report) {
     await inputProbe(app.page);
     report.shellReadyProxyMs = app.shellReady;
     await app.page.screenshot({ path: path.join(output, 'native-connected.png') });
-    if (mode === 'stress') {
+    if (mode === 'project-smoke') {
+      report.projectSwitchSmoke = { verifiedSwitches: 0, diagnosticOnly: true };
+      for (let i = 1; i <= 3; i++) {
+        if (config.allowModelTurns === true) await turn(app.page);
+        report.collectionStage = 'project-switch-smoke';
+        await switchProject(app.page, config.projects[i % 3]);
+        report.projectSwitchSmoke.verifiedSwitches++;
+      }
+      report.smoke = await finish(); finish = null;
+    } else if (mode === 'stress') {
       const start = Date.now();
       let turns = 0, switches = 0;
       let recovery = { pauseResume: false, restartRecovery: false };
       while (Date.now() - start < durationMs && turns < 64) {
+        report.collectionStage = 'endurance-model-turn';
         await turn(app.page); turns++;
-        if (turns === 1) recovery = await recoverOwnedRuntime(app, config);
+        if (turns === 1) { report.collectionStage = 'endurance-owned-recovery'; recovery = await recoverOwnedRuntime(app, config); }
         // Explicit disconnect/reconnect exercises the real SessionGate. No
         // injected fixtures and no change to approvals or engine permissions.
         if (turns % 3 === 0) {
-          const disconnect = app.page.getByRole('button', { name: 'Disconnect engine', exact: true });
-          if (await disconnect.count()) await disconnect.click();
           const project = config.projects[(switches + 1) % config.projects.length];
-          await app.page.locator('button.project-item').filter({ hasText: path.basename(project) }).first().click();
-          await app.page.waitForFunction(expected => document.querySelector('button.project-item[aria-current="page"]')?.getAttribute('title') === expected, project);
-          await app.page.getByRole('button', { name: 'Connect to Codex', exact: true }).click();
-          await app.page.waitForFunction(() => document.querySelector('.nc06-status')?.textContent === 'ready');
+          report.collectionStage = 'endurance-project-switch';
+          await switchProject(app.page, project);
           switches++;
         }
         report.progress = { elapsedMs: Date.now() - start, turns, projectSwitches: switches };

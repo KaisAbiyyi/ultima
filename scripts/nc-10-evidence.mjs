@@ -105,7 +105,7 @@ export function evaluateQualification(report) {
     // These are explicitly reviewed receipts, not arbitrary JSON booleans.
     gate(id, 'NOT_RUN', 'Separate native/owner receipt required; collector cannot self-approve this gate');
   }
-  return { schemaVersion: 1, status: gates.some(g => g.status === 'FAIL') ? 'FAIL' : gates.every(g => g.status === 'PASS') ? 'PASS' : 'PARTIAL',
+  return { schemaVersion: 1, status: report?.collectionFailure || gates.some(g => g.status === 'FAIL') ? 'FAIL' : gates.every(g => g.status === 'PASS') ? 'PASS' : 'PARTIAL',
     eligibleIdentity: !!eligible, gates, ownerAcceptance: 'NOT_RUN', cloudCI: 'NOT_RUN' };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

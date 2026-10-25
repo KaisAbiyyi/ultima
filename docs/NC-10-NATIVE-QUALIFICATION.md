@@ -122,3 +122,22 @@ durability, WebView2 lifetime, Windows DPI/IME/screen reader, signed/packaged
 candidate, exact-head cloud CI, and owner acceptance. This implementation cannot
 self-approve those gates. Native qualification may therefore be PARTIAL or FAIL
 even when all collector tests pass. No thresholds or acceptance were weakened.
+
+## First measurement and bounded runner repair
+
+First frozen-candidate run (`e8c2a8c`): all three idle pairs completed;
+instrumented idle RAM gate FAIL (desktop aggregate p95 490.4 MiB, CLI 88.0 MiB,
+extra 402.4 MiB against 150 MiB); sampled settled CPU PASS. Its endurance stopped
+at the first project change because the runner clicked during asynchronous
+disconnect. The original raw files remain intact under `idle-e8c2a8c` /
+`stress-e8c2a8c`. Never promote that aborted run to a 60-minute result.
+
+`project-smoke` is a diagnostic integration test: it connects to all three
+fixture projects in a cycle, optionally makes a no-tools turn before each
+switch, and records three verified changes. It never creates an endurance
+receipt. This native smoke reproduced the race (RED); waiting for the real
+`disconnected` acknowledgement verified 3/3 real changes (GREEN). Project
+buttons remain visible during teardown and the application correctly refuses
+a premature selection. Collector errors now classify the receipt FAIL rather
+than PARTIAL. Freeze a new source/artifact receipt and repeat both idle and
+full-duration endurance; no target or workload gate is weakened.
