@@ -151,3 +151,32 @@ Three short native CLI/desktop diagnostic pairs then completed cleanup; they
 are explicitly not accepted 120 s baseline or 60-minute endurance evidence.
 The dedicated suite is 16/16. The turn driver requires a new non-placeholder
 assistant row and completion acknowledgement, not a stale prior `OK` row.
+
+## Reclaim audit — 25 October 2026
+
+Reclaimed after the prior native collector exited; historical evidence
+remains under ignored `artifacts/nc10/`. Candidate `38c785e` completed
+three nominal 120 s CLI/desktop pairs. Its original evaluator reported
+383 MiB idle overhead (FAIL), but desktop repetition three had **no Codex
+process** during its entire settled 60 s observation. It is not a valid
+same-engine comparison. The evaluator now requires an attributable official
+engine in every settled sample; a replacement matched baseline is necessary.
+
+The official model stress completed 33 turns and 11 project switches before
+an additional turn timed out around minute 36. The full-hour endurance gate
+is NOT_RUN, collection FAIL. Another 12-switch diagnostic failed at the fifth
+switch; its screenshot showed a textless assistant row and completed tool
+item. Those are observations, not proof that the official engine lost text.
+
+The reclaim patch reconciles bounded canonical `agentMessage` final events
+for the exact active turn, ignores reasoning/assistant items in the tool
+panel, and labels completed textless turns explicitly. The runner distinguishes
+completed turns lacking text (`NATIVE_TURN_NO_TEXT`) from transport timeouts,
+and retains sanitized boolean/numeric failure observations. The existing
+uncommitted diagnostic changes were preserved.
+
+Settled WebView2 processes account for approximately 350 MiB RSS, while the
+Ultima Rust parent contributes approximately 26 MiB, subject to CDP and
+shared-page counting limitations. The original 150 MiB budget is unchanged.
+Native replacement baseline, full-hour run, native history and presentation,
+owner verification, packaging and hosted CI remain unaccepted.

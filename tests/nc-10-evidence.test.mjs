@@ -38,7 +38,8 @@ test('NC-10 proxy timing cannot be presented as input/event paint acceptance', (
 });
 test('NC-10 requires three matched idle runs, settled samples and no early exits', () => {
   const run = { valid: true, durationMs: 120000, samples: Array.from({ length: 121 }, (_, i) =>
-    ({ elapsedMs: i * 1000, rssBytes: 100 + i, cpuPercent: 0.1, processCount: 2 })) };
+    ({ elapsedMs: i * 1000, rssBytes: 100 + i, cpuPercent: 0.1, processCount: 2,
+       tree: [{ name: 'codex', pid: 7, parentPid: 3, rssBytes: 80 }] })) };
   const baseline = { cli: [run, run, run], desktop: [run, run, run], matched: true };
   let result = evaluateQualification({ identity, idle: baseline });
   assert.equal(result.gates.find(g => g.id === 'idle-ram').status, 'PASS');
@@ -47,6 +48,12 @@ test('NC-10 requires three matched idle runs, settled samples and no early exits
   assert.equal(result.gates.find(g => g.id === 'idle-ram').status, 'NOT_RUN');
   result = evaluateQualification({ identity, idle: { ...baseline, desktop: [{ ...run, valid: false }, run, run] } });
   assert.equal(result.gates.find(g => g.id === 'idle-ram').status, 'FAIL');
+  const missingEngine = { ...run, samples: run.samples.map(sample =>
+    sample.elapsedMs >= 60000 ? { ...sample, tree: [{ name: 'ultima-desktop', pid: 3 }] } : sample) };
+  result = evaluateQualification({ identity, idle: { ...baseline, desktop: [run, run, missingEngine] } });
+  assert.equal(result.gates.find(g => g.id === 'idle-ram').status, 'FAIL');
+  assert.equal(result.gates.find(g => g.id === 'idle-cpu').status, 'FAIL');
+  assert.match(result.gates.find(g => g.id === 'idle-ram').reason, /missing official Codex process/);
 });
 test('NC-10 does not accept missing sample coverage, nonfinite duration or changed artifacts', () => {
   const run = { valid: true, durationMs: 120000, samples: [

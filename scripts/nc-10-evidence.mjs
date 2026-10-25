@@ -34,6 +34,14 @@ function samplesValid(samples, durationMs, maxGap = 5000) {
   if (samples[0].elapsedMs > maxGap || samples.at(-1).elapsedMs < durationMs - maxGap) return false;
   return samples.every((s, i) => i === 0 || (s.elapsedMs > samples[i - 1].elapsedMs && s.elapsedMs - samples[i - 1].elapsedMs <= maxGap));
 }
+function enginePresent(sample) {
+  // A connected desktop with no attributable official engine is not the
+  // same workload as its headless CLI pair. The runner must refuse this data,
+  // even if WebView2 and the parent desktop process remain alive.
+  return Array.isArray(sample.tree) && sample.tree.some(p =>
+    p && typeof p.name === 'string' && p.name.toLowerCase() === 'codex' &&
+    Number.isSafeInteger(p.pid) && p.pid > 0);
+}
 function idleValues(runs) {
   // S0 settles for 60 s, then observes at least another 60 s. Repetitions are
   // kept independent rather than treating adjacent ticks as independent trials.
@@ -42,6 +50,7 @@ function idleValues(runs) {
     if (!run.valid || run.durationMs < 120000 || !samplesValid(run.samples, run.durationMs)) return null;
     const settled = run.samples.filter(s => s.elapsedMs >= 60000 && s.elapsedMs <= run.durationMs);
     if (settled.length < 2 || settled[0].elapsedMs > 65000 || settled.at(-1).elapsedMs < run.durationMs - 5000 ||
+        settled.some(sample => !enginePresent(sample)) ||
         settled.some(s => !['elapsedMs', 'rssBytes', 'cpuPercent', 'processCount'].every(k => Number.isFinite(s[k]) && s[k] >= 0) || s.processCount < 1)) return null;
     return { ram: statistics(settled.map(s => s.rssBytes)), cpu: settled.reduce((n, s) => n + s.cpuPercent, 0) / settled.length };
   });
@@ -58,8 +67,8 @@ export function evaluateQualification(report) {
     gate('idle-ram', 'NOT_RUN', 'Need at least three matched official CLI and connected desktop runs');
     gate('idle-cpu', 'NOT_RUN', 'Need 60 s settlement and a 60 s idle measurement per repetition');
   } else if ([...cli, ...desktop].some(v => !v)) {
-    gate('idle-ram', 'FAIL', 'Invalid/early-exit or incomplete settled idle run');
-    gate('idle-cpu', 'FAIL', 'Invalid/early-exit or incomplete settled idle run');
+    gate('idle-ram', 'FAIL', 'Invalid/early-exit, missing official Codex process, or incomplete settled idle run');
+    gate('idle-cpu', 'FAIL', 'Invalid/early-exit, missing official Codex process, or incomplete settled idle run');
   } else {
     const desktopRam = statistics(desktop.map(v => v.ram.p95));
     const cliRam = statistics(cli.map(v => v.ram.p95));

@@ -9,7 +9,7 @@
   import { NativePerformance } from './lib/native-performance';
   import { readerPage, rowPreview, ROW_PREVIEW_CHARS } from './lib/message-paging';
   import { approvalToolIdentity, canApprove, canApproveInActiveTurn, matchesApprovalEvidence, parseApproval, sameApproval, toolIdentity, trackTool, type ApprovalRequest, type ToolItem } from './lib/tool-events';
-  import { addThread, appendDelta, appendProject, cappedMessages, restoreProjects, restoreThreads, restoreThreadMessages, saveMetadata, type Project, type Thread } from './lib/desktop-state';
+  import { addThread, appendDelta, appendProject, cappedMessages, restoreProjects, restoreThreads, restoreThreadMessages, saveMetadata, MAX_TEXT_BYTES, type Project, type Thread } from './lib/desktop-state';
 
   const ROW_HEIGHT = 88;
   let projects: Project[] = [];
@@ -390,6 +390,21 @@
       // Missing provenance is NOT proof. Never combine same itemId from another turn.
       if (event.params.threadId !== activeThread || event.params.turnId !== activeTurn) return;
       const item = event.params.item;
+      if (item && typeof item === 'object' && 'type' in item && item.type === 'agentMessage') {
+        if (event.type === 'itemCompleted' && 'text' in item && typeof item.text === 'string') {
+          // The official server may send the canonical final message without
+          // streaming deltas. Use it only for this exact active thread/turn.
+          frames.drain();
+          const last = messages[messages.length - 1];
+          if (last?.role === 'assistant' && item.text.length > 0 && item.text.length <= MAX_TEXT_BYTES) {
+            messages = cappedMessages([...messages.slice(0, -1), { ...last, text: item.text }]);
+          } else if (item.text.length > MAX_TEXT_BYTES) {
+            errorMessage = 'Assistant reply exceeded the bounded UI text limit.';
+            void disconnect();
+          }
+        }
+        return;
+      }
       const itemId = typeof item === 'object' && item && 'id' in item ? item.id : event.params.itemId;
       if (currentApproval && event.params.threadId === currentApproval.threadId &&
           event.params.turnId === currentApproval.turnId && itemId === currentApproval.itemId) {
@@ -653,7 +668,7 @@
             <div class="virtual-canvas" style:height={messages.length * ROW_HEIGHT + 'px'}>
               {#each shownMessages as message, offset (message.id)}
                 <article class="message-row" class:user-message={message.role === 'user'} style:top={(range.start + offset) * ROW_HEIGHT + 'px'} aria-posinset={range.start + offset + 1} aria-setsize={messages.length} data-testid="nc06-row">
-                  <div class="message-avatar">{message.role === 'user' ? 'Y' : 'U'}</div><div class="message-content"><div class="message-line"><span class="message-author">{message.role === 'user' ? 'You' : 'Codex'}</span>{#if message.text.length > ROW_PREVIEW_CHARS}<button class="nc08-read" onclick={() => { readerId = message.id; readerPosition = 0; }}>Read message</button>{/if}</div><p>{rowPreview(message.text) || 'Thinking…'}</p></div>
+                  <div class="message-avatar">{message.role === 'user' ? 'Y' : 'U'}</div><div class="message-content"><div class="message-line"><span class="message-author">{message.role === 'user' ? 'You' : 'Codex'}</span>{#if message.text.length > ROW_PREVIEW_CHARS}<button class="nc08-read" onclick={() => { readerId = message.id; readerPosition = 0; }}>Read message</button>{/if}</div><p>{rowPreview(message.text) || (busy ? 'Thinking…' : 'No text reply returned by Codex.')}</p></div>
                 </article>
               {/each}
             </div>

@@ -163,20 +163,30 @@ async function inputProbe(page) {
   await composer.fill('');
   await delay(100);
 }
-async function turn(page) {
+async function turn(page, report) {
   const composer = page.getByRole('textbox', { name: 'Message to Codex' });
   const beforeCount = Number((await page.getByTestId('nc06-message-count').textContent()).split(' ')[0]);
   await composer.fill('Reply with exactly OK. Do not use any tools, read files, run commands, or change files.');
   await page.getByRole('button', { name: 'Send message to Codex', exact: true }).click();
-  // Require both a rendered assistant answer and end-of-turn acknowledgement.
+  // A completed textless turn is a workload failure, not a successful model
+  // response or an unexplained 120-second DOM timeout.
+  if (report) report.collectionStage = 'model-turn-await-completion';
   await page.waitForFunction(before => {
     const count = Number(document.querySelector('[data-testid="nc06-message-count"]')?.textContent?.split(' ')[0]);
-    const answer = [...document.querySelectorAll('.message-row:not(.user-message) .message-content p')].at(-1)?.textContent?.trim();
-    return count >= before + 2 && !!answer && answer !== 'Thinking…';
+    return count >= before + 2 && document.querySelector('[data-testid="nc06-feed"]')?.getAttribute('aria-busy') === 'false';
   }, beforeCount, { timeout: 120000 });
-  await composer.waitFor({ state: 'visible' });
-  await waitFor(async () => await composer.isEnabled(), 120000);
   if (await page.getByRole('alert').count()) throw Error('Desktop reported a turn error');
+  const hasAnswer = await page.evaluate(() => {
+    const answer = [...document.querySelectorAll('.message-row:not(.user-message) .message-content p')].at(-1)?.textContent?.trim();
+    return !!answer && answer !== 'Thinking…' && answer !== 'No text reply returned by Codex.';
+  });
+  if (!hasAnswer) {
+    const error = Error('Official turn completed without an assistant text item');
+    error.code = 'NATIVE_TURN_NO_TEXT';
+    throw error;
+  }
+  await composer.waitFor({ state: 'visible' });
+  if (!(await composer.isEnabled())) throw Error('Composer remained disabled after turn completion');
 }
 async function resumeStoredThread(page) {
   const thread = page.locator('button.history-link').first();
@@ -259,7 +269,7 @@ async function collect(config, output, report) {
     if (mode === 'project-smoke') {
       report.projectSwitchSmoke = { verifiedSwitches: 0, diagnosticOnly: true };
       for (let i = 1; i <= 3; i++) {
-        if (config.allowModelTurns === true) await turn(app.page);
+        if (config.allowModelTurns === true) await turn(app.page, report);
         report.collectionStage = 'project-switch-smoke';
         await switchProject(app.page, config.projects[i % 3]);
         report.projectSwitchSmoke.verifiedSwitches++;
@@ -271,8 +281,12 @@ async function collect(config, output, report) {
       let recovery = { pauseResume: false, restartRecovery: false };
       while (Date.now() - start < durationMs && turns < 64) {
         report.collectionStage = 'endurance-model-turn';
-        await turn(app.page); turns++;
-        if (turns === 1) { report.collectionStage = 'endurance-owned-recovery'; recovery = await recoverOwnedRuntime(app, config); }
+        await turn(app.page, report); turns++;
+        if (turns === 1) {
+          report.collectionStage = 'endurance-owned-recovery';
+          recovery = await recoverOwnedRuntime(app, config);
+          report.recovery = recovery;
+        }
         // Explicit disconnect/reconnect exercises the real SessionGate. No
         // injected fixtures and no change to approvals or engine permissions.
         if (turns % 3 === 0) {
@@ -290,7 +304,7 @@ async function collect(config, output, report) {
         ...recovery, ...(await finish()) }; finish = null;
     } else {
       if (config.allowModelTurns === true) {
-        report.collectionStage = 'official-model-turn'; await turn(app.page);
+        report.collectionStage = 'official-model-turn'; await turn(app.page, report);
         if (config.exerciseRecovery === true) { report.collectionStage = 'owned-engine-crash-resume'; report.recovery = await recoverOwnedRuntime(app, config); }
       }
       await delay(15000); report.smoke = await finish(); finish = null;
@@ -299,7 +313,28 @@ async function collect(config, output, report) {
     report.latency.inputStatistics = statistics(report.latency.input);
     report.latency.streamStatistics = statistics(report.latency.stream);
     await app.page.screenshot({ path: path.join(output, 'native-after-turn.png') });
-  } finally { if (finish) await finish(); await app.close(); }
+  } catch (error) {
+    // Retain only host-sanitized UI diagnostics and numeric timings. Do not
+    // save protocol frames, transcripts, child stderr, credentials or settings.
+    report.failureObservation = await app.page.evaluate(() => {
+      const status = document.querySelector('.nc06-status')?.textContent;
+      const answer = [...document.querySelectorAll('.message-row:not(.user-message) .message-content p')].at(-1)?.textContent?.trim();
+      return {
+        status: ['ready', 'connecting', 'disconnecting', 'disconnected', 'error'].includes(status) ? status : 'unknown',
+        alertCount: document.querySelectorAll('[role="alert"]').length,
+        composerDisabled: document.querySelector('#composer')?.disabled,
+        messageCount: Number(document.querySelector('[data-testid="nc06-message-count"]')?.textContent?.split(' ')[0]) || 0,
+        toolCount: document.querySelectorAll('.nc07-tool-row').length,
+        hasAssistantText: !!answer && answer !== 'Thinking…' && answer !== 'No text reply returned by Codex.'
+      };
+    }).catch(() => ({ status: 'page-unavailable' }));
+    report.latency = await app.page.evaluate(() => window.__ultimaPerformance.snapshot()).catch(() => null);
+    await app.page.screenshot({ path: path.join(output, 'native-failure.png') }).catch(() => {});
+    throw error;
+  } finally {
+    if (finish) report.partialNativeObservation = await finish();
+    await app.close();
+  }
 }
 async function main() {
   if (process.platform !== 'win32') throw Error('NC-10 native runner requires Windows');
@@ -346,7 +381,9 @@ async function main() {
     await collect(config, output, report);
   } catch (error) {
     // Preserve failed raw observations while omitting arbitrary upstream messages.
-    report.collectionFailure = { stage: report.collectionStage, name: error.name, code: typeof error.code === 'string' ? error.code : 'NATIVE_OPERATION_FAILED' };
+    const operation = /^([A-Za-z]+\.[A-Za-z]+):/.exec(error.message ?? '')?.[1];
+    report.collectionFailure = { stage: report.collectionStage, name: error.name, operation,
+      code: typeof error.code === 'string' ? error.code : 'NATIVE_OPERATION_FAILED' };
     console.error('Native collection failed; see partial receipt. No product PASS.');
     process.exitCode = 1;
   } finally {
