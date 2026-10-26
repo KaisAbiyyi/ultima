@@ -650,8 +650,7 @@ async fn flush(broker: &mut Broker, supervisor: &mut EngineSupervisor) -> Result
 }
 
 async fn drive(
-    executable: PathBuf,
-    project: PathBuf,
+    paths: (PathBuf, PathBuf),
     shutdown: oneshot::Receiver<()>,
     mut commands: mpsc::Receiver<Command>,
     emergency_stop: Arc<AtomicBool>,
@@ -659,6 +658,7 @@ async fn drive(
     status: Arc<AtomicU8>,
     ctx: egui::Context,
 ) {
+    let (executable, project) = paths;
     let prepared = (|| {
         if !executable.is_absolute() || !project.is_absolute() {
             return Err("Codex executable and project require explicit absolute paths.");
@@ -816,8 +816,7 @@ impl EngineProbe {
                 .build()
             {
                 Ok(runtime) => runtime.block_on(drive(
-                    executable,
-                    project,
+                    (executable, project),
                     receiver,
                     inbox,
                     thread_emergency_stop,
@@ -1088,8 +1087,10 @@ mod tests {
     #[test]
     fn malformed_turn_response_is_fatal_even_if_notification_arrived() {
         let mut b = ready();
-        let mut f = TurnLifecycle::default();
-        f.thread = Some("thread-a".into());
+        let mut f = TurnLifecycle {
+            thread: Some("thread-a".into()),
+            ..Default::default()
+        };
         f.submit(&mut b, Path::new("C:/project"), "hi".into())
             .unwrap();
         b.take_outbound().unwrap();
@@ -1109,8 +1110,10 @@ mod tests {
     #[test]
     fn final_item_and_failure_report_are_strict_and_redacted() {
         let mut b = ready();
-        let mut f = TurnLifecycle::default();
-        f.thread = Some("thread-a".into());
+        let mut f = TurnLifecycle {
+            thread: Some("thread-a".into()),
+            ..Default::default()
+        };
         f.submit(&mut b, Path::new("C:/project"), "hi".into())
             .unwrap();
         b.take_outbound().unwrap();
