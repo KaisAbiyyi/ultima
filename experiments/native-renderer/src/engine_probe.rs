@@ -290,6 +290,32 @@ fn failed_turn_message(turn: &Value) -> &'static str {
 /// The UI has at most one turn in flight, bound to one official thread.
 /// In-flight request IDs are matched against the Broker's typed replies;
 /// notifications and content require matching thread AND turn IDs.
+struct UnverifiedCompletion {
+    turn_id: String,
+    status: &'static str,
+    error: Option<&'static str>,
+}
+
+impl UnverifiedCompletion {
+    fn from_notification(params: &Value) -> Result<Self, &'static str> {
+        let id = turn_id(params).ok_or("Codex turn completed without a valid turn ID.")?;
+        let turn = params
+            .get("turn")
+            .ok_or("Codex turn completion omitted its turn.")?;
+        let status = match turn.get("status").and_then(Value::as_str) {
+            Some("completed") => "completed",
+            Some("interrupted") => "interrupted",
+            Some("failed") => "failed",
+            _ => return Err("Codex returned an unknown final turn status."),
+        };
+        Ok(Self {
+            turn_id: id.to_owned(),
+            status,
+            error: (status == "failed").then(|| failed_turn_message(turn)),
+        })
+    }
+}
+
 #[derive(Default)]
 struct TurnLifecycle {
     thread: Option<String>,
@@ -307,6 +333,10 @@ struct TurnLifecycle {
     terminal_error: Option<&'static str>,
     rpc_started: Option<Instant>,
     cancel_started: Option<Instant>,
+    // A terminal notification can overtake the start RPC reply and even
+    // turn/started. Never expose it until a separate official start identity
+    // confirms the exact same turn; this holds only one <=256-byte ID.
+    unverified_completion: Option<UnverifiedCompletion>,
 }
 
 impl TurnLifecycle {
@@ -360,6 +390,7 @@ impl TurnLifecycle {
         self.terminal_error = None;
         self.rpc_started = Some(Instant::now());
         self.cancel_started = None;
+        self.unverified_completion = None;
         Ok(())
     }
 
@@ -392,7 +423,11 @@ impl TurnLifecycle {
 
     fn cancel(&mut self, broker: &mut Broker) -> Result<(), &'static str> {
         if !self.busy {
-            return Err("There is no active turn to cancel.");
+            // egui can enqueue Stop while the server's terminal notification
+            // is still being drained. After an authoritative turn/completed,
+            // the queued Stop must not append an Error and overwrite the
+            // completed/interrupted status in the UI. It is simply too late.
+            return Ok(());
         }
         if !self.cancel_requested {
             self.cancel_started = Some(Instant::now());
@@ -436,6 +471,15 @@ impl TurnLifecycle {
         if self.turn.is_some() {
             return Err("Codex returned conflicting turn identities.");
         }
+        // If completion reached us first, compare it with the start identity
+        // from another official frame. Do not interrupt an already-ended turn.
+        if let Some(early) = self.unverified_completion.take() {
+            if early.turn_id == id {
+                return Ok(Some(self.finish_turn(early)));
+            }
+            // A stale same-thread notification is not proof that this new
+            // turn finished. Continue normally with the actual start ID.
+        }
         self.turn = Some(id.to_owned());
         self.interrupt_if_known(broker)?;
         Ok(Some(ProbeEvent::TurnStarted {
@@ -454,6 +498,26 @@ impl TurnLifecycle {
 
     fn take_terminal_error(&mut self) -> Option<&'static str> {
         self.terminal_error.take()
+    }
+
+    fn finish_turn(&mut self, completed: UnverifiedCompletion) -> ProbeEvent {
+        let event = ProbeEvent::TurnCompleted {
+            thread_id: self.thread.clone().expect("official thread checked"),
+            turn_id: completed.turn_id,
+            status: completed.status.to_owned(),
+        };
+        self.terminal_error = completed.error;
+        self.turn = None;
+        self.turn_request = None;
+        self.busy = false;
+        self.cancel_requested = false;
+        self.interrupt_request = None;
+        self.interrupt_sent = false;
+        self.rpc_started = None;
+        self.cancel_started = None;
+        self.assistant_item = None;
+        self.unverified_completion = None;
+        event
     }
 
     fn timeout_error(&self, now: Instant) -> Option<&'static str> {
@@ -599,34 +663,34 @@ impl TurnLifecycle {
                             text: final_text.to_owned(),
                         }))
                     }
-                    NotificationKind::TurnCompleted if self.exact_turn(&params) => {
-                        let status = params
-                            .pointer("/turn/status")
-                            .and_then(Value::as_str)
-                            .ok_or("Codex turn completed without a final status.")?;
-                        if !matches!(status, "completed" | "interrupted" | "failed") {
-                            return Err("Codex returned an unknown final turn status.");
+                    NotificationKind::TurnCompleted
+                        if self.busy
+                            && self.thread.as_deref() == safe_id(params.get("threadId")) =>
+                    {
+                        if self.turn.is_some() && !self.exact_turn(&params) {
+                            return Ok(None);
                         }
-                        let event = ProbeEvent::TurnCompleted {
-                            thread_id: self.thread.clone().expect("checked"),
-                            turn_id: self.turn.clone().expect("checked"),
-                            status: status.to_owned(),
-                        };
-                        if status == "failed" {
-                            self.terminal_error = Some(failed_turn_message(
-                                params.get("turn").expect("validated turn"),
-                            ));
+                        let completion = UnverifiedCompletion::from_notification(&params)?;
+                        if self.turn.is_some() {
+                            return Ok(Some(self.finish_turn(completion)));
                         }
-                        self.turn = None;
-                        self.turn_request = None;
-                        self.busy = false;
-                        self.cancel_requested = false;
-                        self.interrupt_request = None;
-                        self.interrupt_sent = false;
-                        self.rpc_started = None;
-                        self.cancel_started = None;
-                        self.assistant_item = None;
-                        Ok(Some(event))
+                        if self.turn_request.is_none() {
+                            // No turn/start has been submitted. An unrelated
+                            // thread's terminal event must not be actionable.
+                            return Ok(None);
+                        }
+                        if let Some(previous) = &self.unverified_completion {
+                            if previous.turn_id != completion.turn_id
+                                || previous.status != completion.status
+                            {
+                                return Err(
+                                    "Codex reported conflicting unverified turn completions.",
+                                );
+                            }
+                        } else {
+                            self.unverified_completion = Some(completion);
+                        }
+                        Ok(None)
                     }
                     _ => Ok(None), // Unknown, unproven or cross-turn content is not shown.
                 }
@@ -1046,6 +1110,224 @@ mod tests {
         // Interrupt ACK is not turn completion, and never authorizes a replay.
         f.cancel(&mut b).unwrap();
         assert!(b.take_outbound().is_none());
+    }
+
+    #[test]
+    fn official_interrupt_ack_alone_never_reports_interrupted_completion() {
+        // Replay real 0.164.0 envelope shapes through Broker, not fabricated
+        // Event variants: TurnInterruptResponse is {}, TurnCompletedNotification
+        // carries the independent authoritative terminal status.
+        let mut b = ready();
+        let mut f = TurnLifecycle::default();
+        f.thread = Some("thread-a".into());
+        f.submit(&mut b, Path::new("C:/project"), "synthetic".into())
+            .unwrap();
+        let request: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
+        let start_id = request["id"].as_u64().unwrap();
+        b.ingest_line(
+            json!({"method":"turn/started","params":{"threadId":"thread-a",
+            "turn":{"id":"turn-a","status":"inProgress"}}})
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        let started = b.take_event().unwrap();
+        assert_eq!(
+            f.on_event(&mut b, started).unwrap(),
+            Some(ProbeEvent::TurnStarted {
+                thread_id: "thread-a".into(),
+                turn_id: "turn-a".into()
+            })
+        );
+        f.cancel(&mut b).unwrap();
+        let interrupt: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        assert_eq!(
+            interrupt["params"],
+            json!({"threadId":"thread-a","turnId":"turn-a"})
+        );
+        let ack = reply(&mut b, interrupt["id"].as_u64().unwrap(), json!({}));
+        assert_eq!(f.on_event(&mut b, ack).unwrap(), None);
+        assert!(f.busy, "an interrupt ACK alone cannot prove termination");
+        assert!(f.cancel_requested);
+        assert!(f.cancel_started.is_some());
+        assert!(b.take_outbound().is_none());
+        b.ingest_line(
+            json!({"method":"turn/completed","params":{
+            "threadId":"thread-a","turn":{"id":"turn-wrong","status":"interrupted"}}})
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        let forged = b.take_event().unwrap();
+        assert_eq!(f.on_event(&mut b, forged).unwrap(), None);
+        assert!(f.busy);
+        b.ingest_line(
+            json!({"method":"turn/completed","params":{
+            "threadId":"thread-a","turn":{"id":"turn-a","status":"interrupted"}}})
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        let terminal = b.take_event().unwrap();
+        let expected = ProbeEvent::TurnCompleted {
+            thread_id: "thread-a".into(),
+            turn_id: "turn-a".into(),
+            status: "interrupted".into(),
+        };
+        assert_eq!(
+            f.on_event(&mut b, terminal).unwrap(),
+            Some(expected.clone())
+        );
+        assert!(!f.busy);
+        let late_start_reply = reply(&mut b, start_id, json!({"turn":{"id":"turn-a"}}));
+        assert_eq!(f.on_event(&mut b, late_start_reply).unwrap(), None);
+        assert_eq!(f.on_event(&mut b, Event::Notification {
+            kind:NotificationKind::TurnCompleted,
+            params:json!({"threadId":"thread-a","turn":{"id":"turn-a","status":"interrupted"}}),
+        }).unwrap(), None, "duplicate terminal must not be re-emitted");
+        let mut display = DisplayEvents::default();
+        display.push(expected.clone()).unwrap();
+        assert_eq!(
+            display.take(),
+            vec![expected],
+            "UI queue preserves a verified interrupted completion"
+        );
+    }
+
+    #[test]
+    fn terminal_before_start_reply_is_deferred_until_matching_identity() {
+        let mut b = ready();
+        let mut f = TurnLifecycle::default();
+        f.thread = Some("thread-a".into());
+        f.submit(&mut b, Path::new("C:/project"), "synthetic".into())
+            .unwrap();
+        let start: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
+        f.cancel(&mut b).unwrap();
+        let early = Event::Notification {
+            kind: NotificationKind::TurnCompleted,
+            params: json!({"threadId":"thread-a","turn":{"id":"turn-a","status":"interrupted"}}),
+        };
+        assert_eq!(f.on_event(&mut b, early).unwrap(), None);
+        assert!(f.busy);
+        assert!(
+            b.take_outbound().is_none(),
+            "no ID means no interrupt request"
+        );
+        let reply = reply(
+            &mut b,
+            start["id"].as_u64().unwrap(),
+            json!({"turn":{"id":"turn-a"}}),
+        );
+        assert_eq!(
+            f.on_event(&mut b, reply).unwrap(),
+            Some(ProbeEvent::TurnCompleted {
+                thread_id: "thread-a".into(),
+                turn_id: "turn-a".into(),
+                status: "interrupted".into(),
+            })
+        );
+        assert!(!f.busy);
+        assert!(
+            b.take_outbound().is_none(),
+            "must not interrupt a turn already reported finished"
+        );
+    }
+
+    #[test]
+    fn stale_early_terminal_does_not_falsely_complete_or_interrupt_another_turn() {
+        let mut b = ready();
+        let mut f = TurnLifecycle::default();
+        f.thread = Some("thread-a".into());
+        f.submit(&mut b, Path::new("C:/project"), "synthetic".into())
+            .unwrap();
+        let start: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
+        f.cancel(&mut b).unwrap();
+        let stale = Event::Notification {
+            kind: NotificationKind::TurnCompleted,
+            params: json!({"threadId":"thread-a","turn":{"id":"old-turn","status":"interrupted"}}),
+        };
+        assert_eq!(f.on_event(&mut b, stale).unwrap(), None);
+        let started = reply(
+            &mut b,
+            start["id"].as_u64().unwrap(),
+            json!({"turn":{"id":"new-turn"}}),
+        );
+        assert_eq!(
+            f.on_event(&mut b, started).unwrap(),
+            Some(ProbeEvent::TurnStarted {
+                thread_id: "thread-a".into(),
+                turn_id: "new-turn".into(),
+            })
+        );
+        let interrupt: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        assert_eq!(interrupt["params"]["turnId"], "new-turn");
+        assert!(f.busy);
+    }
+
+    #[test]
+    fn early_terminal_confirmed_by_turn_started_does_not_send_late_interrupt() {
+        let mut b = ready();
+        let mut f = TurnLifecycle::default();
+        f.thread = Some("thread-a".into());
+        f.submit(&mut b, Path::new("C:/project"), "synthetic".into())
+            .unwrap();
+        let start: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
+        f.cancel(&mut b).unwrap();
+        assert_eq!(f.on_event(&mut b, Event::Notification {
+            kind:NotificationKind::TurnCompleted,
+            params:json!({"threadId":"thread-a","turn":{"id":"turn-a","status":"completed"}}),
+        }).unwrap(), None);
+        assert_eq!(f.on_event(&mut b, Event::Notification {
+            kind:NotificationKind::TurnStarted,
+            params:json!({"threadId":"thread-a","turn":{"id":"turn-a","status":"inProgress"}}),
+        }).unwrap(), Some(ProbeEvent::TurnCompleted {
+            thread_id:"thread-a".into(),turn_id:"turn-a".into(),status:"completed".into(),
+        }), "Stop is a request, not proof upstream returned interrupted");
+        assert!(b.take_outbound().is_none());
+        assert!(!f.busy);
+        let late_reply = reply(
+            &mut b,
+            start["id"].as_u64().unwrap(),
+            json!({"turn":{"id":"turn-a"}}),
+        );
+        assert_eq!(f.on_event(&mut b, late_reply).unwrap(), None);
+    }
+
+    #[test]
+    fn late_ui_stop_after_authoritative_completion_never_overwrites_terminal() {
+        let mut b = ready();
+        let mut f = TurnLifecycle::default();
+        let mut display = DisplayEvents::default();
+        f.thread = Some("thread-a".into());
+        f.submit(&mut b, Path::new("C:/project"), "synthetic".into())
+            .unwrap();
+        let start: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
+        let response = reply(
+            &mut b,
+            start["id"].as_u64().unwrap(),
+            json!({"turn":{"id":"turn-a"}}),
+        );
+        let started = f.on_event(&mut b, response).unwrap().unwrap();
+        display.push(started).unwrap();
+        // The server has already completed by the time the user's Stop
+        // command is dispatched from the bounded UI mpsc queue.
+        let terminal = f.on_event(&mut b, Event::Notification {
+            kind:NotificationKind::TurnCompleted,
+            params:json!({"threadId":"thread-a","turn":{"id":"turn-a","status":"completed"}}),
+        }).unwrap().unwrap();
+        display.push(terminal.clone()).unwrap();
+        assert_eq!(f.cancel(&mut b), Ok(()));
+        assert!(!f.cancel_requested);
+        assert!(
+            b.take_outbound().is_none(),
+            "too-late Stop sends no turn/interrupt"
+        );
+        assert_eq!(display.take().last(), Some(&terminal));
+        // Duplicate Stop does not put a misleading error into the UI queue.
+        assert_eq!(f.cancel(&mut b), Ok(()));
+        assert!(display.take().is_empty());
     }
 
     #[test]
