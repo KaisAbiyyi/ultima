@@ -1118,8 +1118,10 @@ mod tests {
         // Event variants: TurnInterruptResponse is {}, TurnCompletedNotification
         // carries the independent authoritative terminal status.
         let mut b = ready();
-        let mut f = TurnLifecycle::default();
-        f.thread = Some("thread-a".into());
+        let mut f = TurnLifecycle {
+            thread: Some("thread-a".into()),
+            ..Default::default()
+        };
         f.submit(&mut b, Path::new("C:/project"), "synthetic".into())
             .unwrap();
         let request: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
@@ -1198,8 +1200,10 @@ mod tests {
     #[test]
     fn terminal_before_start_reply_is_deferred_until_matching_identity() {
         let mut b = ready();
-        let mut f = TurnLifecycle::default();
-        f.thread = Some("thread-a".into());
+        let mut f = TurnLifecycle {
+            thread: Some("thread-a".into()),
+            ..Default::default()
+        };
         f.submit(&mut b, Path::new("C:/project"), "synthetic".into())
             .unwrap();
         let start: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
@@ -1237,8 +1241,10 @@ mod tests {
     #[test]
     fn stale_early_terminal_does_not_falsely_complete_or_interrupt_another_turn() {
         let mut b = ready();
-        let mut f = TurnLifecycle::default();
-        f.thread = Some("thread-a".into());
+        let mut f = TurnLifecycle {
+            thread: Some("thread-a".into()),
+            ..Default::default()
+        };
         f.submit(&mut b, Path::new("C:/project"), "synthetic".into())
             .unwrap();
         let start: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
@@ -1269,8 +1275,10 @@ mod tests {
     #[test]
     fn early_terminal_confirmed_by_turn_started_does_not_send_late_interrupt() {
         let mut b = ready();
-        let mut f = TurnLifecycle::default();
-        f.thread = Some("thread-a".into());
+        let mut f = TurnLifecycle {
+            thread: Some("thread-a".into()),
+            ..Default::default()
+        };
         f.submit(&mut b, Path::new("C:/project"), "synthetic".into())
             .unwrap();
         let start: Value = serde_json::from_slice(&b.take_outbound().unwrap()).unwrap();
