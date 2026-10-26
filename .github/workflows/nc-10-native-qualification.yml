@@ -52,6 +52,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          # Match the exact toolchain qualified on the physical Windows host.
+          # Rust stable 1.99 changes float literal fallback warnings under -D warnings.
+          toolchain: '1.91.1'
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
