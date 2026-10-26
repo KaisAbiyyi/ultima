@@ -598,7 +598,12 @@ impl TurnLifecycle {
                     }
                     ClientMethod::TurnInterrupt if self.interrupt_request == Some(id) => {
                         self.interrupt_request = None;
-                        outcome.map_err(|_| "Codex rejected the turn interrupt.")?;
+                        // A rejected interrupt can race an already-terminal
+                        // turn. Neither an ACK nor a rejection proves how the
+                        // turn ended. Keep cancellation pending until a
+                        // matched turn/completed arrives; the cancel watchdog
+                        // kills the owned process if that never happens.
+                        let _ = outcome;
                         Ok(None)
                     }
                     _ => Ok(None),
@@ -1242,6 +1247,70 @@ mod tests {
             display.take(),
             vec![expected],
             "UI queue preserves a verified interrupted completion"
+        );
+    }
+
+    #[test]
+    fn rejected_interrupt_waits_for_official_terminal_or_bounded_shutdown() {
+        let mut broker = ready();
+        let mut lifecycle = TurnLifecycle {
+            thread: Some("thread-a".into()),
+            ..Default::default()
+        };
+        lifecycle
+            .submit(&mut broker, Path::new("C:/project"), "synthetic".into())
+            .unwrap();
+        broker.take_outbound().unwrap();
+        let started = Event::Notification {
+            kind: NotificationKind::TurnStarted,
+            params: json!({"threadId":"thread-a","turn":{"id":"turn-a"}}),
+        };
+        assert!(matches!(
+            lifecycle.on_event(&mut broker, started),
+            Ok(Some(ProbeEvent::TurnStarted { .. }))
+        ));
+        lifecycle.cancel(&mut broker).unwrap();
+        let interrupt: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        broker
+            .ingest_line(
+                json!({"id":interrupt["id"],"error":{"code":-32602,"message":"no active turn"}})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+        let rejected = broker.take_event().unwrap();
+        assert_eq!(lifecycle.on_event(&mut broker, rejected), Ok(None));
+        assert!(lifecycle.busy);
+        assert!(lifecycle.cancel_requested);
+        assert!(lifecycle.cancel_started.is_some());
+        assert!(broker.take_outbound().is_none(), "no second interrupt");
+
+        // A rejection never fabricates the status 'interrupted'.
+        let completed = Event::Notification {
+            kind: NotificationKind::TurnCompleted,
+            params: json!({"threadId":"thread-a","turn":{"id":"turn-a","status":"completed"}}),
+        };
+        assert_eq!(
+            lifecycle.on_event(&mut broker, completed),
+            Ok(Some(ProbeEvent::TurnCompleted {
+                thread_id: "thread-a".into(),
+                turn_id: "turn-a".into(),
+                status: "completed".into(),
+            }))
+        );
+        assert!(!lifecycle.busy);
+
+        // If the server never emits a terminal, the already-installed 20s
+        // watchdog still forces the process-tree shutdown.
+        lifecycle
+            .submit(&mut broker, Path::new("C:/project"), "another".into())
+            .unwrap();
+        broker.take_outbound().unwrap();
+        lifecycle.cancel(&mut broker).unwrap();
+        lifecycle.cancel_started = Some(Instant::now() - CANCEL_TIMEOUT - Duration::from_secs(1));
+        assert_eq!(
+            lifecycle.timeout_error(Instant::now()),
+            Some("Codex did not acknowledge cancellation; owned process stopped.")
         );
     }
 

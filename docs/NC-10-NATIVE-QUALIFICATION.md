@@ -285,3 +285,23 @@ Local Rust renderer suite: **23/23 PASS**, formatter **PASS**, strict Clippy
 `-D warnings` **PASS**. This is synthetic regression evidence, not a live
 native streaming or interruption acceptance receipt. The full NC-10 product
 gates, existing Tauri RAM failure and owner sign-off stay open.
+
+## Active cancellation reclaim — October 26, 2026
+
+The exact-source Windows `d62d7af` release passed the official handshake and
+exposed UI Automation Edit, Send and Stop controls. After an authoritative
+`running` UI status, the native Stop button invoked successfully but finished
+in `error`; the sanitized UI cause was **`Codex rejected the turn interrupt.`**
+The active native interruption gate therefore **FAILS** on this receipt; a
+disappearing Stop button is not an interrupted terminal acknowledgement.
+
+An interrupt RPC rejection may race a turn that has already completed. The
+native probe now treats both interrupt ACK and rejection as nonterminal. It
+waits for `turn/completed` matching the exact official thread and turn; on
+missing confirmation the existing 20-second cancellation watchdog terminates
+its owned Codex process. It never treats an RPC reply as proof of interruption,
+never retries blindly and never implicitly authorizes tool actions. A new
+synthetic regression covers rejected RPC → legitimate completed status and
+rejected RPC → bounded shutdown. **24/24 Rust renderer tests**, fmt and strict
+Clippy pass locally. The physical native test must still be repeated on the
+new exact-source executable; it is not yet an active-cancel PASS.
