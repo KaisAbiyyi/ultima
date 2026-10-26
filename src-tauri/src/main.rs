@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod runtime;
 
-use ultima_native_session::{GateError, SessionGate, StartError};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::{
@@ -11,6 +10,7 @@ use std::sync::{
 use tauri::{Emitter, State};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use ultima_app_server_supervisor::{EngineSupervisor, OutputEvent};
+use ultima_native_session::{GateError, SessionGate, StartError};
 use ultima_protocol_bridge::{
     Approval, ApprovalDecision, ApprovalKind, Broker, ClientMethod, Event, Limits,
     NotificationKind, Phase, RpcId,

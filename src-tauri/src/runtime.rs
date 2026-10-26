@@ -94,8 +94,8 @@ mod tests {
     /// selection poisons reconnect rather than retrying the same executable.
     #[tokio::test]
     async fn failed_handshake_same_managed_runtime_never_retries_or_overlaps() {
-        use ultima_native_session::{GateError, SessionGate, StartError};
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use ultima_native_session::{GateError, SessionGate, StartError};
 
         let gate = SessionGate::<usize>::default();
         let children = AtomicUsize::new(0);
