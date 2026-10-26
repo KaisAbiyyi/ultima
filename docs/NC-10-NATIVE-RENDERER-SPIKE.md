@@ -196,6 +196,37 @@ Local ignored reports: `experiments/native-renderer/results/history-afc5c7a4-179
 `experiments/native-renderer/results/connected-afc5c7a4-1792913171999/report.json`,
 `experiments/native-renderer/results/cli-afc5c7a4-1792913567347/report.json`.
 
+## Reclaim: bounded native Codex turns (October 26, 2026)
+
+The isolated egui implementation now offers a **read-only-sandbox official Codex
+turn path**, built on the production protocol broker/supervisor and shared
+`SessionGate`. The `thread/start` request explicitly uses `sandbox: read-only`
+and `approvalPolicy: never`; unexpected tool approvals are declined by the
+broker. A single bounded turn can start, stream assistant deltas, reconcile a
+canonical final message and request `turn/interrupt` using its actual
+thread/turn identifiers. The renderer attaches exact IDs to every assistant
+event, bounds prompt and display buffers, and renders true error states.
+
+The Windows Playwright regression harness was made less resource-intensive
+(one browser worker and three independent DPI/theme screenshot tests). It now
+passes **14/14** tests, preserving the 30-second individual timeout and all
+100%/200% DPI, desktop/mobile and dark/light screenshot scenarios. Frontend
+unit and native evidence tests pass **50/50** and **16/16** respectively.
+Native renderer and shared lifecycle Rust tests pass **7/7** each, with
+`cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` passing.
+The simulated protocol tests confirm read-only policy, exact event identity,
+fail-closed approvals, bounded queues and interrupt ordering; they are
+**synthetic tests**, not verified real Codex turn acceptance.
+
+The older **92.72 MiB** candidate idle feasibility PASS and **444.3 MiB**
+Tauri product RAM FAIL are unchanged historical evidence. The new active-turn
+native build has **no matched active workload RAM/latency or 60-minute
+endurance PASS**. Full host actor/managed-runtime parity, owner physical
+keyboard/IME/accessibility, real approval review, durable history and native
+signed packaging remain OPEN. Upstream authenticated turns previously failed
+with an official usage-limit response. No renderer migration or NC-10 merge
+is authorized solely by these regression tests.
+
 ## Decision gate
 
 ### Native UI reference alignment (October 25, 2026)

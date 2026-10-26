@@ -789,8 +789,10 @@ mod tests {
     #[test]
     fn cancel_waits_for_real_turn_id_then_declines_and_interrupts() {
         let mut b = ready();
-        let mut f = TurnLifecycle::default();
-        f.thread = Some("thread-a".into());
+        let mut f = TurnLifecycle {
+            thread: Some("thread-a".into()),
+            ..Default::default()
+        };
         f.submit(&mut b, Path::new("C:/project"), "hi".into())
             .unwrap();
         b.take_outbound().unwrap();

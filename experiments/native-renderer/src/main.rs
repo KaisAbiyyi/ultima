@@ -9,7 +9,7 @@ use eframe::egui::{
     self, Align, Color32, CornerRadius, FontId, Frame, Key, Layout, Margin, RichText, ScrollArea,
     Sense, Stroke, TextEdit, Vec2,
 };
-use engine_probe::{EngineProbe, ProbeStatus};
+use engine_probe::{EngineProbe, ProbeEvent, ProbeStatus};
 use icons::Icon;
 use std::path::PathBuf;
 use theme::{
@@ -18,14 +18,15 @@ use theme::{
 
 const MAX_HISTORY_ROWS: usize = 10_000;
 const MAX_DRAFT_CHARS: usize = 8 * 1024;
-const PROJECTS: [&str; 3] = ["codex-wrapper-ui", "pty-sandbox-daemon", "ultima"];
-const PROJECT_THREADS: [[&str; 2]; 3] = [
+const MAX_LIVE_ROWS: usize = 512;
+const MAX_LIVE_TEXT_BYTES: usize = 32 * 1024;
+const PROJECTS: [&str; 2] = ["codex-wrapper-ui", "pty-sandbox-daemon"];
+const PROJECT_THREADS: [[&str; 2]; 2] = [
     [
         "Zero-copy IPC line framing",
         "Minimal dark monochrome tokens",
     ],
-    ["Read-only sandbox profile", "Process-tree ownership"],
-    ["NC-10 renderer feasibility", "Session gate extraction"],
+    ["macOS seatbelt read-only profile", ""],
 ];
 const CHAT_TITLES: [&str; 2] = ["Regex semver git tag filter", "SQLite WAL pragma tuning"];
 const REFERENCE_PATCH: &str = r#"import { StringDecoder } from 'node:string_decoder';
@@ -64,7 +65,15 @@ fn ghost_row(
         ui.painter().rect_filled(
             rect,
             CornerRadius::same(8),
-            Color32::from_white_alpha(if selected { 14 } else { 7 }),
+            Color32::from_white_alpha(if selected {
+                if disclosure.is_some() {
+                    8
+                } else {
+                    14
+                }
+            } else {
+                7
+            }),
         );
     }
     let color = if selected {
@@ -121,6 +130,15 @@ fn ghost_row(
         ui.painter()
             .circle_filled(rect.right_center() - egui::vec2(9.0, 0.0), 2.1, TEXT);
     }
+    if disclosure.is_some() {
+        ui.painter().text(
+            rect.right_center() - egui::vec2(9.0, 0.0),
+            egui::Align2::RIGHT_CENTER,
+            if label == PROJECTS[0] { "2" } else { "1" },
+            FontId::monospace(10.0),
+            MUTED,
+        );
+    }
     response
 }
 
@@ -149,13 +167,17 @@ enum Overlay {
 struct RendererSpike {
     project: usize,
     selected_thread: usize,
-    expanded: [bool; 3],
+    expanded: [bool; 2],
     standalone: bool,
     sidebar_collapsed: bool,
     overlay: Overlay,
     search: String,
     draft: String,
     history: Vec<ChatRow>,
+    live_rows: Vec<ChatRow>,
+    active_turn: Option<(String, String)>,
+    awaiting_turn_start: bool,
+    live_error: Option<String>,
     show_reference: bool,
     engine: Option<EngineProbe>,
     connected_project: Option<String>,
@@ -181,13 +203,17 @@ impl RendererSpike {
         Self {
             project: 0,
             selected_thread: 0,
-            expanded: [true, false, false],
+            expanded: [true, false],
             standalone: false,
             sidebar_collapsed: false,
             overlay: Overlay::None,
             search: String::new(),
             draft: String::new(),
             history,
+            live_rows: Vec::new(),
+            active_turn: None,
+            awaiting_turn_start: false,
+            live_error: None,
             show_reference,
             engine,
             connected_project: project,
@@ -216,6 +242,9 @@ impl RendererSpike {
     }
 
     fn active_title(&self) -> &str {
+        if self.engine.is_some() {
+            return "Official Codex session";
+        }
         if self.standalone {
             CHAT_TITLES[self.selected_thread.min(CHAT_TITLES.len() - 1)]
         } else {
@@ -226,8 +255,118 @@ impl RendererSpike {
     fn new_preview(&mut self) {
         // Local-only interaction; no fake Codex thread or approval is created.
         self.draft.clear();
-        self.show_reference = false;
+        if self.engine.is_none() {
+            self.show_reference = false;
+        }
         self.selected_thread = 0;
+    }
+
+    fn push_live_row(&mut self, from_user: bool, preview: String) {
+        if self.live_rows.len() == MAX_LIVE_ROWS {
+            self.live_rows.remove(0);
+        }
+        self.live_rows.push(ChatRow { from_user, preview });
+    }
+
+    fn apply_probe_event(&mut self, event: ProbeEvent) {
+        match event {
+            ProbeEvent::ThreadReady { .. } => {
+                self.live_error = None;
+            }
+            ProbeEvent::TurnStarted { thread_id, turn_id } => {
+                self.active_turn = Some((thread_id, turn_id));
+                self.awaiting_turn_start = false;
+                self.push_live_row(false, String::new());
+            }
+            ProbeEvent::AssistantDelta {
+                thread_id,
+                turn_id,
+                text,
+            } => {
+                if self.active_turn.as_ref() != Some(&(thread_id, turn_id)) {
+                    return;
+                }
+                if let Some(last) = self.live_rows.last_mut().filter(|row| !row.from_user) {
+                    let available = MAX_LIVE_TEXT_BYTES.saturating_sub(last.preview.len());
+                    let mut end = text.len().min(available);
+                    while !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    last.preview.push_str(&text[..end]);
+                }
+            }
+            ProbeEvent::AssistantFinal {
+                thread_id,
+                turn_id,
+                text,
+            } => {
+                if self.active_turn.as_ref() != Some(&(thread_id, turn_id)) {
+                    return;
+                }
+                if let Some(last) = self.live_rows.last_mut().filter(|row| !row.from_user) {
+                    let mut end = text.len().min(MAX_LIVE_TEXT_BYTES);
+                    while !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    last.preview = text[..end].to_owned();
+                }
+            }
+            ProbeEvent::TurnCompleted {
+                thread_id,
+                turn_id,
+                status,
+            } => {
+                if self.active_turn.as_ref() != Some(&(thread_id, turn_id)) {
+                    return;
+                }
+                self.active_turn = None;
+                self.awaiting_turn_start = false;
+                if let Some(last) = self.live_rows.last_mut().filter(|row| !row.from_user) {
+                    if last.preview.is_empty() {
+                        last.preview = format!("Turn completed: {status} (no assistant text)");
+                    }
+                }
+                if status != "completed" {
+                    self.live_error = Some(format!("Codex turn ended: {status}"));
+                }
+            }
+            ProbeEvent::Error(message) => {
+                self.awaiting_turn_start = false;
+                self.active_turn = None;
+                self.live_error = Some(message);
+            }
+        }
+    }
+
+    fn consume_engine_events(&mut self) {
+        let events = self
+            .engine
+            .as_ref()
+            .map(EngineProbe::take_events)
+            .unwrap_or_default();
+        for event in events {
+            self.apply_probe_event(event);
+        }
+    }
+
+    fn send_live_prompt(&mut self) {
+        let prompt = self.draft.trim().to_owned();
+        if prompt.is_empty() || self.awaiting_turn_start || self.active_turn.is_some() {
+            return;
+        }
+        let Some(engine) = self.engine.as_ref() else {
+            return;
+        };
+        match engine.submit_prompt(prompt.clone()) {
+            Ok(()) => {
+                self.push_live_row(true, prompt);
+                self.awaiting_turn_start = true;
+                self.live_error = None;
+                self.show_reference = false;
+                self.draft.clear();
+            }
+            Err(error) => self.live_error = Some(error.to_owned()),
+        }
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
@@ -332,9 +471,9 @@ impl RendererSpike {
             if new_response.clicked() {
                 self.new_preview();
             }
-            ui.add_space(14.0);
+            ui.add_space(4.0);
 
-            let remaining = (ui.available_height() - 77.0).max(80.0);
+            let remaining = (ui.available_height() - 63.0).max(80.0);
             ScrollArea::vertical()
                 .id_salt("sidebar-navigation")
                 .max_height(remaining)
@@ -343,13 +482,8 @@ impl RendererSpike {
                     ui.horizontal(|ui| {
                         ui.label(mono("PROJECTS"));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.add_enabled_ui(false, |ui| {
-                                icons::button(
-                                    ui,
-                                    Icon::Add,
-                                    "Project mounting unavailable in preview",
-                                )
-                            });
+                            ui.add_enabled(false, egui::Button::new("+").frame(false))
+                                .on_hover_text("Project mounting unavailable in preview");
                         });
                     });
                     ui.add_space(3.0);
@@ -367,6 +501,9 @@ impl RendererSpike {
                         }
                         if self.expanded[idx] {
                             for (thread, name) in PROJECT_THREADS[idx].iter().enumerate() {
+                                if name.is_empty() {
+                                    continue;
+                                }
                                 let active = !self.standalone
                                     && self.project == idx
                                     && self.selected_thread == thread;
@@ -380,7 +517,7 @@ impl RendererSpike {
                             }
                         }
                     }
-                    ui.add_space(18.0);
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label(mono("CHATS"));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -457,24 +594,45 @@ impl RendererSpike {
         ui.horizontal(|ui| {
             ui.label(mono(self.active_project()));
             ui.label(RichText::new("/").color(MUTED));
-            ui.label(RichText::new(self.active_title()).color(TEXT).size(12.0));
+            ui.label(
+                RichText::new(self.active_title())
+                    .color(TEXT)
+                    .size(12.0)
+                    .strong(),
+            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.add(egui::Button::new("clear").frame(false)).clicked() {
                     self.new_preview();
                 }
                 if self.show_reference {
-                    ui.label(
-                        RichText::new("+28 / -6")
-                            .font(FontId::monospace(10.0))
-                            .color(GREEN),
-                    );
+                    Frame::new()
+                        .fill(RAISED)
+                        .stroke(Stroke::new(1.0, BORDER))
+                        .corner_radius(CornerRadius::same(5))
+                        .inner_margin(Margin::symmetric(6, 3))
+                        .show(ui, |ui| {
+                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                ui.spacing_mut().item_spacing.x = 5.0;
+                                ui.label(
+                                    RichText::new("+28")
+                                        .font(FontId::monospace(10.0))
+                                        .color(GREEN),
+                                );
+                                ui.label(small("/"));
+                                ui.label(
+                                    RichText::new("-6")
+                                        .font(FontId::monospace(10.0))
+                                        .color(Color32::from_rgb(251, 113, 133)),
+                                );
+                            });
+                        });
                 }
             });
         });
     }
 
     fn demo_conversation(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(14.0);
+        ui.add_space(9.0);
         Frame::new()
             .inner_margin(Margin { left: 11, right: 0, top: 0, bottom: 0 })
             .stroke(Stroke { width: 0.0, color: Color32::TRANSPARENT })
@@ -492,7 +650,7 @@ impl RendererSpike {
                     Stroke::new(2.0, Color32::from_gray(67)),
                 );
             });
-        ui.add_space(35.0);
+        ui.add_space(20.0);
         egui::CollapsingHeader::new(
             RichText::new("Thought for 1.4s")
                 .font(FontId::monospace(11.0))
@@ -504,7 +662,7 @@ impl RendererSpike {
                 "Reference fixture · inspected stream UTF-8 boundary handling.",
             ));
         });
-        ui.add_space(7.0);
+        ui.add_space(5.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 7.0;
             ui.label(
@@ -521,16 +679,21 @@ impl RendererSpike {
                     .background_color(RAISED),
             );
         });
-        ui.add_space(11.0);
+        ui.add_space(7.0);
         ui.label(RichText::new(
             "Gunakan `StringDecoder` dengan sisa buffer baris terakhir agar setiap frame JSON terjamin utuh sebelum di-parse:"
         ).size(13.0).color(SECONDARY));
-        ui.add_space(13.0);
+        ui.add_space(6.0);
         Frame::new()
             .fill(SURFACE)
             .stroke(Stroke::new(1.0, BORDER))
             .corner_radius(CornerRadius::same(11))
-            .inner_margin(Margin::symmetric(13, 10))
+            .inner_margin(Margin {
+                left: 13,
+                right: 13,
+                top: 2,
+                bottom: 10,
+            })
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
@@ -543,9 +706,9 @@ impl RendererSpike {
                             .on_hover_text("No edits can be applied from this read-only prototype");
                     });
                 });
-                ui.add_space(3.0);
+                ui.add_space(0.0);
                 ui.separator();
-                ui.add_space(10.0);
+                ui.add_space(5.0);
                 ScrollArea::horizontal()
                     .id_salt("reference-ts")
                     .show(ui, |ui| {
@@ -554,7 +717,7 @@ impl RendererSpike {
                         // its line boxes are taller than egui's default.
                         for line in REFERENCE_PATCH.lines() {
                             ui.allocate_ui_with_layout(
-                                Vec2::new(ui.available_width().max(400.0), 18.5),
+                                Vec2::new(ui.available_width().max(400.0), 19.3),
                                 Layout::left_to_right(Align::Center),
                                 |ui| {
                                     ui.label(
@@ -586,7 +749,7 @@ impl RendererSpike {
             );
             ui.add_space(4.0);
             ui.label(body(
-                "Minimal native shell · official Codex connection is read-only.",
+                "Minimal native shell · official Codex uses a read-only sandbox.",
             ));
             ui.add_space(18.0);
             ui.horizontal_wrapped(|ui| {
@@ -610,6 +773,27 @@ impl RendererSpike {
     }
 
     fn conversation(&mut self, ui: &mut egui::Ui) {
+        if self.engine.is_some() && !self.live_rows.is_empty() {
+            ScrollArea::vertical()
+                .id_salt("native-live-conversation")
+                .stick_to_bottom(true)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    centered_width(ui, 768.0, |ui| {
+                        for row in &self.live_rows {
+                            ui.label(mono(if row.from_user { "you" } else { "codex" }));
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(&row.preview).color(if row.from_user {
+                                TEXT
+                            } else {
+                                SECONDARY
+                            }));
+                            ui.add_space(17.0);
+                        }
+                    });
+                });
+            return;
+        }
         if self.history.is_empty() {
             ScrollArea::vertical()
                 .id_salt("empty-or-reference")
@@ -649,6 +833,13 @@ impl RendererSpike {
     }
 
     fn composer(&mut self, ui: &mut egui::Ui) {
+        let can_send = self.engine.as_ref().is_some_and(|engine| {
+            engine.status() == ProbeStatus::Ready
+                && !self.awaiting_turn_start
+                && self.active_turn.is_none()
+                && !self.draft.trim().is_empty()
+        });
+        let can_cancel = self.active_turn.is_some();
         // Reference: max-w-3xl (768px) composer wrapper with px-4 (16px)
         // applied on both sides. The visual input box is therefore 736px.
         let content_w = (ui.available_width().min(768.0) - 32.0).max(280.0);
@@ -670,7 +861,7 @@ impl RendererSpike {
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(mono(if self.engine.is_some() {
-                        "official app-server · read-only"
+                        "official app-server · read-only sandbox"
                     } else {
                         "~/workspace/codex-wrapper-ui · main*"
                     }));
@@ -687,6 +878,9 @@ impl RendererSpike {
                         .char_limit(MAX_DRAFT_CHARS),
                 );
                 ui.add_space(7.0);
+                if let Some(error) = &self.live_error {
+                    ui.label(RichText::new(error).color(Color32::from_rgb(251, 113, 133)));
+                }
                 ui.horizontal(|ui| {
                     ui.menu_button(
                         RichText::new("●  Read-Only").color(SECONDARY).size(11.0),
@@ -721,9 +915,22 @@ impl RendererSpike {
                         },
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.add_enabled_ui(false, |ui| {
-                            icons::button(ui, Icon::Send, "Send unavailable: no model turn API")
-                        });
+                        if ui
+                            .add_enabled_ui(can_send, |ui| {
+                                icons::button(ui, Icon::Send, "Send prompt to official Codex")
+                            })
+                            .inner
+                            .clicked()
+                        {
+                            self.send_live_prompt();
+                        }
+                        if can_cancel && ui.button("Stop").clicked() {
+                            if let Some(engine) = &self.engine {
+                                if let Err(error) = engine.cancel() {
+                                    self.live_error = Some(error.to_owned());
+                                }
+                            }
+                        }
                         ui.add_enabled_ui(false, |ui| {
                             icons::button(ui, Icon::Mic, "Dictation not implemented")
                         });
@@ -811,6 +1018,9 @@ impl RendererSpike {
                             break;
                         }
                         for (t, title) in names.iter().enumerate() {
+                            if title.is_empty() {
+                                continue;
+                            }
                             if !title.to_lowercase().contains(&self.search.to_lowercase())
                                 && !PROJECTS[p].contains(&self.search.to_lowercase())
                             {
@@ -880,6 +1090,7 @@ impl RendererSpike {
 
 impl eframe::App for RendererSpike {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.consume_engine_events();
         self.shortcuts(ctx);
         // Safe stable state marker for the Windows benchmark harness.
         let title = format!("Ultima Native Renderer Spike | {}", self.engine_state());
@@ -1001,5 +1212,67 @@ mod tests {
         assert!(app.draft.is_empty());
         assert!(!app.show_reference);
         assert!(app.engine.is_none());
+    }
+
+    #[test]
+    fn scoped_native_deltas_never_mix_other_turns() {
+        let mut app = RendererSpike::new(0, false, None, None);
+        app.apply_probe_event(ProbeEvent::TurnStarted {
+            thread_id: "thread-1".into(),
+            turn_id: "turn-1".into(),
+        });
+        app.apply_probe_event(ProbeEvent::AssistantDelta {
+            thread_id: "thread-2".into(),
+            turn_id: "turn-1".into(),
+            text: "wrong thread".into(),
+        });
+        app.apply_probe_event(ProbeEvent::AssistantDelta {
+            thread_id: "thread-1".into(),
+            turn_id: "turn-2".into(),
+            text: "wrong turn".into(),
+        });
+        assert_eq!(app.live_rows[0].preview, "");
+        app.apply_probe_event(ProbeEvent::AssistantDelta {
+            thread_id: "thread-1".into(),
+            turn_id: "turn-1".into(),
+            text: "expected".into(),
+        });
+        assert_eq!(app.live_rows[0].preview, "expected");
+        app.apply_probe_event(ProbeEvent::AssistantFinal {
+            thread_id: "thread-1".into(),
+            turn_id: "turn-1".into(),
+            text: "canonical final".into(),
+        });
+        assert_eq!(app.live_rows[0].preview, "canonical final");
+        app.apply_probe_event(ProbeEvent::TurnCompleted {
+            thread_id: "thread-2".into(),
+            turn_id: "turn-1".into(),
+            status: "completed".into(),
+        });
+        assert!(app.active_turn.is_some());
+    }
+
+    #[test]
+    fn native_live_row_and_utf8_buffers_are_bounded() {
+        let mut app = RendererSpike::new(0, false, None, None);
+        for i in 0..MAX_LIVE_ROWS + 3 {
+            app.push_live_row(true, format!("{i}"));
+        }
+        assert_eq!(app.live_rows.len(), MAX_LIVE_ROWS);
+        assert_eq!(app.live_rows[0].preview, "3");
+        app.apply_probe_event(ProbeEvent::TurnStarted {
+            thread_id: "thread".into(),
+            turn_id: "turn".into(),
+        });
+        for _ in 0..100 {
+            app.apply_probe_event(ProbeEvent::AssistantDelta {
+                thread_id: "thread".into(),
+                turn_id: "turn".into(),
+                text: "語".repeat(800),
+            });
+        }
+        let final_text = &app.live_rows.last().unwrap().preview;
+        assert!(final_text.len() <= MAX_LIVE_TEXT_BYTES);
+        assert!(final_text.chars().all(|c| c == '語'));
     }
 }

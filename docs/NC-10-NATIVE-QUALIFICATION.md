@@ -241,3 +241,25 @@ with no active model turns, permission parity, real Codex history, full
 accessibility acceptance or packaged release. Existing Tauri/WebView2 retains
 its measured FAIL; the experimental renderer has no product acceptance yet.
 The rest of NC-10 remains blocked by the unfinished parity and workload gates.
+
+## Follow-up — October 26, 2026
+
+Reclaimed the same `feat/nc-10-native-qualification` branch, with the previous
+agent's `bdaf77a` already in its ancestry. The native egui candidate now
+supports a bounded, opt-in official Codex read-only-sandbox turn/stream/stop
+path with exact IDs and fail-closed approval declines. This is an experimental
+extension, with standalone streaming and cancellation unit coverage only.
+The native UI also retains the latest HTML-inspired visual refinements.
+
+Local checks: 16/16 NC-10 evidence, 50/50 frontend unit, 14/14 Playwright E2E
+(stable Windows browser concurrency and independent screenshot scenarios),
+7/7 renderer Rust, 7/7 SessionGate Rust, frontend build and Rust formatter /
+strict Clippy PASS. Svelte reports zero errors and four existing accessibility
+warnings. The original 30-second Playwright timeout is retained.
+
+**Still not complete**: measured active native renderer memory/paint/input
+latency on an exact release, a full authenticated 60-minute stress run,
+production host actor/approval/durable-history parity, physical Windows owner
+IME and screen reader acceptance, signed release, and exact-head hosted CI.
+The prior WebView2 product RAM FAIL is not closed by unit tests or the old
+read-only egui idle feasibility PASS.
