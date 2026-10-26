@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 license = "Apache-2.0"
 
-# Rendering-only feasibility experiment. All agent execution stays disabled.
+# Experimental native UI with an opt-in, bounded official Codex read-only turn path.
 # eframe 0.33.3 is compatible with our Rust 1.91.1 toolchain.
 [dependencies]
 eframe = { version = "=0.33.3", default-features = false, features = ["glow", "default_fonts", "accesskit"] }

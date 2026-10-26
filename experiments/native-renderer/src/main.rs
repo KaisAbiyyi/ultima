@@ -275,6 +275,14 @@ impl RendererSpike {
             ProbeEvent::ThreadReady { .. } => {
                 self.live_error = None;
             }
+            ProbeEvent::TurnCancelledBeforeStart => {
+                if self.awaiting_turn_start && self.active_turn.is_none() {
+                    self.awaiting_turn_start = false;
+                    self.last_turn_status = Some("cancelled before start".to_owned());
+                    self.live_error = None;
+                    self.push_live_row(false, "Turn cancelled before execution.".to_owned());
+                }
+            }
             ProbeEvent::TurnStarted { thread_id, turn_id } => {
                 self.active_turn = Some((thread_id, turn_id));
                 self.awaiting_turn_start = false;
@@ -319,8 +327,18 @@ impl RendererSpike {
                 turn_id,
                 status,
             } => {
-                if self.active_turn.as_ref() != Some(&(thread_id, turn_id)) {
+                // TurnLifecycle may verify a completed turn using the
+                // turn/start response after turn/completed arrived first.
+                // No TurnStarted event exists in that valid ordering.
+                let completed_before_started =
+                    self.awaiting_turn_start && self.active_turn.is_none();
+                if !completed_before_started
+                    && self.active_turn.as_ref() != Some(&(thread_id, turn_id))
+                {
                     return;
+                }
+                if completed_before_started {
+                    self.push_live_row(false, String::new());
                 }
                 self.active_turn = None;
                 self.awaiting_turn_start = false;
@@ -858,7 +876,7 @@ impl RendererSpike {
                 && self.active_turn.is_none()
                 && !self.draft.trim().is_empty()
         });
-        let can_cancel = self.active_turn.is_some();
+        let can_cancel = self.active_turn.is_some() || self.awaiting_turn_start;
         // Reference: max-w-3xl (768px) composer wrapper with px-4 (16px)
         // applied on both sides. The visual input box is therefore 736px.
         let content_w = (ui.available_width().min(768.0) - 32.0).max(280.0);
@@ -1359,5 +1377,51 @@ mod tests {
             "There is no active turn to cancel.".into(),
         ));
         assert_eq!(app.last_turn_status.as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn verified_terminal_before_start_ack_releases_native_composer() {
+        let mut app = RendererSpike::new(0, false, None, None);
+        app.awaiting_turn_start = true;
+        app.push_live_row(true, "test prompt".into());
+        // The protocol layer has matched the early terminal to the official
+        // turn/start response, so it can deliver this without TurnStarted.
+        app.apply_probe_event(ProbeEvent::TurnCompleted {
+            thread_id: "thread".into(),
+            turn_id: "turn".into(),
+            status: "failed".into(),
+        });
+        app.apply_probe_event(ProbeEvent::Error("Upstream limit reached.".into()));
+        assert!(!app.awaiting_turn_start);
+        assert!(app.active_turn.is_none());
+        assert_eq!(app.last_turn_status.as_deref(), Some("failed"));
+        assert_eq!(app.live_error.as_deref(), Some("Upstream limit reached."));
+        assert_eq!(app.live_rows.len(), 2);
+        assert!(app.live_rows[1].preview.contains("failed"));
+
+        let mut idle = RendererSpike::new(0, false, None, None);
+        idle.apply_probe_event(ProbeEvent::TurnCompleted {
+            thread_id: "old-thread".into(),
+            turn_id: "old-turn".into(),
+            status: "completed".into(),
+        });
+        assert!(idle.live_rows.is_empty(), "unsolicited terminal ignored");
+        assert!(idle.last_turn_status.is_none());
+    }
+
+    #[test]
+    fn cancelled_thread_start_never_leaves_ui_awaiting() {
+        let mut app = RendererSpike::new(0, false, None, None);
+        app.awaiting_turn_start = true;
+        app.push_live_row(true, "cancel this".into());
+        app.apply_probe_event(ProbeEvent::TurnCancelledBeforeStart);
+        assert!(!app.awaiting_turn_start);
+        assert!(app.active_turn.is_none());
+        assert_eq!(
+            app.last_turn_status.as_deref(),
+            Some("cancelled before start")
+        );
+        assert!(app.live_error.is_none());
+        assert_eq!(app.live_rows[1].preview, "Turn cancelled before execution.");
     }
 }

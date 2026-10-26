@@ -39,6 +39,7 @@ pub enum ProbeEvent {
     ThreadReady {
         thread_id: String,
     },
+    TurnCancelledBeforeStart,
     TurnStarted {
         thread_id: String,
         turn_id: String,
@@ -578,6 +579,11 @@ impl TurnLifecycle {
                             self.pending_prompt = None;
                             self.busy = false;
                             self.cancel_started = None;
+                            self.cancel_requested = false;
+                            // Only thread/start was sent. The pending prompt
+                            // never became a model turn and needs an explicit
+                            // UI acknowledgement so the composer can unlock.
+                            return Ok(Some(ProbeEvent::TurnCancelledBeforeStart));
                         } else {
                             self.start_turn(broker)?;
                         }
@@ -824,11 +830,15 @@ async fn drive(
                             }
                             while let Some(event) = broker.take_event() {
                                 let translated = lifecycle.on_event(&mut broker, event)?;
-                                if let Some(message) = lifecycle.take_terminal_error() {
-                                    enqueue(&events, &ctx, ProbeEvent::Error(message.to_owned()))?;
-                                }
                                 if let Some(event) = translated {
                                     enqueue(&events, &ctx, event)?;
+                                }
+                                // Deliver an independently verified terminal
+                                // before its diagnostic error so the UI can
+                                // settle a turn that completed ahead of its
+                                // start RPC response.
+                                if let Some(message) = lifecycle.take_terminal_error() {
+                                    enqueue(&events, &ctx, ProbeEvent::Error(message.to_owned()))?;
                                 }
                             }
                             flush(&mut broker, &mut supervisor).await?;
@@ -1074,6 +1084,44 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_during_thread_creation_never_submits_a_model_turn() {
+        let mut broker = ready();
+        let mut lifecycle = TurnLifecycle::default();
+        let project = std::env::current_dir().unwrap();
+        lifecycle
+            .submit(&mut broker, &project, "do not send".into())
+            .unwrap();
+        let start: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(start["method"], "thread/start");
+        lifecycle.cancel(&mut broker).unwrap();
+        assert!(broker.take_outbound().is_none());
+
+        let confirmation = reply(
+            &mut broker,
+            start["id"].as_u64().unwrap(),
+            created(&project),
+        );
+        assert_eq!(
+            lifecycle.on_event(&mut broker, confirmation),
+            Ok(Some(ProbeEvent::TurnCancelledBeforeStart))
+        );
+        assert!(!lifecycle.busy);
+        assert!(!lifecycle.cancel_requested);
+        assert!(lifecycle.pending_prompt.is_none());
+        assert!(
+            broker.take_outbound().is_none(),
+            "must not issue turn/start"
+        );
+
+        lifecycle
+            .submit(&mut broker, &project, "subsequent prompt".into())
+            .unwrap();
+        let next: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(next["method"], "turn/start");
+        assert_eq!(next["params"]["input"][0]["text"], "subsequent prompt");
+    }
+
+    #[test]
     fn cancel_waits_for_real_turn_id_then_declines_and_interrupts() {
         let mut b = ready();
         let mut f = TurnLifecycle {
@@ -1236,6 +1284,69 @@ mod tests {
             b.take_outbound().is_none(),
             "must not interrupt a turn already reported finished"
         );
+    }
+
+    #[test]
+    fn broker_queue_and_ui_recover_from_terminal_before_turn_start_reply() {
+        let mut broker = ready();
+        let mut lifecycle = TurnLifecycle {
+            thread: Some("thread-a".into()),
+            ..Default::default()
+        };
+        let mut display = DisplayEvents::default();
+        let mut app = crate::RendererSpike::new(0, false, None, None);
+        app.awaiting_turn_start = true;
+        app.push_live_row(true, "synthetic prompt".into());
+
+        lifecycle
+            .submit(
+                &mut broker,
+                Path::new("C:/project"),
+                "synthetic prompt".into(),
+            )
+            .unwrap();
+        let request: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        broker
+            .ingest_line(
+                json!({"method":"turn/completed","params":{
+                    "threadId":"thread-a","turn":{"id":"turn-a","status":"failed",
+                    "error":{"codexErrorInfo":"usageLimitExceeded", "message":"private details"}}}})
+                .to_string()
+                .as_bytes(),
+            )
+            .unwrap();
+        let early = broker.take_event().unwrap();
+        assert_eq!(lifecycle.on_event(&mut broker, early).unwrap(), None);
+        assert!(display.take().is_empty(), "unverified terminal is withheld");
+
+        let start_reply = reply(
+            &mut broker,
+            request["id"].as_u64().unwrap(),
+            json!({"turn":{"id":"turn-a"}}),
+        );
+        let verified = lifecycle
+            .on_event(&mut broker, start_reply)
+            .unwrap()
+            .unwrap();
+        display.push(verified).unwrap();
+        if let Some(diagnostic) = lifecycle.take_terminal_error() {
+            display
+                .push(ProbeEvent::Error(diagnostic.to_owned()))
+                .unwrap();
+        }
+        for event in display.take() {
+            app.apply_probe_event(event);
+        }
+        assert!(!app.awaiting_turn_start, "verified terminal unlocks input");
+        assert!(app.active_turn.is_none());
+        assert_eq!(app.last_turn_status.as_deref(), Some("failed"));
+        assert_eq!(
+            app.live_error.as_deref(),
+            Some("Codex reached its upstream usage or rate limit.")
+        );
+        assert_eq!(app.live_rows.len(), 2);
+        assert!(!app.live_rows[1].preview.contains("private details"));
+        assert!(!lifecycle.busy);
     }
 
     #[test]

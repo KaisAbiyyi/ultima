@@ -263,3 +263,25 @@ production host actor/approval/durable-history parity, physical Windows owner
 IME and screen reader acceptance, signed release, and exact-head hosted CI.
 The prior WebView2 product RAM FAIL is not closed by unit tests or the old
 read-only egui idle feasibility PASS.
+
+## Reclaim follow-up — October 26, 2026 (pending turn races)
+
+The native egui renderer now allows Stop while an accepted prompt still awaits
+its official turn ID. A cancellation during initial `thread/start` prevents any
+model `turn/start`, returns an explicit cancelled-before-start UI event and
+allows a later prompt on the verified read-only thread. Cancellation after
+`turn/start` still waits for the real ID and official terminal acknowledgement.
+
+The same official turn can complete before its `turn/start` response arrives.
+The protocol broker confirms its identity before emitting a terminal; the UI
+now accepts that verified outcome while awaiting start, presents the terminal
+status and unlocks the composer. Diagnostic errors follow the authoritative
+terminal event without erasing its status. Unsolicited idle completions are
+ignored. Four targeted Rust regressions cover these cases, including a
+broker-to-display-queue-to-UI envelope test, in addition to the existing
+broker identity and approval tests.
+
+Local Rust renderer suite: **23/23 PASS**, formatter **PASS**, strict Clippy
+`-D warnings` **PASS**. This is synthetic regression evidence, not a live
+native streaming or interruption acceptance receipt. The full NC-10 product
+gates, existing Tauri RAM failure and owner sign-off stay open.
