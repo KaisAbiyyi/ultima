@@ -164,6 +164,11 @@ for (let run = 1; run <= repetitions; run++) {
     if (sampler?.exitCode === null) sampler.kill();
   }
 }
+const afterRun = await verifyExactBuild();
+if (afterRun.sourceSha !== sourceSha || afterRun.binarySha256 !== executableSha256 ||
+    afterRun.cargoLockSha256 !== verified.cargoLockSha256) {
+  throw Error('Native source, lockfile or executable changed during qualification');
+}
 report.summary = {
   count: report.samples.length,
   rssMiBP95AcrossRuns: percentile(report.samples.map(r => r.rssMiB.p95), 0.95),
