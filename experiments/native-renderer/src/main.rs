@@ -178,6 +178,7 @@ struct RendererSpike {
     active_turn: Option<(String, String)>,
     awaiting_turn_start: bool,
     live_error: Option<String>,
+    last_turn_status: Option<String>,
     show_reference: bool,
     engine: Option<EngineProbe>,
     connected_project: Option<String>,
@@ -214,6 +215,7 @@ impl RendererSpike {
             active_turn: None,
             awaiting_turn_start: false,
             live_error: None,
+            last_turn_status: None,
             show_reference,
             engine,
             connected_project: project,
@@ -276,6 +278,7 @@ impl RendererSpike {
             ProbeEvent::TurnStarted { thread_id, turn_id } => {
                 self.active_turn = Some((thread_id, turn_id));
                 self.awaiting_turn_start = false;
+                self.last_turn_status = Some("running".to_owned());
                 self.push_live_row(false, String::new());
             }
             ProbeEvent::AssistantDelta {
@@ -321,6 +324,7 @@ impl RendererSpike {
                 }
                 self.active_turn = None;
                 self.awaiting_turn_start = false;
+                self.last_turn_status = Some(status.clone());
                 if let Some(last) = self.live_rows.last_mut().filter(|row| !row.from_user) {
                     if last.preview.is_empty() {
                         last.preview = format!("Turn completed: {status} (no assistant text)");
@@ -333,6 +337,7 @@ impl RendererSpike {
             ProbeEvent::Error(message) => {
                 self.awaiting_turn_start = false;
                 self.active_turn = None;
+                self.last_turn_status = Some("error".to_owned());
                 self.live_error = Some(message);
             }
         }
@@ -361,6 +366,7 @@ impl RendererSpike {
             Ok(()) => {
                 self.push_live_row(true, prompt);
                 self.awaiting_turn_start = true;
+                self.last_turn_status = Some("starting".to_owned());
                 self.live_error = None;
                 self.show_reference = false;
                 self.draft.clear();
@@ -881,6 +887,9 @@ impl RendererSpike {
                 if let Some(error) = &self.live_error {
                     ui.label(RichText::new(error).color(Color32::from_rgb(251, 113, 133)));
                 }
+                if let Some(status) = &self.last_turn_status {
+                    ui.label(mono(format!("Turn status: {status}")));
+                }
                 ui.horizontal(|ui| {
                     ui.menu_button(
                         RichText::new("●  Read-Only").color(SECONDARY).size(11.0),
@@ -928,6 +937,9 @@ impl RendererSpike {
                             if let Some(engine) = &self.engine {
                                 if let Err(error) = engine.cancel() {
                                     self.live_error = Some(error.to_owned());
+                                } else {
+                                    self.last_turn_status =
+                                        Some("cancellation requested".to_owned());
                                 }
                             }
                         }
@@ -1274,5 +1286,35 @@ mod tests {
         let final_text = &app.live_rows.last().unwrap().preview;
         assert!(final_text.len() <= MAX_LIVE_TEXT_BYTES);
         assert!(final_text.chars().all(|c| c == '語'));
+    }
+
+    #[test]
+    fn native_turn_terminal_status_distinguishes_completion_and_interruption() {
+        for status in ["completed", "interrupted", "failed"] {
+            let mut app = RendererSpike::new(0, false, None, None);
+            app.apply_probe_event(ProbeEvent::TurnStarted {
+                thread_id: "thread".into(),
+                turn_id: "turn".into(),
+            });
+            assert_eq!(app.last_turn_status.as_deref(), Some("running"));
+            app.apply_probe_event(ProbeEvent::TurnCompleted {
+                thread_id: "wrong-thread".into(),
+                turn_id: "turn".into(),
+                status: "interrupted".into(),
+            });
+            assert_eq!(app.last_turn_status.as_deref(), Some("running"));
+            app.apply_probe_event(ProbeEvent::TurnCompleted {
+                thread_id: "thread".into(),
+                turn_id: "turn".into(),
+                status: status.into(),
+            });
+            assert_eq!(app.last_turn_status.as_deref(), Some(status));
+            assert!(app.active_turn.is_none());
+            if status == "completed" {
+                assert!(app.live_error.is_none());
+            } else {
+                assert!(app.live_error.is_some());
+            }
+        }
     }
 }
