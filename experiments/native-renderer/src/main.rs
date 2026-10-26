@@ -330,14 +330,27 @@ impl RendererSpike {
                         last.preview = format!("Turn completed: {status} (no assistant text)");
                     }
                 }
-                if status != "completed" {
+                if status != "completed" && self.live_error.is_none() {
                     self.live_error = Some(format!("Codex turn ended: {status}"));
                 }
             }
             ProbeEvent::Error(message) => {
-                self.awaiting_turn_start = false;
-                self.active_turn = None;
-                self.last_turn_status = Some("error".to_owned());
+                // A failed turn emits a sanitized Error *before* its final
+                // TurnCompleted event. Do not discard the active turn here,
+                // otherwise the exact-ID terminal event would be ignored.
+                let engine_failed = self.engine.as_ref().is_some_and(|engine| {
+                    matches!(engine.status(), ProbeStatus::Failed | ProbeStatus::Stopped)
+                });
+                if self.active_turn.is_none() || engine_failed {
+                    self.awaiting_turn_start = false;
+                    self.active_turn = None;
+                    if !matches!(
+                        self.last_turn_status.as_deref(),
+                        Some("completed" | "interrupted" | "failed")
+                    ) {
+                        self.last_turn_status = Some("error".to_owned());
+                    }
+                }
                 self.live_error = Some(message);
             }
         }
@@ -1316,5 +1329,35 @@ mod tests {
                 assert!(app.live_error.is_some());
             }
         }
+    }
+
+    #[test]
+    fn failed_turn_error_does_not_hide_authoritative_terminal_event() {
+        let mut app = RendererSpike::new(0, false, None, None);
+        app.apply_probe_event(ProbeEvent::TurnStarted {
+            thread_id: "thread".into(),
+            turn_id: "turn".into(),
+        });
+        app.apply_probe_event(ProbeEvent::Error(
+            "Codex reached its upstream usage or rate limit.".into(),
+        ));
+        assert!(app.active_turn.is_some());
+        assert_eq!(app.last_turn_status.as_deref(), Some("running"));
+        app.apply_probe_event(ProbeEvent::TurnCompleted {
+            thread_id: "thread".into(),
+            turn_id: "turn".into(),
+            status: "failed".into(),
+        });
+        assert!(app.active_turn.is_none());
+        assert_eq!(app.last_turn_status.as_deref(), Some("failed"));
+        assert_eq!(
+            app.live_error.as_deref(),
+            Some("Codex reached its upstream usage or rate limit.")
+        );
+        // Late cancellation errors cannot rewrite a completed turn.
+        app.apply_probe_event(ProbeEvent::Error(
+            "There is no active turn to cancel.".into(),
+        ));
+        assert_eq!(app.last_turn_status.as_deref(), Some("failed"));
     }
 }
