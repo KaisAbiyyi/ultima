@@ -1,6 +1,5 @@
 /** Renderer-only NC-10 feasibility measurement; never grants native acceptance. */
 import { spawn, execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
@@ -8,6 +7,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { closeOwned } from '../../scripts/nc-10-processes.mjs';
+import { verifyExactBuild } from './build-exact.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(root, '../..');
@@ -24,8 +24,9 @@ const fixture = requiresCodex
 const repetitions = 3;
 const durationMs = process.argv.includes('--full-idle') ? 120_000 : 45_000;
 const warmupMs = durationMs === 120_000 ? 60_000 : 15_000;
-const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
-const executableSha256 = createHash('sha256').update(await readFile(exe)).digest('hex');
+const verified = await verifyExactBuild();
+const sourceSha = verified.sourceSha;
+const executableSha256 = verified.binarySha256;
 const dir = path.join(root, 'results', mode + '-' + sourceSha.slice(0, 8) + '-' + Date.now());
 await mkdir(dir, { recursive: true });
 function percentile(values, p) {
@@ -33,12 +34,13 @@ function percentile(values, p) {
   const rank = (sorted.length - 1) * p;
   return sorted[Math.floor(rank)] + (sorted[Math.ceil(rank)] - sorted[Math.floor(rank)]) * (rank % 1);
 }
-const sourceDirty = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all', '--', 'experiments/native-renderer'],
+const sourceDirty = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'],
   { cwd: repo, encoding: 'utf8' }).trim().length > 0;
 const report = {
   kind: 'NC10_RENDERER_ONLY_DIAGNOSTIC_NOT_PRODUCT_ACCEPTANCE',
   sourceSha, sourceDirty, binarySha256: executableSha256, mode, durationMs,
-  warmupMs, samples: [],
+  warmupMs, samples: [], cargoLockSha256: verified.cargoLockSha256,
+  buildReceiptVerified: verified.buildReceiptVerified,
 };
 
 async function initializeOfficialAppServer(app) {

@@ -7,6 +7,8 @@ const base = {
   sourceDirty: false,
   sourceSha: 'a'.repeat(40),
   binarySha256: 'b'.repeat(64),
+  cargoLockSha256: 'd'.repeat(64),
+  buildReceiptVerified: true,
   durationMs: 120_000,
   warmupMs: 60_000,
 };
@@ -41,6 +43,8 @@ describe('read-only prototype RAM budget: fail closed', () => {
     const cli = report('cli', 70);
     assert.throws(() => compareReports(cli, { ...report('connected', 180), sourceDirty: true }), /dirty source/);
     assert.throws(() => compareReports(cli, { ...report('connected', 180), binarySha256: 'c'.repeat(64) }), /different source or executable/);
+    assert.throws(() => compareReports(cli, { ...report('connected', 180), buildReceiptVerified: false }), /build receipt/);
+    assert.throws(() => compareReports(cli, { ...report('connected', 180), cargoLockSha256: 'e'.repeat(64) }), /different source or executable/);
     const missing = report('connected', 180);
     missing.samples[1].attributableCodexSamples = 47;
     assert.throws(() => compareReports(cli, missing), /Codex absent/);

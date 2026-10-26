@@ -18,6 +18,8 @@ export function compareReports(cli, native) {
     if (report?.mode !== mode) fail('wrong mode ' + mode);
     if (report.kind !== 'NC10_RENDERER_ONLY_DIAGNOSTIC_NOT_PRODUCT_ACCEPTANCE') fail('wrong evidence scope');
     if (report.sourceDirty !== false) fail('dirty source');
+    if (report.buildReceiptVerified !== true) fail('missing verified exact-source build receipt');
+    if (!/^[0-9a-f]{64}$/i.test(report.cargoLockSha256 ?? '')) fail('missing Cargo.lock digest');
     if (!/^[0-9a-f]{40}$/i.test(report.sourceSha ?? '')) fail('missing source commit');
     if (!/^[0-9a-f]{64}$/i.test(report.binarySha256 ?? '')) fail('missing renderer binary hash');
     if (report.durationMs !== 120_000 || report.warmupMs !== 60_000) fail('not the full settled 120-second idle window');
@@ -40,7 +42,8 @@ export function compareReports(cli, native) {
       fail('reported aggregate RSS conflicts with source run samples');
     }
   }
-  if (cli.sourceSha !== native.sourceSha || cli.binarySha256 !== native.binarySha256) {
+  if (cli.sourceSha !== native.sourceSha || cli.binarySha256 !== native.binarySha256 ||
+      cli.cargoLockSha256 !== native.cargoLockSha256) {
     fail('different source or executable');
   }
   const additionalRssMiB = native.summary.rssMiBP95AcrossRuns - cli.summary.rssMiBP95AcrossRuns;

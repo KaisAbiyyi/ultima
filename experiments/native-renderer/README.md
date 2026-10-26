@@ -39,10 +39,10 @@ The renderer uses `eframe = 0.33.3` with only glow, default fonts and AccessKit.
 
 When provided *both* `--codex-exe=<absolute trusted executable>` and `--project=<absolute directory>`, the spike connects to official Codex App Server using Ultima's Rust `EngineSupervisor`, `Broker` and shared generation-fenced `SessionGate`. A user-entered prompt starts a single read-only-sandbox thread/turn; bounded assistant deltas and canonical final text are displayed with checked thread/turn IDs. Stop requests an official `turn/interrupt` for that exact ID. Tool approval requests are always declined. Engine ownership uses a Windows Job and shuts down on window exit. The connection state appears in the title bar. **Do not treat this experimental path as approved NC-07 permission parity, durable resume or the production runtime.**
 
-Build from repository root:
+Build a clean, commit-bound Windows executable from repository root before qualification:
 
 ```powershell
-cargo build --release --manifest-path experiments/native-renderer/Cargo.toml
+node experiments/native-renderer/build-exact.mjs
 ```
 
 The release exe lives in `experiments/native-renderer/target/release/ultima-native-renderer-spike.exe`. To test the virtualized 10k row UI:
@@ -61,6 +61,9 @@ node experiments/native-renderer/benchmark.mjs cli --full-idle
 node experiments/native-renderer/benchmark.mjs connected --full-idle
 ```
 
+The build helper refuses dirty sources, compiles with `--locked`, and records an
+ignored receipt binding HEAD, the executable SHA256 and Cargo.lock SHA256. The
+sampler requires that receipt before any run. Rebuild after every source commit.
 The strict diagnostic guard below rejects source/binary mismatches, missing
 Codex samples, partial runs and idle RSS overhead above **150 MiB**. It does
 not claim active-turn or production NC-10 acceptance:
