@@ -647,9 +647,8 @@ impl TurnLifecycle {
             return Err("Approval is stale, mismatched, or lacks complete review evidence.");
         }
         let admissible = if accept {
-            reviewed.is_some_and(|snapshot| {
-                self.tools.consume_reviewed(expected, project, snapshot)
-            })
+            reviewed
+                .is_some_and(|snapshot| self.tools.consume_reviewed(expected, project, snapshot))
         } else {
             self.tools.take(expected)
         };
@@ -1128,7 +1127,12 @@ impl EngineProbe {
             .map_err(|_| "Codex command queue is full or disconnected.")
     }
 
-    pub fn decide(&self, request: Approval, accept: bool, reviewed: Option<ToolEvidence>) -> Result<(), &'static str> {
+    pub fn decide(
+        &self,
+        request: Approval,
+        accept: bool,
+        reviewed: Option<ToolEvidence>,
+    ) -> Result<(), &'static str> {
         if self.status() != ProbeStatus::Ready {
             return Err("Codex handshake is not ready.");
         }
@@ -2002,7 +2006,9 @@ mod tests {
         };
         let mut forged = approval.clone();
         forged.item_id = "not-the-reviewed-tool".to_owned();
-        assert!(lifecycle.decide(&mut broker, &forged, true, Some(&reviewed)).is_err());
+        assert!(lifecycle
+            .decide(&mut broker, &forged, true, Some(&reviewed))
+            .is_err());
         assert!(broker.take_outbound().is_none());
         assert!(matches!(
             lifecycle.decide(&mut broker, &approval, true, Some(&reviewed)),
@@ -2011,7 +2017,9 @@ mod tests {
         let outbound: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
         assert_eq!(outbound["id"], "request-a");
         assert_eq!(outbound["result"]["decision"], "accept");
-        assert!(lifecycle.decide(&mut broker, &approval, true, Some(&reviewed)).is_err());
+        assert!(lifecycle
+            .decide(&mut broker, &approval, true, Some(&reviewed))
+            .is_err());
         assert!(broker.take_outbound().is_none());
     }
 
@@ -2059,7 +2067,9 @@ mod tests {
             lifecycle.on_event(&mut broker, event),
             Ok(Some(ProbeEvent::ApprovalResolved(_)))
         ));
-        assert!(lifecycle.decide(&mut broker, &pending, true, Some(&reviewed)).is_err());
+        assert!(lifecycle
+            .decide(&mut broker, &pending, true, Some(&reviewed))
+            .is_err());
         assert!(broker.take_outbound().is_none());
     }
 }
