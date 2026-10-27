@@ -940,21 +940,11 @@ impl HistoryFlow {
                 Ok(Some(None))
             }
             HistoryRequest::Resume { thread } => {
-                if session_history::safe_cursor(result.pointer("/thread/id"))?.is_none() {
-                    // The identity must exist; verify even when the result omits
-                    // echoed policy fields. The preceding read checked trusted cwd,
-                    // and all subsequent turns force sandbox+approval overrides.
-                    return Err("Codex resume did not confirm a thread identity.");
-                }
-                if result.pointer("/thread/id").and_then(Value::as_str) != Some(thread.as_str()) {
+                // A resume can change effective authorization. A metadata
+                // read is not proof that the resumed session is read-only.
+                let resumed_id = accepted_read_only_thread(result, project)?;
+                if resumed_id != thread {
                     return Err("Codex resumed a different thread identity.");
-                }
-                if result
-                    .pointer("/thread/cwd")
-                    .and_then(Value::as_str)
-                    .is_some()
-                {
-                    session_history::verify_thread_identity(result, &thread, project)?;
                 }
                 lifecycle.thread = Some(thread.clone());
                 lifecycle.project = Some(project.to_path_buf());
@@ -2147,7 +2137,7 @@ mod tests {
         let event = reply(
             &mut broker,
             resume["id"].as_u64().unwrap(),
-            json!({"thread":{"id":"a","cwd":cwd}}),
+            json!({"thread":{"id":"a","cwd":cwd},"cwd":cwd,"approvalPolicy":"never","sandbox":{"type":"readOnly","networkAccess":false}}),
         );
         assert!(matches!(
             flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
@@ -2202,7 +2192,7 @@ mod tests {
         let event = reply(
             &mut broker,
             resumed["id"].as_u64().unwrap(),
-            json!({"thread":{"id":"b","cwd":cwd}}),
+            json!({"thread":{"id":"b","cwd":cwd},"cwd":cwd,"approvalPolicy":"never","sandbox":{"type":"readOnly","networkAccess":false}}),
         );
         flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
             .unwrap();
