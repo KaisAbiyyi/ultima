@@ -538,10 +538,12 @@ impl Broker {
                     // An oversized request is declined, not presented as a
                     // clipped preview which might hide elevated permissions.
                     let descriptor = Value::Object(p.cloned().unwrap_or_default());
-                    if serde_json::to_vec(&descriptor)
-                        .is_err_or(|bytes| bytes.len() > 8 * 1024)
-                    {
-                        return self.error_reply(id, -32602, "Approval descriptor exceeds safe limit");
+                    if serde_json::to_vec(&descriptor).is_err_or(|bytes| bytes.len() > 8 * 1024) {
+                        return self.error_reply(
+                            id,
+                            -32602,
+                            "Approval descriptor exceeds safe limit",
+                        );
                     }
                     if self.approvals.len() >= self.limits.approvals {
                         return Err(BridgeError::Backpressure);

@@ -1788,8 +1788,10 @@ mod tests {
         let request = Approval {
             id: RpcId::String("r".into()),
             kind: ApprovalKind::Command,
-            thread_id: "t".into(), turn_id: "u".into(),
-            item_id: "i".into(), started_at_ms: 1,
+            thread_id: "t".into(),
+            turn_id: "u".into(),
+            item_id: "i".into(),
+            started_at_ms: 1,
             request: serde_json::json!({}),
         };
         app.pending_approvals.push(request.clone());

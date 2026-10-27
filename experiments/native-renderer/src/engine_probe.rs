@@ -1229,15 +1229,28 @@ mod tests {
         };
         let mut broker = ready();
         for (kind, id, item) in [
-            (ApprovalKind::Command, "cmd", json!({"id":"cmd","type":"commandExecution",
-                "command":"echo ok","aggregatedOutput":"done","exitCode":0})),
-            (ApprovalKind::FileChange, "file", json!({"id":"file","type":"fileChange",
-                "changes":[{"path":"example.txt","diff":"@@ -0,0 +1 @@\\n+new"}]})),
+            (
+                ApprovalKind::Command,
+                "cmd",
+                json!({"id":"cmd","type":"commandExecution",
+                "command":"echo ok","aggregatedOutput":"done","exitCode":0}),
+            ),
+            (
+                ApprovalKind::FileChange,
+                "file",
+                json!({"id":"file","type":"fileChange",
+                "changes":[{"path":"example.txt","diff":"@@ -0,0 +1 @@\\n+new"}]}),
+            ),
         ] {
-            let event = f.on_event(&mut broker, Event::Notification {
-                kind: NotificationKind::ItemCompleted,
-                params: json!({"threadId":"thread-a","turnId":"turn-a","item":item}),
-            }).unwrap();
+            let event = f
+                .on_event(
+                    &mut broker,
+                    Event::Notification {
+                        kind: NotificationKind::ItemCompleted,
+                        params: json!({"threadId":"thread-a","turnId":"turn-a","item":item}),
+                    },
+                )
+                .unwrap();
             let Some(ProbeEvent::ToolSnapshot(snapshot)) = event else {
                 panic!("item completion was dropped");
             };

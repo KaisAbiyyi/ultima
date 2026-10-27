@@ -320,10 +320,14 @@ fn nc07_upstream_resolved_invalidates_original_request() {
 #[test]
 fn descriptor_is_exactly_bound_and_same_id_mutation_is_rejected() {
     let mut broker = ready();
-    broker.ingest_line(br#"{"id":"cmd","method":"item/commandExecution/requestApproval",
+    broker
+        .ingest_line(
+            br#"{"id":"cmd","method":"item/commandExecution/requestApproval",
         "params":{"threadId":"t","turnId":"u","itemId":"i",
             "startedAtMs":1,"command":"echo safe","cwd":"/project",
-            "availableDecisions":["accept","decline"]}}"#).unwrap();
+            "availableDecisions":["accept","decline"]}}"#,
+        )
+        .unwrap();
     let Event::Approval(original) = broker.take_event().unwrap() else {
         panic!("missing server approval");
     };

@@ -295,16 +295,22 @@ impl ToolLedger {
     ) -> bool {
         let req = &approval.request;
         if !req.is_object()
-            || ["additionalPermissions", "networkApprovalContext",
-                "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendments"]
-                .iter().any(|key| req.get(*key).is_some_and(|v| !v.is_null()))
+            || [
+                "additionalPermissions",
+                "networkApprovalContext",
+                "proposedExecpolicyAmendment",
+                "proposedNetworkPolicyAmendments",
+            ]
+            .iter()
+            .any(|key| req.get(*key).is_some_and(|v| !v.is_null()))
         {
             // No implicit privilege expansion or session-wide scope.
             return false;
         }
         if let Some(decisions) = req.get("availableDecisions") {
-            if !decisions.as_array().is_some_and(|v|
-                v.iter().any(|d| d.as_str() == Some("accept")))
+            if !decisions
+                .as_array()
+                .is_some_and(|v| v.iter().any(|d| d.as_str() == Some("accept")))
             {
                 return false;
             }
@@ -331,9 +337,11 @@ impl ToolLedger {
             ApprovalKind::FileChange => {
                 // grantRoot is optional on official fileChange approval;
                 // explicitly deny any broader grant outside the project.
-                req.get("grantRoot").is_none_or(|value|
-                    value.as_str().is_some_and(|path|
-                        Path::new(path).canonicalize().ok().as_ref() == Some(&expected_root)))
+                req.get("grantRoot").is_none_or(|value| {
+                    value.as_str().is_some_and(|path| {
+                        Path::new(path).canonicalize().ok().as_ref() == Some(&expected_root)
+                    })
+                })
             }
         }
     }
@@ -395,7 +403,9 @@ mod tests {
         let cwd = project().to_str().unwrap().to_owned();
         let item = json!({"threadId":"t","turnId":"u","item":{"id":"i",
             "type":"commandExecution","command":"echo safe","cwd":cwd}});
-        let snapshot = ledger.capture(NotificationKind::ItemStarted, &item, &project()).unwrap();
+        let snapshot = ledger
+            .capture(NotificationKind::ItemStarted, &item, &project())
+            .unwrap();
         let mut a = approval();
         a.request = json!({"threadId":"t","turnId":"u","itemId":"i",
             "command":"echo DIFFERENT","cwd":cwd,"startedAtMs":1});
@@ -412,7 +422,10 @@ mod tests {
         ledger.clear_pending();
         assert!(ledger.offer(a.clone(), &project()));
         assert!(!ledger.consume_reviewed(&a, &project(), &snapshot));
-        a.request.as_object_mut().unwrap().remove("additionalPermissions");
+        a.request
+            .as_object_mut()
+            .unwrap()
+            .remove("additionalPermissions");
         ledger.clear_pending();
         assert!(ledger.offer(a.clone(), &project()));
         assert!(ledger.consume_reviewed(&a, &project(), &snapshot));
