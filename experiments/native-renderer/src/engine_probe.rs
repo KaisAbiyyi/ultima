@@ -1945,4 +1945,104 @@ mod tests {
             matches!(&results[0].event, ProbeEvent::AssistantDelta { text, .. } if text == "hello world")
         );
     }
+    #[test]
+    fn coding_policy_requires_exact_effective_permissions() {
+        let project = std::env::current_dir().unwrap();
+        let mut response = created(&project);
+        assert!(accepted_thread(&response, &project, true).is_err());
+        response["approvalPolicy"] = json!("on-request");
+        response["sandbox"] = json!({"type":"workspaceWrite","networkAccess":false});
+        assert_eq!(
+            accepted_thread(&response, &project, true),
+            Ok("thread-a".to_owned())
+        );
+        response["sandbox"]["networkAccess"] = json!(true);
+        assert!(accepted_thread(&response, &project, true).is_err());
+        response["sandbox"]["networkAccess"] = json!(false);
+        response["thread"]["cwd"] = json!("/foreign/path");
+        assert!(accepted_thread(&response, &project, true).is_err());
+    }
+
+    #[test]
+    fn coding_approval_requires_live_tool_evidence_and_single_exact_rpc() {
+        let project = std::env::current_dir().unwrap();
+        let mut broker = ready();
+        let mut lifecycle = TurnLifecycle {
+            thread: Some("thread-a".to_owned()),
+            turn: Some("turn-a".to_owned()),
+            project: Some(project.clone()),
+            busy: true,
+            coding_enabled: true,
+            ..Default::default()
+        };
+        let tool = lifecycle.on_event(
+            &mut broker,
+            Event::Notification {
+                kind: NotificationKind::ItemStarted,
+                params: json!({
+                    "threadId":"thread-a","turnId":"turn-a",
+                    "item":{"id":"item-a","type":"commandExecution","command":"echo reviewed"}
+                }),
+            },
+        ).unwrap();
+        assert!(matches!(tool, Some(ProbeEvent::ToolSnapshot(_))));
+        broker.ingest_line(br#"{"id":"request-a","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"item-a","startedAtMs":1}}"#).unwrap();
+        let event = broker.take_event().unwrap();
+        let pending = lifecycle.on_event(&mut broker, event).unwrap();
+        let Some(ProbeEvent::ApprovalPending(approval)) = pending else {
+            panic!("Expected one exact pending approval");
+        };
+        let mut forged = approval.clone();
+        forged.item_id = "not-the-reviewed-tool".to_owned();
+        assert!(lifecycle.decide(&mut broker, &forged, true).is_err());
+        assert!(broker.take_outbound().is_none());
+        assert!(matches!(
+            lifecycle.decide(&mut broker, &approval, true),
+            Ok(Some(ProbeEvent::ApprovalResolved(_)))
+        ));
+        let outbound: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(outbound["id"], "request-a");
+        assert_eq!(outbound["result"]["decision"], "accept");
+        assert!(lifecycle.decide(&mut broker, &approval, true).is_err());
+        assert!(broker.take_outbound().is_none());
+    }
+
+    #[test]
+    fn resolved_request_cannot_be_approved_after_provider_revoke() {
+        let project = std::env::current_dir().unwrap();
+        let mut broker = ready();
+        let mut lifecycle = TurnLifecycle {
+            thread: Some("thread-a".to_owned()),
+            turn: Some("turn-a".to_owned()),
+            project: Some(project.clone()),
+            busy: true,
+            coding_enabled: true,
+            ..Default::default()
+        };
+        lifecycle.on_event(
+            &mut broker,
+            Event::Notification {
+                kind: NotificationKind::ItemStarted,
+                params: json!({
+                    "threadId":"thread-a","turnId":"turn-a",
+                    "item":{"id":"item-a","type":"commandExecution","command":"echo reviewed"}
+                }),
+            },
+        ).unwrap();
+        broker.ingest_line(br#"{"id":"request-a","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"item-a","startedAtMs":1}}"#).unwrap();
+        let arrival = broker.take_event().unwrap();
+        let Some(ProbeEvent::ApprovalPending(pending)) =
+            lifecycle.on_event(&mut broker, arrival).unwrap() else {
+                panic!("Expected pending approval");
+            };
+        broker.ingest_line(br#"{"method":"serverRequest/resolved","params":{"requestId":"request-a"}}"#).unwrap();
+        let event = broker.take_event().unwrap();
+        assert!(matches!(
+            lifecycle.on_event(&mut broker, event),
+            Ok(Some(ProbeEvent::ApprovalResolved(_)))
+        ));
+        assert!(lifecycle.decide(&mut broker, &pending, true).is_err());
+        assert!(broker.take_outbound().is_none());
+    }
+
 }
