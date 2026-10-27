@@ -387,8 +387,10 @@ impl RendererSpike {
                     self.native_history = old;
                 }
                 if self.native_history.len() > session_history::MAX_HISTORY_ROWS {
-                    self.native_history
-                        .truncate(session_history::MAX_HISTORY_ROWS);
+                    // When paging backwards, never evict the newest saved
+                    // turns just to fit additional older rows.
+                    let overflow = self.native_history.len() - session_history::MAX_HISTORY_ROWS;
+                    self.native_history.drain(..overflow);
                     self.more_native_history = false;
                 } else {
                     self.more_native_history = has_more;
