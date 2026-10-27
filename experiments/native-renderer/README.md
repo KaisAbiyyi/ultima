@@ -10,7 +10,7 @@ Performance and security choices:
 
 - Native egui with local OS/default fonts; **no HTML, WebView2, Tailwind CDN, Google Fonts, icon font, external assets or remote CSS**. Tiny icons use native vector lines and circles.
 - No perpetual animation, timer, polling loop or background render. Only UI interaction and bounded engine status change request repaint.
-- **10,000 maximum** synthetic history rows, only visible rows painted; **8,192-character** maximum draft.
+- **10,000 maximum** synthetic history rows, including long synthetic code and diffs. A bounded variable-height index lays out the viewport plus neighboring rows for fixture and live conversation; live history still retains at most 512 rows. **8,192-character** maximum draft.
 - Fake models, token rates, preset API keys and artificial “patch applied” behavior from the reference HTML are **not** imported. Model/access popovers are informational; Apply, mounting a new project and Dictation remain disabled. Send is enabled only after the explicit official Codex connection reaches Ready, and Stop uses the actual turn ID.
 - The preview sample conversation is clearly marked illustrative. No real Codex history is accessed by the visual layer.
 
