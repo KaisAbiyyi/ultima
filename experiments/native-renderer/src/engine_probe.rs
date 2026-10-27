@@ -2049,10 +2049,15 @@ mod tests {
         let Some(ProbeEvent::ToolSnapshot(reviewed)) = tool else {
             panic!("Missing actual reviewed tool evidence");
         };
-        broker.ingest_line(json!({"id":"request-a","method":"item/commandExecution/requestApproval",
+        broker
+            .ingest_line(
+                json!({"id":"request-a","method":"item/commandExecution/requestApproval",
             "params":{"threadId":"thread-a","turnId":"turn-a","itemId":"item-a",
                 "startedAtMs":1,"command":"echo reviewed","cwd":project.to_str().unwrap()}})
-            .to_string().as_bytes()).unwrap();
+                .to_string()
+                .as_bytes(),
+            )
+            .unwrap();
         let event = broker.take_event().unwrap();
         let pending = lifecycle.on_event(&mut broker, event).unwrap();
         let Some(ProbeEvent::ApprovalPending(approval)) = pending else {
