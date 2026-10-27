@@ -209,12 +209,7 @@ impl ToolLedger {
         if item.kind != kind {
             return None;
         }
-        item.state = if completed {
-            "completed"
-        } else {
-            "running"
-        }
-        .into();
+        item.state = if completed { "completed" } else { "running" }.into();
         if item.kind == ApprovalKind::Command {
             let command = match data.get("command") {
                 Some(Value::String(v)) => v.clone(),
