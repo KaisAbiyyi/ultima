@@ -533,12 +533,23 @@ impl RendererSpike {
         // Remove before enqueue: no double-click replay if native command ACK is lost.
         self.pending_approvals.remove(0);
         let reviewed = self.reviewed_approval.take() == Some(request.id.clone());
-        if accept && !reviewed {
+        let snapshot = self
+            .tool_rows
+            .iter()
+            .rev()
+            .find(|item| {
+                item.thread == request.thread_id
+                    && item.turn == request.turn_id
+                    && item.id == request.item_id
+                    && item.kind == request.kind
+            })
+            .cloned();
+        if accept && (!reviewed || snapshot.is_none()) {
             self.live_error = Some("Review the exact action before allowing it.".to_owned());
             return;
         }
         if let Some(engine) = self.engine.as_ref() {
-            if let Err(reason) = engine.decide(request, accept) {
+            if let Err(reason) = engine.decide(request, accept, snapshot) {
                 self.live_error = Some(reason.to_owned());
             }
         }
