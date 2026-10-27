@@ -141,6 +141,7 @@ impl ToolLedger {
     pub fn clear_pending(&mut self) {
         self.pending.clear();
     }
+    #[cfg(test)]
     pub fn pending(&self) -> &[Approval] {
         &self.pending
     }
