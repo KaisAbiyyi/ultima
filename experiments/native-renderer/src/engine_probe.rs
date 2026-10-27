@@ -192,7 +192,7 @@ impl DisplayEvents {
 enum Command {
     Submit(String),
     Cancel,
-    Decide(Approval, bool, Option<ToolEvidence>),
+    Decide(Approval, bool, Option<Box<ToolEvidence>>),
 }
 
 pub struct EngineProbe {
@@ -982,7 +982,7 @@ async fn drive(
                         Command::Submit(text) => lifecycle.submit(&mut broker, &project, text),
                         Command::Cancel => lifecycle.cancel(&mut broker),
                         Command::Decide(request, accept, reviewed) => {
-                            match lifecycle.decide(&mut broker, &request, accept, reviewed.as_ref()) {
+                            match lifecycle.decide(&mut broker, &request, accept, reviewed.as_deref()) {
                                 Ok(Some(event)) => { enqueue(&events, &ctx, event)?; Ok(()) },
                                 Ok(None) => Ok(()),
                                 Err(reason) => return Err(reason), // no ambiguous pending grant
@@ -1138,7 +1138,7 @@ impl EngineProbe {
         }
         if self
             .commands
-            .try_send(Command::Decide(request, accept, reviewed))
+            .try_send(Command::Decide(request, accept, reviewed.map(Box::new)))
             .is_err()
         {
             self.emergency_stop.store(true, Ordering::Release);
