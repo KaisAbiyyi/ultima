@@ -4,6 +4,7 @@
 mod engine_probe;
 mod icons;
 mod latency;
+mod session_history;
 mod theme;
 
 use eframe::egui::{
@@ -13,6 +14,7 @@ use eframe::egui::{
 use engine_probe::{EngineProbe, ProbeEvent, ProbeStatus};
 use icons::Icon;
 use latency::{Kind, LatencyRecorder};
+use session_history::{HistoryRow, ThreadEntry};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -180,6 +182,12 @@ struct RendererSpike {
     draft: String,
     history: Vec<ChatRow>,
     live_rows: Vec<ChatRow>,
+    native_history: Vec<ChatRow>,
+    native_threads: Vec<ThreadEntry>,
+    selected_native_thread: Option<String>,
+    more_native_threads: bool,
+    more_native_history: bool,
+    engine_paths: Option<(PathBuf, PathBuf)>,
     active_turn: Option<(String, String)>,
     awaiting_turn_start: bool,
     live_error: Option<String>,
@@ -239,6 +247,12 @@ impl RendererSpike {
             draft: String::new(),
             history,
             live_rows: Vec::new(),
+            native_history: Vec::new(),
+            native_threads: Vec::new(),
+            selected_native_thread: None,
+            more_native_threads: false,
+            more_native_history: false,
+            engine_paths: None,
             active_turn: None,
             awaiting_turn_start: false,
             live_error: None,
@@ -277,7 +291,10 @@ impl RendererSpike {
 
     fn active_title(&self) -> &str {
         if self.engine.is_some() {
-            return "Official Codex session";
+            return self.native_threads.iter()
+                .find(|entry| Some(entry.id.as_str()) == self.selected_native_thread.as_deref())
+                .map(|entry| entry.label.as_str())
+                .unwrap_or("Official Codex session");
         }
         if self.standalone {
             CHAT_TITLES[self.selected_thread.min(CHAT_TITLES.len() - 1)]
@@ -287,7 +304,17 @@ impl RendererSpike {
     }
 
     fn new_preview(&mut self) {
-        // Local-only interaction; no fake Codex thread or approval is created.
+        // New is a local deselection, never a thread/start or turn/start RPC.
+        if let Some(engine) = &self.engine {
+            if self.active_turn.is_some() || self.awaiting_turn_start {
+                self.live_error = Some("Finish or stop the current turn before changing threads.".to_owned());
+                return;
+            }
+            if let Err(error) = engine.new_thread() {
+                self.live_error = Some(error.to_owned());
+                return;
+            }
+        }
         self.draft.clear();
         if self.engine.is_none() {
             self.show_reference = false;
@@ -304,8 +331,57 @@ impl RendererSpike {
 
     fn apply_probe_event(&mut self, event: ProbeEvent) {
         match event {
-            ProbeEvent::ThreadReady { .. } => {
+            ProbeEvent::ThreadReady { thread_id } => {
+                self.selected_native_thread = Some(thread_id);
+                self.native_history.clear();
+                self.more_native_history = false;
                 self.live_error = None;
+            }
+            ProbeEvent::ThreadPage { entries, append, has_more } => {
+                if !append { self.native_threads.clear(); }
+                for entry in entries {
+                    if !self.native_threads.iter().any(|known| known.id == entry.id) {
+                        self.native_threads.push(entry);
+                    }
+                }
+                self.more_native_threads = has_more
+                    && self.native_threads.len() < session_history::MAX_THREADS;
+            }
+            ProbeEvent::ThreadSelected { thread_id } => {
+                self.selected_native_thread = thread_id;
+                self.native_history.clear();
+                self.live_rows.clear();
+                self.awaiting_turn_start = false;
+                self.active_turn = None;
+                self.last_turn_status = None;
+                self.more_native_history = false;
+                self.live_error = None;
+            }
+            ProbeEvent::HistoryPage { thread_id, rows, prepend, has_more } => {
+                if Some(thread_id.as_str()) != self.selected_native_thread.as_deref() {
+                    return;
+                }
+                let old = rows.into_iter()
+                    .map(|HistoryRow { from_user, preview }| ChatRow { from_user, preview })
+                    .collect::<Vec<_>>();
+                if prepend {
+                    let mut all = old;
+                    all.append(&mut self.native_history);
+                    self.native_history = all;
+                } else {
+                    self.native_history = old;
+                }
+                if self.native_history.len() > session_history::MAX_HISTORY_ROWS {
+                    self.native_history.truncate(session_history::MAX_HISTORY_ROWS);
+                    self.more_native_history = false;
+                } else {
+                    self.more_native_history = has_more;
+                }
+            }
+            ProbeEvent::HistoryCapabilityBlocked(message) => {
+                self.more_native_threads = false;
+                self.more_native_history = false;
+                self.live_error = Some(message.to_owned());
             }
             ProbeEvent::TurnCancelledBeforeStart => {
                 if self.awaiting_turn_start && self.active_turn.is_none() {
