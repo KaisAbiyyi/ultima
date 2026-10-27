@@ -3,6 +3,7 @@
 //! This prototype does not issue turns, execute tools, or grant permissions.
 mod engine_probe;
 mod icons;
+mod latency;
 mod theme;
 
 use eframe::egui::{
@@ -11,7 +12,11 @@ use eframe::egui::{
 };
 use engine_probe::{EngineProbe, ProbeEvent, ProbeStatus};
 use icons::Icon;
+use latency::{Kind, LatencyRecorder};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 use theme::{
     body, mono, small, BORDER, CANVAS, GREEN, HOVER, MUTED, RAISED, SECONDARY, SURFACE, TEXT,
 };
@@ -183,14 +188,36 @@ struct RendererSpike {
     engine: Option<EngineProbe>,
     connected_project: Option<String>,
     window_title: String,
+    latency: LatencyRecorder,
+    stream_paint_pending: Vec<(Instant, u32)>,
+    raw_key_started: Option<Instant>,
+    keyboard_paint_pending: Option<(Instant, bool)>,
+    startup_paint_scheduled: bool,
 }
 
 impl RendererSpike {
+    #[cfg(test)]
     fn new(
         history_rows: usize,
         show_reference: bool,
         engine: Option<EngineProbe>,
         project: Option<String>,
+    ) -> Self {
+        Self::with_latency(
+            history_rows,
+            show_reference,
+            engine,
+            project,
+            LatencyRecorder::new(Instant::now(), None),
+        )
+    }
+
+    fn with_latency(
+        history_rows: usize,
+        show_reference: bool,
+        engine: Option<EngineProbe>,
+        project: Option<String>,
+        latency: LatencyRecorder,
     ) -> Self {
         let history = (0..history_rows.min(MAX_HISTORY_ROWS))
             .map(|i| ChatRow {
@@ -220,6 +247,11 @@ impl RendererSpike {
             engine,
             connected_project: project,
             window_title: String::new(),
+            latency,
+            stream_paint_pending: Vec::new(),
+            raw_key_started: None,
+            keyboard_paint_pending: None,
+            startup_paint_scheduled: false,
         }
     }
 
@@ -374,14 +406,51 @@ impl RendererSpike {
         }
     }
 
+    fn changes_visible_stream(&self, event: &ProbeEvent) -> bool {
+        let Some(row) = self.live_rows.last().filter(|row| !row.from_user) else {
+            return false;
+        };
+        match event {
+            ProbeEvent::AssistantDelta {
+                thread_id,
+                turn_id,
+                text,
+            } => {
+                self.active_turn.as_ref() == Some(&(thread_id.clone(), turn_id.clone()))
+                    && !text.is_empty()
+                    && row.preview.len() < MAX_LIVE_TEXT_BYTES
+            }
+            ProbeEvent::AssistantFinal {
+                thread_id,
+                turn_id,
+                text,
+            } => {
+                let mut end = text.len().min(MAX_LIVE_TEXT_BYTES);
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                self.active_turn.as_ref() == Some(&(thread_id.clone(), turn_id.clone()))
+                    && row.preview != text[..end]
+            }
+            _ => false,
+        }
+    }
+
     fn consume_engine_events(&mut self) {
         let events = self
             .engine
             .as_ref()
-            .map(EngineProbe::take_events)
+            .map(EngineProbe::take_timed_events)
             .unwrap_or_default();
-        for event in events {
-            self.apply_probe_event(event);
+        for timed in events {
+            let visible_stream = self.changes_visible_stream(&timed.event);
+            self.apply_probe_event(timed.event);
+            if visible_stream {
+                // One conservative oldest-event sample per coalesced batch.
+                // The transport queue already caps this at 128 items.
+                self.stream_paint_pending
+                    .push((timed.received_at, timed.coalesced));
+            }
         }
     }
 
@@ -906,7 +975,7 @@ impl RendererSpike {
             });
             ui.add_space(4.0);
             theme::compose().show(ui, |ui| {
-                ui.add_sized(
+                let editor = ui.add_sized(
                     [ui.available_width(), 48.0],
                     TextEdit::multiline(&mut self.draft)
                         .frame(false)
@@ -914,6 +983,12 @@ impl RendererSpike {
                         .desired_rows(2)
                         .char_limit(MAX_DRAFT_CHARS),
                 );
+                if editor.changed() {
+                    if let Some(stamp) = self.raw_key_started.take() {
+                        self.keyboard_paint_pending
+                            .get_or_insert((stamp, self.active_turn.is_some()));
+                    }
+                }
                 ui.add_space(7.0);
                 if let Some(error) = &self.live_error {
                     ui.label(RichText::new(error).color(Color32::from_rgb(251, 113, 133)));
@@ -1129,9 +1204,67 @@ impl RendererSpike {
             }
         }
     }
+
+    fn schedule_paint_probe(&mut self, ctx: &egui::Context) {
+        let stream = std::mem::take(&mut self.stream_paint_pending);
+        let keyboard = self.keyboard_paint_pending.take();
+        let startup = if self.startup_paint_scheduled {
+            None
+        } else {
+            self.startup_paint_scheduled = true;
+            Some(self.latency.started_at())
+        };
+        if stream.is_empty() && keyboard.is_none() && startup.is_none() {
+            return;
+        }
+        let recorder = self.latency.clone();
+        // Some renderers may replay paint callbacks: a sample belongs to one
+        // prepared frame and must be counted only once.
+        let fired = Arc::new(AtomicBool::new(false));
+        let callback = eframe::egui_glow::CallbackFn::new(move |_, _| {
+            if fired.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            for (received, coalesced) in &stream {
+                recorder.record_paint(Kind::Stream, *received, *coalesced);
+            }
+            if let Some((started, running_turn)) = keyboard {
+                recorder.record_paint(Kind::Keyboard, started, 0);
+                if running_turn {
+                    recorder.record_paint(Kind::KeyboardDuringTurn, started, 0);
+                }
+            }
+            if let Some(started) = startup {
+                recorder.record_paint(Kind::Startup, started, 0);
+            }
+        });
+        ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("nc10b-gl-paint-timing"),
+        ))
+        .add(egui::PaintCallback {
+            rect: ctx.content_rect(),
+            callback: Arc::new(callback),
+        });
+    }
 }
 
 impl eframe::App for RendererSpike {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+        if input.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::Text(_)
+                    | egui::Event::Paste(_)
+                    | egui::Event::Key { pressed: true, .. }
+            )
+        }) {
+            // Raw input arrives before egui processes TextEdit. Sample only if
+            // the actual composer reports a change during this same frame.
+            self.raw_key_started = Some(Instant::now());
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.consume_engine_events();
         self.shortcuts(ctx);
@@ -1178,11 +1311,21 @@ impl eframe::App for RendererSpike {
                 self.conversation(ui);
             });
         self.overlays(ctx);
+        self.schedule_paint_probe(ctx);
+        self.raw_key_started = None;
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.latency.save_on_exit();
     }
 }
 
 fn main() -> eframe::Result {
+    let main_started = Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let latency_receipt = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--latency-receipt=").map(PathBuf::from));
     let history_rows = args
         .iter()
         .find_map(|arg| {
@@ -1223,11 +1366,12 @@ fn main() -> eframe::Result {
                 .clone()
                 .zip(project.clone())
                 .map(|(exe, project)| EngineProbe::start(exe, project, cc.egui_ctx.clone()));
-            Ok(Box::new(RendererSpike::new(
+            Ok(Box::new(RendererSpike::with_latency(
                 history_rows,
                 show_reference,
                 engine,
                 project_label.clone(),
+                LatencyRecorder::new(main_started, latency_receipt.clone()),
             )))
         }),
     )
@@ -1423,5 +1567,35 @@ mod tests {
         );
         assert!(app.live_error.is_none());
         assert_eq!(app.live_rows[1].preview, "Turn cancelled before execution.");
+    }
+
+    #[test]
+    fn latency_samples_only_authoritative_visible_text_changes() {
+        let mut app = RendererSpike::new(0, false, None, None);
+        let delta = |thread: &str, text: &str| ProbeEvent::AssistantDelta {
+            thread_id: thread.into(),
+            turn_id: "turn".into(),
+            text: text.into(),
+        };
+        assert!(!app.changes_visible_stream(&delta("thread", "x")));
+        app.apply_probe_event(ProbeEvent::TurnStarted {
+            thread_id: "thread".into(),
+            turn_id: "turn".into(),
+        });
+        assert!(!app.changes_visible_stream(&delta("stale-thread", "x")));
+        assert!(!app.changes_visible_stream(&delta("thread", "")));
+        assert!(app.changes_visible_stream(&delta("thread", "visible")));
+        app.apply_probe_event(delta("thread", "visible"));
+        let final_event = ProbeEvent::AssistantFinal {
+            thread_id: "thread".into(),
+            turn_id: "turn".into(),
+            text: "visible".into(),
+        };
+        assert!(!app.changes_visible_stream(&final_event));
+        assert!(app.changes_visible_stream(&ProbeEvent::AssistantFinal {
+            thread_id: "thread".into(),
+            turn_id: "turn".into(),
+            text: "different canonical reply".into(),
+        }));
     }
 }

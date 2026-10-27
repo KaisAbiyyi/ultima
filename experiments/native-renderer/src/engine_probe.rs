@@ -76,24 +76,37 @@ impl ProbeEvent {
 
 #[derive(Default)]
 struct DisplayEvents {
-    queue: VecDeque<ProbeEvent>,
+    queue: VecDeque<TimedProbeEvent>,
     bytes: usize,
+}
+
+/// Timestamp at admission into the bounded native UI mailbox. Never carries
+/// prompt content to the latency recorder; only the original UI event does.
+#[derive(Clone, Debug)]
+pub struct TimedProbeEvent {
+    pub event: ProbeEvent,
+    pub received_at: Instant,
+    pub coalesced: u32,
 }
 
 impl DisplayEvents {
     fn push(&mut self, event: ProbeEvent) -> Result<(), &'static str> {
+        self.push_at(event, Instant::now())
+    }
+
+    fn push_at(&mut self, event: ProbeEvent, received_at: Instant) -> Result<(), &'static str> {
         // A canonical final supersedes any still-undelivered stream for the
         // same turn. Avoid retaining two large copies of one assistant reply.
         if let ProbeEvent::AssistantFinal {
             thread_id, turn_id, ..
         } = &event
         {
-            if matches!(self.queue.back(), Some(ProbeEvent::AssistantDelta {
+            if matches!(self.queue.back().map(|stamped| &stamped.event), Some(ProbeEvent::AssistantDelta {
                 thread_id: previous_thread, turn_id: previous_turn, ..
             }) if previous_thread == thread_id && previous_turn == turn_id)
             {
                 if let Some(previous) = self.queue.pop_back() {
-                    self.bytes -= previous.bytes();
+                    self.bytes -= previous.event.bytes();
                 }
             }
         }
@@ -104,24 +117,27 @@ impl DisplayEvents {
             text,
         } = &event
         {
-            if let Some(ProbeEvent::AssistantDelta {
-                thread_id: previous_thread,
-                turn_id: previous_turn,
-                text: previous_text,
-            }) = self.queue.back_mut()
-            {
-                if previous_thread == thread_id && previous_turn == turn_id {
-                    let bytes = text.len();
-                    if self
-                        .bytes
-                        .checked_add(bytes)
-                        .is_none_or(|total| total > MAX_UI_EVENT_BYTES)
-                    {
-                        return Err("Native stream display buffer exceeded its limit.");
+            if let Some(previous) = self.queue.back_mut() {
+                if let ProbeEvent::AssistantDelta {
+                    thread_id: previous_thread,
+                    turn_id: previous_turn,
+                    text: previous_text,
+                } = &mut previous.event
+                {
+                    if previous_thread == thread_id && previous_turn == turn_id {
+                        let bytes = text.len();
+                        if self
+                            .bytes
+                            .checked_add(bytes)
+                            .is_none_or(|total| total > MAX_UI_EVENT_BYTES)
+                        {
+                            return Err("Native stream display buffer exceeded its limit.");
+                        }
+                        previous_text.push_str(text);
+                        self.bytes += bytes;
+                        previous.coalesced = previous.coalesced.saturating_add(1);
+                        return Ok(());
                     }
-                    previous_text.push_str(text);
-                    self.bytes += bytes;
-                    return Ok(());
                 }
             }
         }
@@ -135,7 +151,11 @@ impl DisplayEvents {
             return Err("Native stream display buffer exceeded its limit.");
         }
         self.bytes += bytes;
-        self.queue.push_back(event);
+        self.queue.push_back(TimedProbeEvent {
+            event,
+            received_at,
+            coalesced: 0,
+        });
         Ok(())
     }
 
@@ -146,7 +166,15 @@ impl DisplayEvents {
         let _ = self.push(ProbeEvent::Error(error.to_owned()));
     }
 
+    #[cfg(test)]
     fn take(&mut self) -> Vec<ProbeEvent> {
+        self.take_timed()
+            .into_iter()
+            .map(|stamped| stamped.event)
+            .collect()
+    }
+
+    fn take_timed(&mut self) -> Vec<TimedProbeEvent> {
         self.bytes = 0;
         self.queue.drain(..).collect()
     }
@@ -956,12 +984,14 @@ impl EngineProbe {
         Ok(())
     }
 
-    pub fn take_events(&self) -> Vec<ProbeEvent> {
+    pub fn take_timed_events(&self) -> Vec<TimedProbeEvent> {
         match self.events.lock() {
-            Ok(mut queue) => queue.take(),
-            Err(_) => vec![ProbeEvent::Error(
-                "Native display state unavailable.".to_owned(),
-            )],
+            Ok(mut queue) => queue.take_timed(),
+            Err(_) => vec![TimedProbeEvent {
+                event: ProbeEvent::Error("Native display state unavailable.".to_owned()),
+                received_at: Instant::now(),
+                coalesced: 0,
+            }],
         }
     }
 }
@@ -1724,5 +1754,26 @@ mod tests {
             })
             .unwrap();
         assert_eq!(mailbox.take().len(), 1);
+    }
+
+    #[test]
+    fn coalesced_stream_retains_oldest_mailbox_timestamp_and_count() {
+        let mut mailbox = DisplayEvents::default();
+        let before = Instant::now() - Duration::from_millis(125);
+        let after = Instant::now();
+        let delta = |text: &str| ProbeEvent::AssistantDelta {
+            thread_id: "t".into(),
+            turn_id: "turn".into(),
+            text: text.into(),
+        };
+        mailbox.push_at(delta("hello"), before).unwrap();
+        mailbox.push_at(delta(" world"), after).unwrap();
+        let results = mailbox.take_timed();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].received_at, before);
+        assert_eq!(results[0].coalesced, 1);
+        assert!(
+            matches!(&results[0].event, ProbeEvent::AssistantDelta { text, .. } if text == "hello world")
+        );
     }
 }

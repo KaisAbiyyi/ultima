@@ -37,7 +37,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   );
   const build = spawnSync(cargo, [
     'build', '--release', '--locked', '--manifest-path', path.join(root, 'Cargo.toml'),
-  ], { cwd: repo, stdio: 'inherit', timeout: 900_000 });
+  ], {
+    cwd: repo, stdio: 'inherit', timeout: 900_000,
+    env: { ...process.env, NC10B_BUILD_SOURCE_SHA: head },
+  });
   if (build.error) throw build.error;
   if (build.status !== 0) throw Error('Cargo native release build failed');
   if (!sourceClean() || git(['rev-parse', 'HEAD']) !== head) {

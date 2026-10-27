@@ -66,6 +66,7 @@ jobs:
       - run: cargo test --locked --manifest-path experiments/native-renderer/Cargo.toml
       - run: cargo clippy --locked --manifest-path experiments/native-renderer/Cargo.toml --all-targets -- -D warnings
       - run: node --test experiments/native-renderer/tests/check-idle-budget.test.mjs
+      - run: node --test experiments/native-renderer/tests/verify-latency.test.mjs
       - run: cargo build --release --locked --manifest-path experiments/native-renderer/Cargo.toml
   browser-e2e:
     name: Windows browser UX fixtures (not native presentation)

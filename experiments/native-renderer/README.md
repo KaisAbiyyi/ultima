@@ -78,3 +78,51 @@ The `connected` benchmark mode reads only the user's existing ignored `artifacts
 The `cli` mode launches the same exact official Codex executable and performs only the official initialize/initialized handshake through its stdio JSONL protocol. The `--full-idle` option uses the actual NC-10 idle observation window (60 seconds settlement, 60 seconds measurement). Compare three native and CLI repetitions with the same version, machine, power settings and fixture. This still establishes only **system-engine connected idle parity**, not streaming/approval/recovery parity.
 
 Memory readings from disconnected mode are renderer-only diagnostics. Connected mode includes official initialized Codex, but cannot establish NC-10 full product acceptance. The 25 October idle figures predate the live turn implementation. Before choosing this renderer for Ultima, test the complete process tree during real model turns and tool activity, actual cancellation and streamed text, permission review/approval UI, durable history/resume, native 10k-history event-to-frame timings, Windows IME and screen reader, 60-minute endurance and cleanup/rollback.
+
+## NC-10B native latency diagnostic
+
+The native renderer timestamps each official assistant delta/final event at
+admission to the bounded UI queue, preserving the oldest timestamp when deltas
+coalesce. Raw keyboard timestamps count only when the composer actually
+changes. A native OpenGL paint callback records the corresponding elapsed
+times. A separate `rawKeyDuringActiveTurnToPaintCallback` series only counts
+composer edits while an official turn is running, preventing idle-keyboard
+samples from satisfying a streaming workload. Startup has one sample
+measured from entry into `main`. Samples are
+content-free: prompt text, project paths and message IDs are never written to
+the metric report. Each metric series is capped at 4,096 samples; any overflow
+invalidates a qualification run. No periodic repaint loop is added.
+
+**Measurement limit:** the callback runs **before buffer swap and compositor
+presentation**. Its event-to-paint p95 is a diagnostic proxy; it cannot prove
+physical keyboard-to-visible-pixel performance, or full OS cold start. Native
+Windows capture/UIA still must establish the independently visible p95 gates.
+Even a healthy diagnostic reports `NOT_RUN` for presented pixels.
+
+Use three separate, normal streaming sessions with an **exact committed**
+Windows release and synthetic project. Each session must use a unique ignored
+receipt filename and exit normally so the report is written:
+
+```powershell
+node experiments/native-renderer/build-exact.mjs
+experiments/native-renderer/target/release/ultima-native-renderer-spike.exe --fixture-empty --codex-exe=<absolute-codex.exe> --project=<absolute-synthetic-project> --latency-receipt=<ignored-receipt-1.json>
+# Run a genuine read-only Codex streaming turn; type 30+ keys in the composer.
+# Repeat in fresh processes with ignored-receipt-2.json and ignored-receipt-3.json.
+node experiments/native-renderer/verify-latency.mjs <ignored-receipt-1.json> <ignored-receipt-2.json> <ignored-receipt-3.json>
+node --test experiments/native-renderer/tests/verify-latency.test.mjs
+```
+
+The verifier requires a source-clean SHA-verified executable/lockfile receipt,
+three valid native measurement files, no overflow and valid percentile data.
+The exact-build script also embeds the Git HEAD SHA into the release executable;
+the verifier rejects receipts from any other SHA, including ordinary `cargo`
+builds stamped `UNBOUND`, so earlier sessions cannot be reused after a source
+change.
+Every process generates an opaque 128-bit session token; the verifier rejects
+duplicate tokens, so one receipt cannot count as three independent sessions.
+The token contains no user or prompt data and is not an integrity signature.
+It reports per-run sample counts, p50/p95, executable SHA256, Cargo.lock SHA256,
+source SHA and the available official Codex CLI version. Each run has exactly
+one `main`-to-paint startup sample. Normal streaming loads and real displayed
+pixels must be independently qualified; running this script alone cannot
+mark NC-10B accepted.
