@@ -172,19 +172,29 @@ impl ClientMethod {
                         && p.get("permissions").is_some_and(|v| !v.is_null()))
             }
             Self::ThreadList => {
-                p.get("cwd").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
-                    && p.get("limit").and_then(Value::as_u64).is_some_and(|n| (1..=24).contains(&n))
-                    && p.get("cursor").is_none_or(|v| v.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 2048))
+                p.get("cwd")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.is_empty())
+                    && p.get("limit")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|n| (1..=24).contains(&n))
+                    && p.get("cursor").is_none_or(|v| {
+                        v.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 2048)
+                    })
             }
             Self::ThreadRead => {
                 non_empty("threadId") && p.get("includeTurns") == Some(&Value::Bool(false))
             }
             Self::ThreadTurnsList => {
                 non_empty("threadId")
-                    && p.get("limit").and_then(Value::as_u64).is_some_and(|n| (1..=12).contains(&n))
+                    && p.get("limit")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|n| (1..=12).contains(&n))
                     && p.get("sortDirection").and_then(Value::as_str) == Some("desc")
                     && p.get("itemsView").and_then(Value::as_str) == Some("full")
-                    && p.get("cursor").is_none_or(|v| v.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 2048))
+                    && p.get("cursor").is_none_or(|v| {
+                        v.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 2048)
+                    })
             }
             Self::ThreadResume => {
                 non_empty("threadId")
