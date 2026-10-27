@@ -1217,6 +1217,8 @@ impl RendererSpike {
                                 if let Err(error) = engine.cancel() {
                                     self.live_error = Some(error.to_owned());
                                 } else {
+                                    self.pending_approvals.clear();
+                                    self.reviewed_approval = None;
                                     self.last_turn_status =
                                         Some("cancellation requested".to_owned());
                                 }
