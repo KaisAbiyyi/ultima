@@ -319,7 +319,7 @@ fn nc07_upstream_resolved_invalidates_original_request() {
 
 #[test]
 fn descriptor_is_exactly_bound_and_same_id_mutation_is_rejected() {
-    let mut broker = ready();
+    let mut broker = make_ready();
     broker
         .ingest_line(
             br#"{"id":"cmd","method":"item/commandExecution/requestApproval",
