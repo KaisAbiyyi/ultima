@@ -180,6 +180,7 @@ struct RendererSpike {
     overlay: Overlay,
     search: String,
     draft: String,
+    queued_prompt: Option<String>,
     history: Vec<ChatRow>,
     live_rows: Vec<ChatRow>,
     native_history: Vec<ChatRow>,
@@ -245,6 +246,7 @@ impl RendererSpike {
             overlay: Overlay::None,
             search: String::new(),
             draft: String::new(),
+            queued_prompt: None,
             history,
             live_rows: Vec::new(),
             native_history: Vec::new(),
@@ -357,6 +359,7 @@ impl RendererSpike {
                     has_more && self.native_threads.len() < session_history::MAX_THREADS;
             }
             ProbeEvent::ThreadSelected { thread_id } => {
+                self.queued_prompt = None;
                 self.selected_native_thread = thread_id;
                 self.native_history.clear();
                 self.live_rows.clear();
@@ -371,6 +374,7 @@ impl RendererSpike {
                 rows,
                 prepend,
                 has_more,
+                active_turn,
             } => {
                 if Some(thread_id.as_str()) != self.selected_native_thread.as_deref() {
                     return;
@@ -385,6 +389,12 @@ impl RendererSpike {
                     self.native_history = all;
                 } else {
                     self.native_history = old;
+                }
+                if let Some(turn) = active_turn {
+                    self.active_turn = Some((thread_id, turn));
+                    self.awaiting_turn_start = false;
+                    self.last_turn_status = Some("running".into());
+                    self.push_live_row(false, String::new());
                 }
                 if self.native_history.len() > session_history::MAX_HISTORY_ROWS {
                     // When paging backwards, never evict the newest saved
@@ -403,6 +413,7 @@ impl RendererSpike {
             }
             ProbeEvent::TurnCancelledBeforeStart => {
                 if self.awaiting_turn_start && self.active_turn.is_none() {
+                    self.queued_prompt = None;
                     self.awaiting_turn_start = false;
                     self.last_turn_status = Some("cancelled before start".to_owned());
                     self.live_error = None;
@@ -410,6 +421,10 @@ impl RendererSpike {
                 }
             }
             ProbeEvent::TurnStarted { thread_id, turn_id } => {
+                if let Some(prompt) = self.queued_prompt.take() {
+                    self.push_live_row(true, prompt);
+                    self.draft.clear();
+                }
                 self.active_turn = Some((thread_id, turn_id));
                 self.awaiting_turn_start = false;
                 self.last_turn_status = Some("running".to_owned());
@@ -464,6 +479,10 @@ impl RendererSpike {
                     return;
                 }
                 if completed_before_started {
+                    if let Some(prompt) = self.queued_prompt.take() {
+                        self.push_live_row(true, prompt);
+                        self.draft.clear();
+                    }
                     self.push_live_row(false, String::new());
                 }
                 self.active_turn = None;
@@ -486,6 +505,7 @@ impl RendererSpike {
                     matches!(engine.status(), ProbeStatus::Failed | ProbeStatus::Stopped)
                 });
                 if self.active_turn.is_none() || engine_failed {
+                    self.queued_prompt = None;
                     self.awaiting_turn_start = false;
                     self.active_turn = None;
                     if !matches!(
@@ -558,12 +578,12 @@ impl RendererSpike {
         };
         match engine.submit_prompt(prompt.clone()) {
             Ok(()) => {
-                self.push_live_row(true, prompt);
+                // Only authoritative engine events may display a sent prompt.
+                self.queued_prompt = Some(prompt);
                 self.awaiting_turn_start = true;
                 self.last_turn_status = Some("starting".to_owned());
                 self.live_error = None;
                 self.show_reference = false;
-                self.draft.clear();
             }
             Err(error) => self.live_error = Some(error.to_owned()),
         }
@@ -1734,6 +1754,26 @@ mod tests {
         );
         assert!(app.live_error.is_none());
         assert_eq!(app.live_rows[1].preview, "Turn cancelled before execution.");
+    }
+
+    #[test]
+    fn history_pending_submit_never_creates_phantom_message() {
+        let mut app = RendererSpike::new(0, false, None, None);
+        app.draft = "preserved prompt".into();
+        app.queued_prompt = Some(app.draft.clone());
+        app.awaiting_turn_start = true;
+        app.apply_probe_event(ProbeEvent::Error("Thread selection is in progress.".into()));
+        assert!(app.live_rows.is_empty());
+        assert_eq!(app.draft, "preserved prompt");
+        assert!(app.queued_prompt.is_none());
+        assert!(!app.awaiting_turn_start);
+        app.queued_prompt = Some(app.draft.clone());
+        app.awaiting_turn_start = true;
+        app.apply_probe_event(ProbeEvent::TurnStarted {
+            thread_id: "t".into(), turn_id: "u".into(),
+        });
+        assert_eq!(app.live_rows[0].preview, "preserved prompt");
+        assert!(app.draft.is_empty());
     }
 
     #[test]
