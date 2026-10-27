@@ -1,6 +1,8 @@
 /** Renderer-only NC-10 feasibility measurement; never grants native acceptance. */
 import { spawn, execFileSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import os from 'node:os';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
@@ -18,8 +20,10 @@ if (!['empty', 'history', 'connected', 'connected-history', 'cli'].includes(mode
 }
 const cliOnly = mode === 'cli';
 const requiresCodex = mode.startsWith('connected') || cliOnly;
+const fixturePath = process.env.NC10_FIXTURE_PLAN ??
+  path.join(repo, 'artifacts/nc10/project-smoke-plan.json');
 const fixture = requiresCodex
-  ? JSON.parse(await readFile(path.join(repo, 'artifacts/nc10/project-smoke-plan.json'), 'utf8'))
+  ? JSON.parse(await readFile(fixturePath, 'utf8'))
   : null;
 const repetitions = 3;
 const durationMs = process.argv.includes('--full-idle') ? 120_000 : 45_000;
@@ -41,6 +45,28 @@ const report = {
   sourceSha, sourceDirty, binarySha256: executableSha256, mode, durationMs,
   warmupMs, samples: [], cargoLockSha256: verified.cargoLockSha256,
   buildReceiptVerified: verified.buildReceiptVerified,
+  // Only fixed machine/version metadata and digests, never prompt, secret,
+  // full local paths, environment or CLI authentication state.
+  codexVersion: fixture ? execFileSync(fixture.codex, ['--version'], {
+    encoding: 'utf8', windowsHide: true, timeout: 10_000,
+  }).trim().slice(0, 128) : null,
+  codexSha256: fixture ? createHash('sha256').update(
+    await readFile(fixture.codex)).digest('hex') : null,
+  machine: {
+    platform: process.platform,
+    arch: os.arch(),
+    osRelease: os.release(),
+    logicalCpus: os.cpus().length,
+    totalMemoryBytes: os.totalmem(),
+    cpuModel: os.cpus()[0]?.model ?? 'unavailable',
+    graphics: 'egui/glow native OpenGL; compositor not independently verified',
+    cache: 'warm/uncontrolled',
+    powerPlan: process.platform === 'win32'
+      ? execFileSync('powercfg', ['/getactivescheme'], {
+        encoding: 'utf8', windowsHide: true, timeout: 5_000,
+      }).trim().slice(0, 256)
+      : 'unavailable',
+  },
 };
 
 async function initializeOfficialAppServer(app) {
@@ -82,6 +108,7 @@ async function initializeOfficialAppServer(app) {
   });
 }
 for (let run = 1; run <= repetitions; run++) {
+  const sessionNonce = randomUUID();
   const out = path.join(dir, 'run-' + run);
   await mkdir(out);
   const output = path.join(out, 'tree.jsonl');
@@ -143,7 +170,7 @@ for (let run = 1; run <= repetitions; run++) {
     }
     const avgCpu = settled.reduce((sum, sample) => sum + sample.cpuPercent, 0) / settled.length;
     const entry = {
-      run, count: settled.length,
+      run, sessionNonce, count: settled.length,
       rssMiB: {
         median: percentile(settled.map(s => s.rssBytes), 0.5) / 1048576,
         p95: percentile(settled.map(s => s.rssBytes), 0.95) / 1048576,

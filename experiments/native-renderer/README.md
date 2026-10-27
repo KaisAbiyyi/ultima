@@ -79,6 +79,50 @@ The `cli` mode launches the same exact official Codex executable and performs on
 
 Memory readings from disconnected mode are renderer-only diagnostics. Connected mode includes official initialized Codex, but cannot establish NC-10 full product acceptance. The 25 October idle figures predate the live turn implementation. Before choosing this renderer for Ultima, test the complete process tree during real model turns and tool activity, actual cancellation and streamed text, permission review/approval UI, durable history/resume, native 10k-history event-to-frame timings, Windows IME and screen reader, 60-minute endurance and cleanup/rollback.
 
+## NC-10D — Exact-head paired idle and cold-start qualification
+
+NC-10D records three **real** official Codex CLI and egui-native Windows
+repetitions, 120 seconds each, with 60 seconds settlement and 60 seconds
+of process-tree sampling. The native and CLI are compared on the **same**
+source, executable digest, Codex binary/version, machine, power plan and
+cache state. RSS includes all attributable child processes (including Codex),
+while CPU is measured from accumulated process CPU time. Private commit is
+reported separately and **does not replace RSS**.
+
+The scripts produce **prototype idle feasibility only**. Even when idle RSS
+delta is at most **150 MiB** and native idle CPU mean at most **1%**,
+active workload, true cold boot to *visibly painted* composer and post-NC-10G
+production integration remain `NOT_RUN`, and NC-10D stays OPEN.
+
+On local Windows, after committing every source change and ensuring an
+exclusively held `native-benchmark` task lock:
+
+```powershell
+node experiments/native-renderer/build-exact.mjs
+# Create ignored artifacts/nc10/project-smoke-plan.json with trusted absolute
+# Codex EXE and one to three SYNTHETIC project directories; never commit it.
+# Run the two commands SEQUENTIALLY (12+ minutes total). Do not run other
+# benchmarks or switch power mode during the paired test.
+node experiments/native-renderer/benchmark.mjs cli --full-idle
+node experiments/native-renderer/benchmark.mjs connected --full-idle
+# Use the fresh report paths printed by each command:
+node experiments/native-renderer/nc10d-qualification.mjs <cli-report.json> <connected-report.json>
+# Optional safe UIA cold-start timing proxy on the same SHA:
+powershell -NoProfile -File experiments/native-renderer/nc10d-coldstart.ps1 -OutputFile <new-ignored-path.json>
+node --test experiments/native-renderer/tests/nc10d-qualification.test.mjs
+```
+
+If the worktree keeps fixtures elsewhere, use `NC10_FIXTURE_PLAN` set to an
+absolute path of an existing ignored fixture plan. Receipts and raw traces
+stay under ignored `experiments/native-renderer/results/`. Only bounded
+numeric measurements, process names/roles, digests and hardware metadata
+are retained; project paths, authentication, prompts and CLI stderr are not.
+The validator rejects stale/dirty SHA, missing Codex children, incomplete
+samples, non-unique process-session identifiers, changed power profile,
+invalid CPU series and unmatched official CLI version. A budget violation
+is **FAIL**, never silently re-baselined. Real authenticated active sessions
+must be separately measured; an upstream usage limit must not count as PASS.
+
 ## NC-10B native latency diagnostic
 
 The native renderer timestamps each official assistant delta/final event at
