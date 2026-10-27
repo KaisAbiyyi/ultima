@@ -592,8 +592,9 @@ impl TurnLifecycle {
         {
             return Some("Codex did not acknowledge cancellation; owned process stopped.");
         }
-        if self.resumed_turn_started.is_some_and(|start|
-            now.saturating_duration_since(start) >= RESUMED_TURN_TIMEOUT)
+        if self
+            .resumed_turn_started
+            .is_some_and(|start| now.saturating_duration_since(start) >= RESUMED_TURN_TIMEOUT)
         {
             return Some("Codex resumed active turn without a terminal; owned process stopped.");
         }
@@ -1384,13 +1385,21 @@ mod tests {
     fn lost_history_reply_expires_without_retry_or_turn_execution() {
         let mut broker = ready();
         let mut history = HistoryFlow::default();
-        history.request(&mut broker, ClientMethod::ThreadList,
-            json!({"limit":session_history::THREAD_PAGE_SIZE}),
-            HistoryRequest::List { append: false }).unwrap();
+        history
+            .request(
+                &mut broker,
+                ClientMethod::ThreadList,
+                json!({"limit":session_history::THREAD_PAGE_SIZE}),
+                HistoryRequest::List { append: false },
+            )
+            .unwrap();
         assert_eq!(history.timeout_error(Instant::now()), None);
-        history.pending.as_mut().unwrap().2 = Instant::now() - HISTORY_TIMEOUT - Duration::from_secs(1);
-        assert_eq!(history.timeout_error(Instant::now()),
-            Some("Codex history RPC timed out; owned process stopped."));
+        history.pending.as_mut().unwrap().2 =
+            Instant::now() - HISTORY_TIMEOUT - Duration::from_secs(1);
+        assert_eq!(
+            history.timeout_error(Instant::now()),
+            Some("Codex history RPC timed out; owned process stopped.")
+        );
         let rpc: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
         assert_eq!(rpc["method"], "thread/list");
         assert!(broker.take_outbound().is_none());

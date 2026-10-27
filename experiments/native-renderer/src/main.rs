@@ -1770,7 +1770,8 @@ mod tests {
         app.queued_prompt = Some(app.draft.clone());
         app.awaiting_turn_start = true;
         app.apply_probe_event(ProbeEvent::TurnStarted {
-            thread_id: "t".into(), turn_id: "u".into(),
+            thread_id: "t".into(),
+            turn_id: "u".into(),
         });
         assert_eq!(app.live_rows[0].preview, "preserved prompt");
         assert!(app.draft.is_empty());
