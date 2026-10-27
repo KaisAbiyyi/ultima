@@ -1,0 +1,82 @@
+name: NC-10 qualification tooling (not physical Windows acceptance)
+on:
+  pull_request:
+    paths:
+      - 'scripts/nc-10-*'
+      - 'tests/nc-10-*'
+      - 'src/lib/native-performance*'
+      - 'src/Desktop.svelte'
+      - 'src-tauri/**'
+      - 'package*.json'
+      - 'experiments/native-renderer/**'
+      - 'crates/**'
+      - 'playwright.config.ts'
+      - 'tests/e2e/**'
+      - '.github/workflows/nc-10-native-qualification.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/nc-10-*'
+      - 'tests/nc-10-*'
+      - 'src/lib/native-performance*'
+      - 'src/Desktop.svelte'
+      - 'src-tauri/**'
+      - 'package*.json'
+      - 'experiments/native-renderer/**'
+      - 'crates/**'
+      - 'playwright.config.ts'
+      - 'tests/e2e/**'
+      - '.github/workflows/nc-10-native-qualification.yml'
+  workflow_dispatch:
+jobs:
+  tooling-and-native-build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci --no-audit --no-fund
+      - run: npm run test:native-evidence
+      - run: npm run check
+      - run: npm test
+      - run: npx tauri build --no-bundle -- --locked
+      - run: cargo test --release --locked --manifest-path src-tauri/Cargo.toml
+  native-renderer-regression:
+    name: Rust native renderer regression (synthetic protocol; no owner acceptance)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Match the exact toolchain qualified on the physical Windows host.
+          # Rust stable 1.99 changes float literal fallback warnings under -D warnings.
+          toolchain: '1.91.1'
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: experiments/native-renderer
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: cargo fmt --manifest-path experiments/native-renderer/Cargo.toml -- --check
+      - run: cargo test --locked --manifest-path experiments/native-renderer/Cargo.toml
+      - run: cargo clippy --locked --manifest-path experiments/native-renderer/Cargo.toml --all-targets -- -D warnings
+      - run: node --test experiments/native-renderer/tests/check-idle-budget.test.mjs
+      - run: node --test experiments/native-renderer/tests/verify-latency.test.mjs
+      - run: cargo build --release --locked --manifest-path experiments/native-renderer/Cargo.toml
+  browser-e2e:
+    name: Windows browser UX fixtures (not native presentation)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install chromium
+      - run: npm run test:e2e

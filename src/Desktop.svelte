@@ -1,14 +1,16 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { createMessage, type UIMessage } from './lib/history';
+  import { classifyTurnOutcome, turnOutcomeMessage, type TurnOutcome } from './lib/turn-outcome';
   import { visibleRange } from './lib/virtual';
   import { isTextComposing, resolveShortcut, shouldSendComposer } from './lib/shortcuts';
   import { nativeBridge, desktopAvailable, type EngineBridge, type EngineEvent, type ManagedRuntimeStatus } from './lib/desktop-bridge';
   import { EngineSessionFence } from './lib/engine-session-fence';
   import { FrameDeltas } from './lib/frame-deltas';
+  import { NativePerformance } from './lib/native-performance';
   import { readerPage, rowPreview, ROW_PREVIEW_CHARS } from './lib/message-paging';
   import { approvalToolIdentity, canApprove, canApproveInActiveTurn, matchesApprovalEvidence, parseApproval, sameApproval, toolIdentity, trackTool, type ApprovalRequest, type ToolItem } from './lib/tool-events';
-  import { addThread, appendDelta, appendProject, cappedMessages, restoreProjects, restoreThreads, restoreThreadMessages, saveMetadata, type Project, type Thread } from './lib/desktop-state';
+  import { addThread, appendDelta, appendProject, cappedMessages, restoreProjects, restoreThreads, restoreThreadMessages, saveMetadata, MAX_TEXT_BYTES, type Project, type Thread } from './lib/desktop-state';
 
   const ROW_HEIGHT = 88;
   let projects: Project[] = [];
@@ -16,6 +18,7 @@
   let activeProject = '';
   let activeThread = '';
   let activeTurn = '';
+  let lastTurnOutcome: TurnOutcome = 'none';
   let pendingPrompt = '';
   let messages: UIMessage[] = [];
   let projectInput = '';
@@ -55,6 +58,9 @@
   let runtimeSource = '';
   let runtimeBusy = false;
   let counter = 0;
+  const performanceProbe = new NativePerformance(() => performance.now(), callback => {
+    void tick().then(() => requestAnimationFrame(() => requestAnimationFrame(callback)));
+  });
   const pending = new Map<number, 'models' | 'create' | 'resume' | 'turn' | 'interrupt'>();
   // IPC notifications can arrive before invoke() resolves; replay only bounded replies.
   const earlyReplies = new Map<number, Extract<EngineEvent, { type: 'reply' }>>();
@@ -301,6 +307,7 @@
     return typeof id === 'string' && id.length <= 256 ? id : '';
   }
   async function dispatchTurn(text: string) {
+    lastTurnOutcome = 'none';
     discardStream();
     followTail = true;
     if (!activeThread) { errorMessage = 'Thread was not created.'; busy = false; return; }
@@ -386,6 +393,21 @@
       // Missing provenance is NOT proof. Never combine same itemId from another turn.
       if (event.params.threadId !== activeThread || event.params.turnId !== activeTurn) return;
       const item = event.params.item;
+      if (item && typeof item === 'object' && 'type' in item && item.type === 'agentMessage') {
+        if (event.type === 'itemCompleted' && 'text' in item && typeof item.text === 'string') {
+          // The official server may send the canonical final message without
+          // streaming deltas. Use it only for this exact active thread/turn.
+          frames.drain();
+          const last = messages[messages.length - 1];
+          if (last?.role === 'assistant' && item.text.length > 0 && item.text.length <= MAX_TEXT_BYTES) {
+            messages = cappedMessages([...messages.slice(0, -1), { ...last, text: item.text }]);
+          } else if (item.text.length > MAX_TEXT_BYTES) {
+            errorMessage = 'Assistant reply exceeded the bounded UI text limit.';
+            void disconnect();
+          }
+        }
+        return;
+      }
       const itemId = typeof item === 'object' && item && 'id' in item ? item.id : event.params.itemId;
       if (currentApproval && event.params.threadId === currentApproval.threadId &&
           event.params.turnId === currentApproval.turnId && itemId === currentApproval.itemId) {
@@ -442,7 +464,13 @@
     }
     if (event.type === 'turnCompleted') {
       if (params.threadId && params.threadId !== activeThread) return;
-      if (params.turnId && activeTurn && params.turnId !== activeTurn) return;
+      const finalTurn = params.turn && typeof params.turn === 'object' ?
+        (params.turn as Record<string, unknown>).id : params.turnId;
+      if (!activeTurn || finalTurn !== activeTurn) return;
+      lastTurnOutcome = classifyTurnOutcome(params);
+      if (lastTurnOutcome !== 'completed') {
+        errorMessage = turnOutcomeMessage(lastTurnOutcome) || 'Codex returned an invalid terminal turn status.';
+      }
       frames.drain();
       streamTargetId = '';
       busy = false;
@@ -459,6 +487,7 @@
       if (typeof delta !== 'string') return;
       const last = messages[messages.length - 1];
       if (!last || last.role !== 'assistant') return;
+      performanceProbe.observe('stream');
       if (streamTargetId && streamTargetId !== last.id) frames.clear();
       streamTargetId = last.id;
       if (!frames.push(delta)) {
@@ -470,6 +499,7 @@
   async function newThread() {
     if (busy) { errorMessage = 'Stop the active turn before opening another thread.'; return; }
     activeThread = '';
+    lastTurnOutcome = 'none';
     discardStream();
     closeReader();
     messages = [];
@@ -485,6 +515,7 @@
     if (busy) { errorMessage = 'Stop the active turn before resuming.'; return; }
     if (thread.project !== activeProject) await chooseProject(thread.project);
     activeThread = thread.id;
+    lastTurnOutcome = 'none';
     discardStream();
     closeReader();
     messages = [];
@@ -531,6 +562,17 @@
     if (action === 'new-thread') void newThread();
   }
   onMount(() => {
+    // Numeric-only, inactive API for an explicitly attached local qualification
+    // debugger. It cannot invoke engine actions or inspect conversation text.
+    const probeWindow = window as Window & { __ultimaPerformance?: {
+      start: () => void; stop: () => void; snapshot: () => ReturnType<NativePerformance['snapshot']>
+    } };
+    const probeApi = { start: () => performanceProbe.start(), stop: () => performanceProbe.stop(),
+      snapshot: () => performanceProbe.snapshot() };
+    probeWindow.__ultimaPerformance = probeApi;
+    void tick().then(() => requestAnimationFrame(() => requestAnimationFrame(() => {
+      performance.mark('ultima:shell-ready');
+    })));
     projects = restoreProjects(k => localStorage.getItem(k));
     threads = restoreThreads(k => localStorage.getItem(k));
     activeProject = projects[0]?.path ?? '';
@@ -553,6 +595,8 @@
       }).catch(() => { errorMessage = 'Desktop IPC is unavailable.'; });
     }
     return () => {
+      performanceProbe.stop();
+      if (probeWindow.__ultimaPerformance === probeApi) delete probeWindow.__ultimaPerformance;
       disposed = true;
       navMedia.removeEventListener('change', updateNavMedia);
       connectionEpoch++
@@ -595,7 +639,7 @@
     </header>
     <section class="conversation" aria-labelledby="conversation-title">
       <div class="conversation-head"><p class="eyebrow">CODEX / LOCAL APP SERVER</p><h1 id="conversation-title">{activeThread ? (threads.find(t => t.id === activeThread)?.title ?? 'Codex conversation') : 'Build with clarity'}<span class="heading-period">.</span></h1><p class="conversation-subtitle">{activeThread ? 'Thread resumes through your existing Codex session.' : 'Select a project and connect your Codex installation to begin.'}</p>
-        <div class="conversation-meta"><span data-testid="nc06-message-count">{messages.length} messages</span><span class="meta-divider"></span><span>{busy ? 'Streaming' : status === 'ready' ? 'Ready' : 'Not connected'}</span></div>
+        <div class="conversation-meta" data-turn-outcome={lastTurnOutcome}><span data-testid="nc06-message-count">{messages.length} messages</span><span class="meta-divider"></span><span>{busy ? 'Streaming' : status === 'ready' ? 'Ready' : 'Not connected'}</span></div>
       </div>
       {#if errorMessage}<p class="nc06-error" role="alert">{errorMessage}<button aria-label="Dismiss error" onclick={() => errorMessage = ''}>×</button></p>{/if}
       {#if status !== 'ready'}
@@ -635,7 +679,7 @@
             <div class="virtual-canvas" style:height={messages.length * ROW_HEIGHT + 'px'}>
               {#each shownMessages as message, offset (message.id)}
                 <article class="message-row" class:user-message={message.role === 'user'} style:top={(range.start + offset) * ROW_HEIGHT + 'px'} aria-posinset={range.start + offset + 1} aria-setsize={messages.length} data-testid="nc06-row">
-                  <div class="message-avatar">{message.role === 'user' ? 'Y' : 'U'}</div><div class="message-content"><div class="message-line"><span class="message-author">{message.role === 'user' ? 'You' : 'Codex'}</span>{#if message.text.length > ROW_PREVIEW_CHARS}<button class="nc08-read" onclick={() => { readerId = message.id; readerPosition = 0; }}>Read message</button>{/if}</div><p>{rowPreview(message.text) || 'Thinking…'}</p></div>
+                  <div class="message-avatar">{message.role === 'user' ? 'Y' : 'U'}</div><div class="message-content"><div class="message-line"><span class="message-author">{message.role === 'user' ? 'You' : 'Codex'}</span>{#if message.text.length > ROW_PREVIEW_CHARS}<button class="nc08-read" onclick={() => { readerId = message.id; readerPosition = 0; }}>Read message</button>{/if}</div><p>{rowPreview(message.text) || (busy ? 'Thinking…' : 'No text reply returned by Codex.')}</p></div>
                 </article>
               {/each}
             </div>
@@ -695,7 +739,7 @@
         </section>
       {/if}
     </section>
-    <div class="composer-area"><div class="composer-shell" class:busy><label for="composer" class="sr-only">Message to Codex</label><textarea id="composer" bind:this={composerEl} bind:value={draft} onkeydown={keydown} oncompositionstart={() => composing = true} oncompositionend={compositionEnd} aria-keyshortcuts="Control+L Meta+L" maxlength="8000" rows="2" placeholder="Ask Codex to build something…" disabled={busy || status !== 'ready'}></textarea><div class="composer-bottom"><span class="composer-mode">◇ Codex <span class="mode-separator"></span>{model || 'Default model'}</span>
+    <div class="composer-area"><div class="composer-shell" class:busy><label for="composer" class="sr-only">Message to Codex</label><textarea id="composer" bind:this={composerEl} bind:value={draft} oninput={() => performanceProbe.observe('input')} onkeydown={keydown} oncompositionstart={() => composing = true} oncompositionend={compositionEnd} aria-keyshortcuts="Control+L Meta+L" maxlength="8000" rows="2" placeholder="Ask Codex to build something…" disabled={busy || status !== 'ready'}></textarea><div class="composer-bottom"><span class="composer-mode">◇ Codex <span class="mode-separator"></span>{model || 'Default model'}</span>
       {#if busy}<button class="send-button stop-button" aria-label="Interrupt Codex turn" onclick={() => void stop()}><span class="stop-icon"></span></button>{:else}<button class="send-button" aria-label="Send message to Codex" disabled={status !== 'ready' || !draft.trim()} onclick={() => void send()}>↑</button>{/if}
     </div></div><div class="under-composer"><p>Enter to send · Shift+Enter newline · Ctrl/⌘+K search · Ctrl/⌘+L composer</p><span>LOCAL STDIO · NO BUILT-IN BROWSER</span></div></div>
   </main>

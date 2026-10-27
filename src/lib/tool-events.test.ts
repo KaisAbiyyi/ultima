@@ -110,6 +110,16 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
     expect(canApprove(approval, base)).toBe(true);
   });
 
+  it('does not misclassify final assistant and reasoning items as tools', () => {
+    for (const type of ['agentMessage', 'reasoning', 'userMessage']) {
+      expect(trackTool([], 'itemStarted', itemEvent('t', 'z', type, type, {}))).toEqual([]);
+      expect(trackTool([], 'itemCompleted', itemEvent('t', 'z', type, type, { text: 'OK' }))).toEqual([]);
+    }
+    const command = trackTool([], 'itemStarted', itemEvent('t', 'z', 'cmd', 'commandExecution', { command: 'echo ok' }));
+    expect(command).toHaveLength(1);
+    expect(trackTool(command, 'itemCompleted', itemEvent('t', 'z', 'reply', 'agentMessage', { text: 'OK' }))).toEqual(command);
+  });
+
   it('refuses blind/truncated command approvals and bounds output and item count', () => {
     expect(canApprove(approval, [])).toBe(false);
     expect(canApprove(approval, trackTool([], 'itemStarted',

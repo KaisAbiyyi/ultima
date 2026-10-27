@@ -11,3 +11,9 @@ playwright-report/
 test-results/
 .DS_Store
 *.log
+artifacts/nc10/
+src-tauri/target/
+src-tauri/gen/
+crates/*/target/
+experiments/native-renderer/target/
+experiments/native-renderer/results/

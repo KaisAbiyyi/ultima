@@ -47,8 +47,8 @@ test('NC-09 project Enter does not commit while Windows IME is composing', async
   await expect(page.getByRole('button', { name: 'I imefixture' })).toBeVisible();
 });
 
-test('NC-09 screenshot matrix: both themes at 100%/200% DPI and mobile', async ({ browser }, testInfo) => {
-  for (const [width, height, scale] of [[1440, 900, 1], [1440, 900, 2], [390, 844, 2]]) {
+for (const [width, height, scale] of [[1440, 900, 1], [1440, 900, 2], [390, 844, 2]]) {
+  test(`NC-09 screenshot: ${width}x${height} at ${scale}x, both themes`, async ({ browser }, testInfo) => {
     const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: scale, reducedMotion: 'reduce' });
     try {
       const page = await context.newPage();
@@ -61,5 +61,5 @@ test('NC-09 screenshot matrix: both themes at 100%/200% DPI and mobile', async (
         await page.screenshot({ path: testInfo.outputPath(`nc09-${width}x${height}-${scale}x-${theme}.png`), fullPage: true, animations: 'disabled' });
       }
     } finally { await context.close(); }
-  }
-});
+  });
+}

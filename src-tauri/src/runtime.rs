@@ -94,8 +94,8 @@ mod tests {
     /// selection poisons reconnect rather than retrying the same executable.
     #[tokio::test]
     async fn failed_handshake_same_managed_runtime_never_retries_or_overlaps() {
-        use crate::lifecycle::{GateError, SessionGate, StartError};
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use ultima_native_session::{GateError, SessionGate, StartError};
 
         let gate = SessionGate::<usize>::default();
         let children = AtomicUsize::new(0);
@@ -135,7 +135,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_managed_handshake_system_fallback_reopens_only_after_reap() {
-        use crate::lifecycle::{GateError, SessionGate};
+        use ultima_native_session::{GateError, SessionGate};
         let gate = SessionGate::<usize>::default();
         gate.start(1, || Ok::<_, ()>((1, ()))).await.unwrap();
         let (generation, _) = gate.begin_stop().await.unwrap().unwrap();
