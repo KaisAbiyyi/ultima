@@ -426,5 +426,4 @@ mod tests {
         assert!(ledger.take(&expected));
         assert!(!ledger.take(&expected));
     }
-
 }
