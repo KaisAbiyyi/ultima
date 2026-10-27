@@ -281,6 +281,25 @@ impl ToolLedger {
         self.pending.remove(index);
         true
     }
+    pub fn consume_reviewed(
+        &mut self,
+        approval: &Approval,
+        project: &Path,
+        reviewed: &ToolEvidence,
+    ) -> bool {
+        let same_snapshot = self.items.iter().any(|item| {
+            item.thread == approval.thread_id
+                && item.turn == approval.turn_id
+                && item.id == approval.item_id
+                && item == reviewed
+        });
+        if !same_snapshot || !self.matches_evidence(approval, project) {
+            return false;
+        }
+        self.take(approval)
+    }
+
+    #[cfg(test)]
     pub fn consume(&mut self, approval: &Approval, project: &Path) -> bool {
         if !self.matches_evidence(approval, project) {
             return false;
