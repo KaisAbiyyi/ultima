@@ -17,6 +17,7 @@ export function inspectDiagnostic(receipts) {
     throw Error('At least 3 independent native sessions are required');
   }
   const series = ['streamReceivedToPaintCallback', 'rawKeyToComposerPaintCallback',
+    'rawKeyDuringActiveTurnToPaintCallback',
     'processMainToFirstComposerPaintCallback'];
   const sums = Object.fromEntries(series.map(name => [name, []]));
   for (const receipt of receipts) {

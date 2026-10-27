@@ -85,7 +85,10 @@ The native renderer timestamps each official assistant delta/final event at
 admission to the bounded UI queue, preserving the oldest timestamp when deltas
 coalesce. Raw keyboard timestamps count only when the composer actually
 changes. A native OpenGL paint callback records the corresponding elapsed
-times, plus one startup sample measured from entry into `main`. Samples are
+times. A separate `rawKeyDuringActiveTurnToPaintCallback` series only counts
+composer edits while an official turn is running, preventing idle-keyboard
+samples from satisfying a streaming workload. Startup has one sample
+measured from entry into `main`. Samples are
 content-free: prompt text, project paths and message IDs are never written to
 the metric report. Each metric series is capped at 4,096 samples; any overflow
 invalidates a qualification run. No periodic repaint loop is added.

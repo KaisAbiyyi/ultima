@@ -13,6 +13,7 @@ const MAX_SAMPLES: usize = 4096;
 pub enum Kind {
     Stream,
     Keyboard,
+    KeyboardDuringTurn,
     Startup,
 }
 
@@ -53,6 +54,7 @@ impl Series {
 struct Samples {
     stream: Series,
     keyboard: Series,
+    keyboard_during_turn: Series,
     startup: Series,
     coalesced_stream_events: u64,
 }
@@ -88,6 +90,7 @@ impl LatencyRecorder {
                         .saturating_add(u64::from(coalesced));
                 }
                 Kind::Keyboard => samples.keyboard.record(elapsed),
+                Kind::KeyboardDuringTurn => samples.keyboard_during_turn.record(elapsed),
                 Kind::Startup => samples.startup.record(elapsed),
             }
         }
@@ -107,6 +110,7 @@ impl LatencyRecorder {
             "streamCoalescedEvents": samples.coalesced_stream_events,
             "streamReceivedToPaintCallback": samples.stream.json(),
             "rawKeyToComposerPaintCallback": samples.keyboard.json(),
+            "rawKeyDuringActiveTurnToPaintCallback": samples.keyboard_during_turn.json(),
             "processMainToFirstComposerPaintCallback": samples.startup.json(),
             "acceptance": "NOT_RUN: independent Windows screen-presentation receipt required",
         })
@@ -167,5 +171,24 @@ mod tests {
         assert_eq!(receipt["streamReceivedToPaintCallback"]["samples"], 1);
         assert_eq!(receipt["streamCoalescedEvents"], 4);
         assert_eq!(receipt["presentationVerified"], false);
+    }
+
+    #[test]
+    fn idle_keyboard_input_cannot_populate_active_turn_samples() {
+        let recorder = LatencyRecorder::new(Instant::now(), None);
+        recorder.record_paint(Kind::Keyboard, Instant::now(), 0);
+        assert_eq!(
+            recorder.report()["rawKeyToComposerPaintCallback"]["samples"],
+            1
+        );
+        assert_eq!(
+            recorder.report()["rawKeyDuringActiveTurnToPaintCallback"]["samples"],
+            0
+        );
+        recorder.record_paint(Kind::KeyboardDuringTurn, Instant::now(), 0);
+        assert_eq!(
+            recorder.report()["rawKeyDuringActiveTurnToPaintCallback"]["samples"],
+            1
+        );
     }
 }

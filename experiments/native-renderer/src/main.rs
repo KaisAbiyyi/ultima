@@ -191,7 +191,7 @@ struct RendererSpike {
     latency: LatencyRecorder,
     stream_paint_pending: Vec<(Instant, u32)>,
     raw_key_started: Option<Instant>,
-    keyboard_paint_pending: Option<Instant>,
+    keyboard_paint_pending: Option<(Instant, bool)>,
     startup_paint_scheduled: bool,
 }
 
@@ -985,7 +985,8 @@ impl RendererSpike {
                 );
                 if editor.changed() {
                     if let Some(stamp) = self.raw_key_started.take() {
-                        self.keyboard_paint_pending.get_or_insert(stamp);
+                        self.keyboard_paint_pending
+                            .get_or_insert((stamp, self.active_turn.is_some()));
                     }
                 }
                 ui.add_space(7.0);
@@ -1227,8 +1228,11 @@ impl RendererSpike {
             for (received, coalesced) in &stream {
                 recorder.record_paint(Kind::Stream, *received, *coalesced);
             }
-            if let Some(started) = keyboard {
+            if let Some((started, running_turn)) = keyboard {
                 recorder.record_paint(Kind::Keyboard, started, 0);
+                if running_turn {
+                    recorder.record_paint(Kind::KeyboardDuringTurn, started, 0);
+                }
             }
             if let Some(started) = startup {
                 recorder.record_paint(Kind::Startup, started, 0);

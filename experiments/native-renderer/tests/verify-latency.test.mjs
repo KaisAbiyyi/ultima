@@ -12,6 +12,7 @@ const receipt = () => ({
   acceptance: 'NOT_RUN: independent Windows screen-presentation receipt required',
   streamReceivedToPaintCallback: measure(),
   rawKeyToComposerPaintCallback: measure(),
+  rawKeyDuringActiveTurnToPaintCallback: measure(),
   processMainToFirstComposerPaintCallback: measure(1, 20),
 });
 
@@ -32,6 +33,7 @@ test('fails closed on missing, truncated, deceptive or nonnumeric receipts', () 
     x => { x.streamReceivedToPaintCallback.samples = 1; },
     x => { x.streamReceivedToPaintCallback.overflow = 1; },
     x => { x.rawKeyToComposerPaintCallback.p95Ms = '10'; },
+    x => { x.rawKeyDuringActiveTurnToPaintCallback.samples = 0; },
     x => { x.processMainToFirstComposerPaintCallback.samples = 3; },
   ]) {
     const altered = receipt();
