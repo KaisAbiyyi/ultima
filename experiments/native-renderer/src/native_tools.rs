@@ -19,6 +19,7 @@ pub struct ToolEvidence {
     pub kind: ApprovalKind,
     pub state: String,
     pub command: String,
+    pub cwd: String,
     pub output: String,
     pub diff: String,
     pub paths: Vec<String>,
@@ -201,6 +202,7 @@ impl ToolLedger {
                 kind,
                 state: "running".into(),
                 command: String::new(),
+                cwd: String::new(),
                 output: String::new(),
                 diff: String::new(),
                 paths: Vec::new(),
@@ -211,6 +213,9 @@ impl ToolLedger {
             return None;
         }
         item.state = if completed { "completed" } else { "running" }.into();
+        if let Some(cwd) = data.get("cwd").and_then(Value::as_str) {
+            item.cwd = cwd.to_owned();
+        }
         if item.kind == ApprovalKind::Command {
             let command = match data.get("command") {
                 Some(Value::String(v)) => v.clone(),
@@ -281,6 +286,58 @@ impl ToolLedger {
         self.pending.remove(index);
         true
     }
+    /// Compare the immutable RPC approval descriptor to the exact tool item
+    /// actually rendered. Evidence alone (even same itemId) is not authority.
+    fn request_matches_review(
+        approval: &Approval,
+        project: &Path,
+        reviewed: &ToolEvidence,
+    ) -> bool {
+        let req = &approval.request;
+        if !req.is_object()
+            || ["additionalPermissions", "networkApprovalContext",
+                "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendments"]
+                .iter().any(|key| req.get(*key).is_some_and(|v| !v.is_null()))
+        {
+            // No implicit privilege expansion or session-wide scope.
+            return false;
+        }
+        if let Some(decisions) = req.get("availableDecisions") {
+            if !decisions.as_array().is_some_and(|v|
+                v.iter().any(|d| d.as_str() == Some("accept")))
+            {
+                return false;
+            }
+        }
+        let Ok(expected_root) = project.canonicalize() else {
+            return false;
+        };
+        match approval.kind {
+            ApprovalKind::Command => {
+                let Some(command) = req.get("command").and_then(Value::as_str) else {
+                    return false;
+                };
+                let Some(cwd) = req.get("cwd").and_then(Value::as_str) else {
+                    return false;
+                };
+                // The request and item cwd must BOTH resolve to the scoped
+                // project; a same-item different command/cwd cannot be granted.
+                command == reviewed.command
+                    && !command.trim().is_empty()
+                    && Path::new(cwd).canonicalize().ok().as_ref() == Some(&expected_root)
+                    && Path::new(&reviewed.cwd).canonicalize().ok().as_ref() == Some(&expected_root)
+                    && cwd == reviewed.cwd
+            }
+            ApprovalKind::FileChange => {
+                // grantRoot is optional on official fileChange approval;
+                // explicitly deny any broader grant outside the project.
+                req.get("grantRoot").is_none_or(|value|
+                    value.as_str().is_some_and(|path|
+                        Path::new(path).canonicalize().ok().as_ref() == Some(&expected_root)))
+            }
+        }
+    }
+
     pub fn consume_reviewed(
         &mut self,
         approval: &Approval,
@@ -293,7 +350,10 @@ impl ToolLedger {
                 && item.id == approval.item_id
                 && item == reviewed
         });
-        if !same_snapshot || !self.matches_evidence(approval, project) {
+        if !same_snapshot
+            || !self.matches_evidence(approval, project)
+            || !Self::request_matches_review(approval, project, reviewed)
+        {
             return false;
         }
         self.take(approval)
@@ -326,8 +386,39 @@ mod tests {
             turn_id: "u".into(),
             item_id: "i".into(),
             started_at_ms: 1,
+            request: json!({}),
         }
     }
+    #[test]
+    fn adversarial_same_item_different_command_and_cwd_is_denied() {
+        let mut ledger = ToolLedger::default();
+        let cwd = project().to_str().unwrap().to_owned();
+        let item = json!({"threadId":"t","turnId":"u","item":{"id":"i",
+            "type":"commandExecution","command":"echo safe","cwd":cwd}});
+        let snapshot = ledger.capture(NotificationKind::ItemStarted, &item, &project()).unwrap();
+        let mut a = approval();
+        a.request = json!({"threadId":"t","turnId":"u","itemId":"i",
+            "command":"echo DIFFERENT","cwd":cwd,"startedAtMs":1});
+        assert!(ledger.offer(a.clone(), &project()));
+        assert!(!ledger.consume_reviewed(&a, &project(), &snapshot));
+        assert_eq!(ledger.pending().len(), 1);
+        a.request["command"] = Value::String("echo safe".into());
+        a.request["cwd"] = Value::String(project().parent().unwrap().to_str().unwrap().to_owned());
+        ledger.clear_pending();
+        assert!(ledger.offer(a.clone(), &project()));
+        assert!(!ledger.consume_reviewed(&a, &project(), &snapshot));
+        a.request["cwd"] = Value::String(cwd.clone());
+        a.request["additionalPermissions"] = json!({"network":{"enabled":true}});
+        ledger.clear_pending();
+        assert!(ledger.offer(a.clone(), &project()));
+        assert!(!ledger.consume_reviewed(&a, &project(), &snapshot));
+        a.request.as_object_mut().unwrap().remove("additionalPermissions");
+        ledger.clear_pending();
+        assert!(ledger.offer(a.clone(), &project()));
+        assert!(ledger.consume_reviewed(&a, &project(), &snapshot));
+        assert!(ledger.pending().is_empty());
+    }
+
     #[test]
     fn exact_request_one_shot_and_cancel_clear() {
         let mut ledger = ToolLedger::default();

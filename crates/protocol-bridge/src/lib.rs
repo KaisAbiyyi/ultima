@@ -249,6 +249,10 @@ pub struct Approval {
     pub turn_id: String,
     pub item_id: String,
     pub started_at_ms: u64,
+    /// Immutable server-origin request params, including requested command,
+    /// working directory, decision scope and any permission amendments.
+    /// Broker compares this exact descriptor before accepting a decision.
+    pub request: Value,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RpcFailure {
@@ -530,6 +534,15 @@ impl Broker {
                     {
                         return self.error_reply(id, -32602, "Invalid approval request");
                     }
+                    // Never enqueue or render unbounded request descriptors.
+                    // An oversized request is declined, not presented as a
+                    // clipped preview which might hide elevated permissions.
+                    let descriptor = Value::Object(p.cloned().unwrap_or_default());
+                    if serde_json::to_vec(&descriptor)
+                        .is_err_or(|bytes| bytes.len() > 8 * 1024)
+                    {
+                        return self.error_reply(id, -32602, "Approval descriptor exceeds safe limit");
+                    }
                     if self.approvals.len() >= self.limits.approvals {
                         return Err(BridgeError::Backpressure);
                     }
@@ -543,6 +556,7 @@ impl Broker {
                         turn_id: field("turnId").expect("validated"),
                         item_id: field("itemId").expect("validated"),
                         started_at_ms: started.expect("validated"),
+                        request: descriptor,
                     };
                     self.push_event(Event::Approval(approval.clone()), line.len())?;
                     self.approvals.insert(id, approval);

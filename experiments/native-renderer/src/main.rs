@@ -596,6 +596,8 @@ impl RendererSpike {
                     "request: {:?} · turn: {}",
                     request.id, request.turn_id
                 )));
+                let descriptor = serde_json::to_string_pretty(&request.request)
+                    .unwrap_or_else(|_| "Invalid approval descriptor".to_owned());
                 let preview = evidence.as_ref().map(|item| {
                     if item.kind == ApprovalKind::Command {
                         item.command.as_str()
@@ -613,8 +615,12 @@ impl RendererSpike {
                 if self.reviewed_approval.as_ref() == Some(&request.id) {
                     ScrollArea::both().max_height(175.0).show(ui, |ui| {
                         ui.label(
-                            RichText::new(preview.unwrap_or("Missing official preview."))
-                                .monospace(),
+                            RichText::new(format!(
+                                "Server request (identity, command, cwd, permissions, scope):\\n{}\\n\\nExact item evidence:\\n{}",
+                                descriptor,
+                                preview.unwrap_or("Missing official preview.")
+                            ))
+                            .monospace(),
                         );
                     });
                 } else {
@@ -1784,6 +1790,7 @@ mod tests {
             kind: ApprovalKind::Command,
             thread_id: "t".into(), turn_id: "u".into(),
             item_id: "i".into(), started_at_ms: 1,
+            request: serde_json::json!({}),
         };
         app.pending_approvals.push(request.clone());
         app.decide_current(true);
