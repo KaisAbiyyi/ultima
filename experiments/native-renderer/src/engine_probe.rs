@@ -894,7 +894,7 @@ impl HistoryFlow {
                     // and all subsequent turns force sandbox+approval overrides.
                     return Err("Codex resume did not confirm a thread identity.");
                 }
-                if result.pointer("/thread/id").and_then(Value::as_str) != Some(&thread) {
+                if result.pointer("/thread/id").and_then(Value::as_str) != Some(thread.as_str()) {
                     return Err("Codex resumed a different thread identity.");
                 }
                 if result.pointer("/thread/cwd").and_then(Value::as_str).is_some() {
@@ -985,6 +985,7 @@ async fn drive(
     }
     let mut shutdown = shutdown;
     let mut lifecycle = TurnLifecycle::default();
+    let mut history = HistoryFlow::default();
     let mut watchdog = tokio::time::interval(Duration::from_secs(1));
     let handshake_started = Instant::now();
     let result: Result<(), &'static str> = async {
@@ -1016,8 +1017,34 @@ async fn drive(
                         continue;
                     }
                     let outcome = match command {
-                        Command::Submit(text) => lifecycle.submit(&mut broker, &project, text),
+                        Command::Submit(text) => {
+                            if history.pending.is_some() {
+                                Err("Thread selection is in progress.")
+                            } else {
+                                lifecycle.submit(&mut broker, &project, text)
+                            }
+                        }
                         Command::Cancel => lifecycle.cancel(&mut broker),
+                        Command::NewThread if !lifecycle.busy && history.pending.is_none() => {
+                            lifecycle.thread = None;
+                            history.selected = None;
+                            history.next_turns = None;
+                            enqueue(&events, &ctx,
+                                ProbeEvent::ThreadSelected {thread_id:None})?;
+                            Ok(())
+                        }
+                        Command::SelectThread(id) if !lifecycle.busy => {
+                            history.select(&mut broker, id)
+                        }
+                        Command::MoreThreads if !lifecycle.busy => {
+                            history.list(&mut broker, &project, true)
+                        }
+                        Command::MoreHistory if !lifecycle.busy => {
+                            if let Some(thread) = history.selected.clone() {
+                                history.turns(&mut broker, &thread, true)
+                            } else { Err("No stored thread selected.") }
+                        }
+                        _ => Err("Cannot switch or page threads during an active turn."),
                     };
                     if let Err(message) = outcome {
                         if lifecycle.cancel_requested {
@@ -1042,9 +1069,31 @@ async fn drive(
                                     .map_err(|_| "Codex handshake acknowledgement failed.")?;
                                 flush(&mut broker, &mut supervisor).await?;
                                 notify(&status, &ctx, ProbeStatus::Ready);
+                                // Authoritative persistence lives only in
+                                // Codex; never scan or synthesize JSONL files.
+                                history.list(&mut broker, &project, false)?;
                             }
                             while let Some(event) = broker.take_event() {
-                                let translated = lifecycle.on_event(&mut broker, event)?;
+                                let translated = match history.handle_reply(
+                                    &mut broker, &event, &mut lifecycle, &project
+                                )? {
+                                    Some(projection) => projection,
+                                    None => lifecycle.on_event(&mut broker, event)?,
+                                };
+                                if let Some(ProbeEvent::ThreadReady {thread_id}) = &translated {
+                                    history.selected = Some(thread_id.clone());
+                                    if !history.known.iter().any(|e| e.id == *thread_id) {
+                                        let entry = ThreadEntry {
+                                            id: thread_id.clone(),
+                                            label: "New Codex thread".to_owned(),
+                                        };
+                                        history.known.insert(0, entry.clone());
+                                        enqueue(&events, &ctx, ProbeEvent::ThreadPage {
+                                            entries:vec![entry], append:true,
+                                            has_more:history.next_threads.is_some()
+                                        })?;
+                                    }
+                                }
                                 if let Some(event) = translated {
                                     enqueue(&events, &ctx, event)?;
                                 }
