@@ -4,6 +4,7 @@
 mod engine_probe;
 mod icons;
 mod latency;
+mod native_tools;
 mod theme;
 
 use eframe::egui::{
@@ -13,6 +14,8 @@ use eframe::egui::{
 use engine_probe::{EngineProbe, ProbeEvent, ProbeStatus};
 use icons::Icon;
 use latency::{Kind, LatencyRecorder};
+use native_tools::ToolEvidence;
+use ultima_protocol_bridge::{Approval, ApprovalKind, RpcId};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -180,6 +183,10 @@ struct RendererSpike {
     draft: String,
     history: Vec<ChatRow>,
     live_rows: Vec<ChatRow>,
+    tool_rows: Vec<ToolEvidence>,
+    pending_approvals: Vec<Approval>,
+    reviewed_approval: Option<RpcId>,
+    coding_enabled: bool,
     active_turn: Option<(String, String)>,
     awaiting_turn_start: bool,
     live_error: Option<String>,
@@ -239,6 +246,10 @@ impl RendererSpike {
             draft: String::new(),
             history,
             live_rows: Vec::new(),
+            tool_rows: Vec::new(),
+            pending_approvals: Vec::new(),
+            reviewed_approval: None,
+            coding_enabled: false,
             active_turn: None,
             awaiting_turn_start: false,
             live_error: None,
@@ -308,6 +319,8 @@ impl RendererSpike {
                 self.live_error = None;
             }
             ProbeEvent::TurnCancelledBeforeStart => {
+                self.pending_approvals.clear();
+                self.reviewed_approval = None;
                 if self.awaiting_turn_start && self.active_turn.is_none() {
                     self.awaiting_turn_start = false;
                     self.last_turn_status = Some("cancelled before start".to_owned());
@@ -316,6 +329,9 @@ impl RendererSpike {
                 }
             }
             ProbeEvent::TurnStarted { thread_id, turn_id } => {
+                self.tool_rows.clear();
+                self.pending_approvals.clear();
+                self.reviewed_approval = None;
                 self.active_turn = Some((thread_id, turn_id));
                 self.awaiting_turn_start = false;
                 self.last_turn_status = Some("running".to_owned());
@@ -374,6 +390,8 @@ impl RendererSpike {
                 }
                 self.active_turn = None;
                 self.awaiting_turn_start = false;
+                self.pending_approvals.clear();
+                self.reviewed_approval = None;
                 self.last_turn_status = Some(status.clone());
                 if let Some(last) = self.live_rows.last_mut().filter(|row| !row.from_user) {
                     if last.preview.is_empty() {
@@ -383,6 +401,26 @@ impl RendererSpike {
                 if status != "completed" && self.live_error.is_none() {
                     self.live_error = Some(format!("Codex turn ended: {status}"));
                 }
+            }
+            ProbeEvent::ToolSnapshot(item) => {
+                if self.active_turn.as_ref() != Some(&(item.thread.clone(), item.turn.clone())) { return; }
+                if let Some(index) = self.tool_rows.iter().position(|old|
+                    old.thread == item.thread && old.turn == item.turn && old.id == item.id) {
+                    if self.tool_rows[index] != item { self.reviewed_approval = None; }
+                    self.tool_rows.remove(index);
+                }
+                self.tool_rows.push(item);
+                if self.tool_rows.len() > native_tools::MAX_ITEMS { self.tool_rows.remove(0); }
+            }
+            ProbeEvent::ApprovalPending(request) => {
+                if self.active_turn.as_ref() != Some(&(request.thread_id.clone(), request.turn_id.clone())) { return; }
+                if !self.pending_approvals.iter().any(|a| a.id == request.id) {
+                    self.pending_approvals.push(request);
+                }
+            }
+            ProbeEvent::ApprovalResolved(id) => {
+                self.pending_approvals.retain(|a| a.id != id);
+                self.reviewed_approval = None;
             }
             ProbeEvent::Error(message) => {
                 // A failed turn emits a sanitized Error *before* its final
@@ -402,6 +440,8 @@ impl RendererSpike {
                     }
                 }
                 self.live_error = Some(message);
+                self.pending_approvals.clear();
+                self.reviewed_approval = None;
             }
         }
     }
@@ -473,6 +513,59 @@ impl RendererSpike {
             }
             Err(error) => self.live_error = Some(error.to_owned()),
         }
+    }
+
+    fn decide_current(&mut self, accept: bool) {
+        let Some(request) = self.pending_approvals.first().cloned() else { return; };
+        // Remove before enqueue: no double-click replay if native command ACK is lost.
+        self.pending_approvals.remove(0);
+        let reviewed = self.reviewed_approval.take() == Some(request.id.clone());
+        if accept && !reviewed {
+            self.live_error = Some("Review the exact action before allowing it.".to_owned());
+            return;
+        }
+        if let Some(engine) = self.engine.as_ref() {
+            if let Err(reason) = engine.decide(request, accept) {
+                self.live_error = Some(reason.to_owned());
+            }
+        }
+    }
+
+    fn approval_card(&mut self, ui: &mut egui::Ui) {
+        let Some(request) = self.pending_approvals.first().cloned() else { return; };
+        let evidence = self.tool_rows.iter().rev().find(|item|
+            item.thread == request.thread_id && item.turn == request.turn_id &&
+            item.id == request.item_id && item.kind == request.kind).cloned();
+        Frame::new().fill(RAISED).stroke(Stroke::new(1.0, BORDER))
+            .inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
+                ui.label(RichText::new("OFFICIAL TOOL APPROVAL · ALLOW ONCE").color(TEXT).strong());
+                ui.label(mono(format!("request: {:?} · turn: {}", request.id, request.turn_id)));
+                let preview = evidence.as_ref().map(|item| if item.kind == ApprovalKind::Command {
+                    item.command.as_str()
+                } else {
+                    item.diff.as_str()
+                });
+                if ui.button("Review exact command / diff").clicked() {
+                    if evidence.as_ref().is_some_and(|item| item.complete && !item.truncated) {
+                        self.reviewed_approval = Some(request.id.clone());
+                    }
+                }
+                if self.reviewed_approval.as_ref() == Some(&request.id) {
+                    ScrollArea::both().max_height(175.0).show(ui, |ui| {
+                        ui.label(RichText::new(preview.unwrap_or("Missing official preview.")).monospace());
+                    });
+                } else {
+                    ui.label(small("Unreviewed request. Never approved automatically."));
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Decline").clicked() { self.decide_current(false); }
+                    if ui.add_enabled(
+                        self.reviewed_approval.as_ref() == Some(&request.id) &&
+                        evidence.as_ref().is_some_and(|item| item.complete && !item.truncated),
+                        egui::Button::new("Allow once")
+                    ).clicked() { self.decide_current(true); }
+                });
+            });
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
@@ -896,6 +989,25 @@ impl RendererSpike {
                             }));
                             ui.add_space(17.0);
                         }
+                        for item in &self.tool_rows {
+                            let description = match item.kind {
+                                ApprovalKind::Command => format!("command · {} · {}", item.state, item.command),
+                                ApprovalKind::FileChange => format!("file change · {} · {}", item.state, item.paths.join(", ")),
+                            };
+                            ui.collapsing(RichText::new(description).monospace(), |ui| {
+                                if item.truncated { ui.label("Truncated or incomplete tool evidence; approval unavailable."); }
+                                if !item.output.is_empty() {
+                                    egui::CollapsingHeader::new("Command result").show(ui, |ui| {
+                                        ScrollArea::both().max_height(160.0).show(ui, |ui| { ui.monospace(&item.output); });
+                                    });
+                                }
+                                if !item.diff.is_empty() {
+                                    egui::CollapsingHeader::new("Lazy diff").show(ui, |ui| {
+                                        ScrollArea::both().max_height(200.0).show(ui, |ui| { ui.monospace(&item.diff); });
+                                    });
+                                }
+                            });
+                        }
                     });
                 });
             return;
@@ -966,7 +1078,9 @@ impl RendererSpike {
                     },
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(mono(if self.engine.is_some() {
+                    ui.label(mono(if self.engine.is_some() && self.coding_enabled {
+                        "official app-server · approval-gated coding"
+                    } else if self.engine.is_some() {
                         "official app-server · read-only sandbox"
                     } else {
                         "~/workspace/codex-wrapper-ui · main*"
@@ -996,9 +1110,10 @@ impl RendererSpike {
                 if let Some(status) = &self.last_turn_status {
                     ui.label(mono(format!("Turn status: {status}")));
                 }
+                self.approval_card(ui);
                 ui.horizontal(|ui| {
                     ui.menu_button(
-                        RichText::new("●  Read-Only").color(SECONDARY).size(11.0),
+                        RichText::new(if self.coding_enabled { "●  Approval-gated coding" } else { "●  Read-Only" }).color(SECONDARY).size(11.0),
                         |ui| {
                             ui.set_min_width(222.0);
                             ui.label(mono("SANDBOX PERMISSION"));
@@ -1026,7 +1141,7 @@ impl RendererSpike {
                                 ui.add_space(4.0);
                             }
                             ui.separator();
-                            ui.label(small("Reference preview. Permissions stay read-only."));
+                            ui.label(small("Mode fixed at launch; permission changes require reconnect."));
                         },
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1345,6 +1460,11 @@ fn main() -> eframe::Result {
         eprintln!("Supply both --codex-exe=<absolute path> and --project=<absolute directory>.");
         std::process::exit(2);
     }
+    let coding_enabled = args.iter().any(|arg| arg == "--enable-native-coding");
+    if coding_enabled && (exe.is_none() || project.is_none()) {
+        eprintln!("Native coding requires explicit --codex-exe and --project paths.");
+        std::process::exit(2);
+    }
     let project_label = project
         .as_ref()
         .and_then(|p| p.file_name())
@@ -1365,14 +1485,16 @@ fn main() -> eframe::Result {
             let engine = exe
                 .clone()
                 .zip(project.clone())
-                .map(|(exe, project)| EngineProbe::start(exe, project, cc.egui_ctx.clone()));
-            Ok(Box::new(RendererSpike::with_latency(
+                .map(|(exe, project)| EngineProbe::start(exe, project, cc.egui_ctx.clone(), coding_enabled));
+            let mut app = RendererSpike::with_latency(
                 history_rows,
                 show_reference,
                 engine,
                 project_label.clone(),
                 LatencyRecorder::new(main_started, latency_receipt.clone()),
-            )))
+            );
+            app.coding_enabled = coding_enabled;
+            Ok(Box::new(app))
         }),
     )
 }
