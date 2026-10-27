@@ -896,9 +896,9 @@ async fn drive(
     emergency_stop: Arc<AtomicBool>,
     events: Arc<Mutex<DisplayEvents>>,
     status: Arc<AtomicU8>,
-    ctx: egui::Context,
-    coding_enabled: bool,
+    ui_context: (egui::Context, bool),
 ) {
+    let (ctx, coding_enabled) = ui_context;
     let (executable, project) = paths;
     let prepared = (|| {
         if !executable.is_absolute() || !project.is_absolute() {
@@ -1082,8 +1082,7 @@ impl EngineProbe {
                     thread_emergency_stop,
                     thread_events,
                     thread_status,
-                    ctx,
-                    coding_enabled,
+                    (ctx, coding_enabled),
                 )),
                 Err(_) => {
                     if let Ok(mut queue) = thread_events.lock() {
