@@ -637,12 +637,17 @@ impl TurnLifecycle {
             .project
             .as_deref()
             .ok_or("Codex project context unavailable.")?;
+        let admissible = if accept {
+            self.tools.consume(expected, project)
+        } else {
+            self.tools.take(expected)
+        };
         if !self.busy
             || !self.coding_enabled
             || self.cancel_requested
             || self.thread.as_deref() != Some(&expected.thread_id)
             || self.turn.as_deref() != Some(&expected.turn_id)
-            || !self.tools.consume(expected, project)
+            || !admissible
         {
             return Err("Approval is stale, mismatched, or lacks complete review evidence.");
         }
