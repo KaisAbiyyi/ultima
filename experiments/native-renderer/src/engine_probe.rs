@@ -2,6 +2,7 @@
 //! Transport, JSONL protocol, process-tree teardown and approval policy are
 //! owned by the production Rust crates. There are no automatic tool approvals.
 use eframe::egui;
+use crate::native_tools::{ToolEvidence, ToolLedger};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 use ultima_app_server_supervisor::{EngineConfig, EngineSupervisor, OutputEvent};
 use ultima_native_session::SessionGate;
-use ultima_protocol_bridge::{Broker, ClientMethod, Event, Limits, NotificationKind, Phase};
+use ultima_protocol_bridge::{Approval, ApprovalDecision, Broker, ClientMethod, Event, Limits, NotificationKind, Phase, RpcId};
 
 const MAX_PROMPT_BYTES: usize = 8 * 1024;
 const MAX_ASSISTANT_BYTES: usize = 256 * 1024;
@@ -59,6 +60,9 @@ pub enum ProbeEvent {
         turn_id: String,
         status: String,
     },
+    ToolSnapshot(ToolEvidence),
+    ApprovalPending(Approval),
+    ApprovalResolved(RpcId),
     Error(String),
 }
 
@@ -69,6 +73,7 @@ impl ProbeEvent {
                 text.len() + 512
             }
             Self::Error(message) => message.len() + 512,
+            Self::ToolSnapshot(item) => item.command.len() + item.output.len() + item.diff.len() + 1024,
             _ => 512,
         }
     }
@@ -183,6 +188,7 @@ impl DisplayEvents {
 enum Command {
     Submit(String),
     Cancel,
+    Decide(Approval, bool),
 }
 
 pub struct EngineProbe {
@@ -266,6 +272,26 @@ fn accepted_read_only_thread(value: &Value, project: &Path) -> Result<String, &'
         return Err("Codex thread project does not match the selected project.");
     }
     Ok(created.to_owned())
+}
+
+fn accepted_thread(value: &Value, project: &Path, coding: bool) -> Result<String, &'static str> {
+    if !coding {
+        return accepted_read_only_thread(value, project);
+    }
+    if value.get("approvalPolicy").and_then(Value::as_str) != Some("on-request")
+        || value.pointer("/sandbox/type").and_then(Value::as_str) != Some("workspaceWrite")
+        || value.pointer("/sandbox/networkAccess").and_then(Value::as_bool) != Some(false) {
+        return Err("Codex did not confirm restricted, on-request coding permissions.");
+    }
+    let expected = project.canonicalize().map_err(|_| "Native project is unavailable.")?;
+    let actual = value.get("cwd").and_then(Value::as_str)
+        .and_then(|p| Path::new(p).canonicalize().ok())
+        .ok_or("Codex did not confirm the project directory.")?;
+    if expected != actual || value.pointer("/thread/cwd").and_then(Value::as_str)
+        .and_then(|p| Path::new(p).canonicalize().ok()).as_ref() != Some(&expected) {
+        return Err("Codex switched to an unexpected project directory.");
+    }
+    Ok(thread_id(value).ok_or("Invalid thread identity.")?.to_owned())
 }
 
 fn failed_turn_message(turn: &Value) -> &'static str {
@@ -366,6 +392,8 @@ struct TurnLifecycle {
     // turn/started. Never expose it until a separate official start identity
     // confirms the exact same turn; this holds only one <=256-byte ID.
     unverified_completion: Option<UnverifiedCompletion>,
+    coding_enabled: bool,
+    tools: ToolLedger,
 }
 
 impl TurnLifecycle {
@@ -382,25 +410,27 @@ impl TurnLifecycle {
             return Err("Prompt is empty or exceeds the 8 KiB limit.");
         }
         // Only advance the UI state after the Broker has queued a valid RPC.
+        let policy = if self.coding_enabled { "on-request" } else { "never" };
+        let sandbox = if self.coding_enabled { json!({"type":"workspaceWrite","networkAccess":false}) } else { json!({"type":"readOnly","networkAccess":false}) };
         let (thread_request, turn_request, pending_prompt) =
             if let Some(thread) = self.thread.as_deref() {
                 let id = broker
                     .call(
                         ClientMethod::TurnStart,
                         json!({"threadId":thread,"input":[{"type":"text","text":prompt}],
-                            "approvalPolicy":"never",
-                            "sandboxPolicy":{"type":"readOnly","networkAccess":false}}),
+                            "approvalPolicy":policy,
+                            "sandboxPolicy":sandbox}),
                     )
                     .map_err(|_| "Codex turn submission was rejected.")?;
                 (None, Some(id), None)
             } else {
                 let cwd = project.to_str().ok_or("Project path is not valid UTF-8.")?;
-                // Explicit read-only sandbox and never-approve policy. The Broker
-                // will separately decline every actual tool approval request.
+                // Explicit opt-in workspace-write + per-request approvals, or the
+                // original read-only never-approve behavior. No default elevation.
                 let id = broker
                     .call(
                         ClientMethod::ThreadStart,
-                        json!({"cwd":cwd,"sandbox":"read-only","approvalPolicy":"never"}),
+                        json!({"cwd":cwd,"sandbox":if self.coding_enabled {"workspace-write"} else {"read-only"},"approvalPolicy":policy}),
                     )
                     .map_err(|_| "Codex thread creation was rejected.")?;
                 (Some(id), None, Some(prompt))
@@ -420,6 +450,7 @@ impl TurnLifecycle {
         self.rpc_started = Some(Instant::now());
         self.cancel_started = None;
         self.unverified_completion = None;
+        self.tools.clear();
         Ok(())
     }
 
@@ -439,8 +470,8 @@ impl TurnLifecycle {
                     json!({
                         "threadId": thread_id,
                         "input": [{ "type": "text", "text": prompt }],
-                        "approvalPolicy": "never",
-                        "sandboxPolicy": {"type":"readOnly","networkAccess":false},
+                        "approvalPolicy": if self.coding_enabled { "on-request" } else { "never" },
+                        "sandboxPolicy": if self.coding_enabled { json!({"type":"workspaceWrite","networkAccess":false}) } else { json!({"type":"readOnly","networkAccess":false}) },
                     }),
                 )
                 .map_err(|_| "Codex turn submission was rejected.")?,
@@ -462,6 +493,7 @@ impl TurnLifecycle {
             self.cancel_started = Some(Instant::now());
         }
         self.cancel_requested = true;
+        self.tools.clear_pending();
         self.interrupt_if_known(broker)
     }
 
@@ -546,6 +578,7 @@ impl TurnLifecycle {
         self.cancel_started = None;
         self.assistant_item = None;
         self.unverified_completion = None;
+        self.tools.clear_pending();
         event
     }
 
@@ -565,6 +598,20 @@ impl TurnLifecycle {
         None
     }
 
+    fn decide(&mut self, broker: &mut Broker, expected: &Approval, accept: bool) -> Result<Option<ProbeEvent>, &'static str> {
+        let project = self.project.as_deref().ok_or("Codex project context unavailable.")?;
+        if !self.busy || !self.coding_enabled || self.cancel_requested ||
+            self.thread.as_deref() != Some(&expected.thread_id) ||
+            self.turn.as_deref() != Some(&expected.turn_id) ||
+            !self.tools.consume(expected, project) {
+            return Err("Approval is stale, mismatched, or lacks complete review evidence.");
+        }
+        broker.decide_exact_approval(expected,
+            if accept { ApprovalDecision::Accept } else { ApprovalDecision::Decline }, accept)
+            .map_err(|_| "Approval is stale or already resolved.")?;
+        Ok(Some(ProbeEvent::ApprovalResolved(expected.id.clone())))
+    }
+
     fn on_event(
         &mut self,
         broker: &mut Broker,
@@ -572,10 +619,17 @@ impl TurnLifecycle {
     ) -> Result<Option<ProbeEvent>, &'static str> {
         match event {
             Event::Approval(approval) => {
-                // Never accept an approval, including one with unexpected
-                // thread/turn provenance. Failed decline is fatal to the session.
-                broker
-                    .decline_approval(&approval.id)
+                let admissible = self.coding_enabled && self.busy && !self.cancel_requested
+                    && self.thread.as_deref() == Some(&approval.thread_id)
+                    && self.turn.as_deref() == Some(&approval.turn_id)
+                    && self.project.as_deref()
+                        .is_some_and(|path| self.tools.offer(approval.clone(), path));
+                if admissible {
+                    return Ok(Some(ProbeEvent::ApprovalPending(approval)));
+                }
+                // Missing/incomplete evidence, unexpected identity, overflow or
+                // read-only mode: broker must synchronously decline or stop.
+                broker.decline_approval(&approval.id)
                     .map_err(|_| "Could not safely decline a tool request.")?;
                 Ok(None)
             }
@@ -601,7 +655,7 @@ impl TurnLifecycle {
                             .project
                             .as_deref()
                             .ok_or("Codex project provenance was lost.")?;
-                        let created = accepted_read_only_thread(&value, project)?;
+                        let created = accepted_thread(&value, project, self.coding_enabled)?;
                         self.thread = Some(created.clone());
                         if self.cancel_requested {
                             self.pending_prompt = None;
@@ -702,6 +756,14 @@ impl TurnLifecycle {
                             text: final_text.to_owned(),
                         }))
                     }
+                    NotificationKind::ServerRequestResolved => {
+                        Ok(self.tools.resolved(&params).map(ProbeEvent::ApprovalResolved))
+                    }
+                    NotificationKind::ItemStarted | NotificationKind::ItemCompleted |
+                    NotificationKind::CommandOutputDelta if self.exact_turn(&params) => {
+                        let project = self.project.as_deref().ok_or("Codex project context unavailable.")?;
+                        Ok(self.tools.capture(kind, &params, project).map(ProbeEvent::ToolSnapshot))
+                    }
                     NotificationKind::TurnCompleted
                         if self.busy
                             && self.thread.as_deref() == safe_id(params.get("threadId")) =>
@@ -711,6 +773,10 @@ impl TurnLifecycle {
                         }
                         let completion = UnverifiedCompletion::from_notification(&params)?;
                         if self.turn.is_some() {
+                            if let (Some(thread), Some(turn)) = (&self.thread, &self.turn) {
+                                broker.decline_approvals_for_turn(thread, turn)
+                                    .map_err(|_| "Could not safely settle outstanding approvals.")?;
+                            }
                             return Ok(Some(self.finish_turn(completion)));
                         }
                         if self.turn_request.is_none() {
@@ -760,6 +826,7 @@ async fn drive(
     events: Arc<Mutex<DisplayEvents>>,
     status: Arc<AtomicU8>,
     ctx: egui::Context,
+    coding_enabled: bool,
 ) {
     let (executable, project) = paths;
     let prepared = (|| {
@@ -802,7 +869,7 @@ async fn drive(
         return;
     }
     let mut shutdown = shutdown;
-    let mut lifecycle = TurnLifecycle::default();
+    let mut lifecycle = TurnLifecycle { coding_enabled, ..Default::default() };
     let mut watchdog = tokio::time::interval(Duration::from_secs(1));
     let handshake_started = Instant::now();
     let result: Result<(), &'static str> = async {
@@ -836,6 +903,13 @@ async fn drive(
                     let outcome = match command {
                         Command::Submit(text) => lifecycle.submit(&mut broker, &project, text),
                         Command::Cancel => lifecycle.cancel(&mut broker),
+                        Command::Decide(request, accept) => {
+                            match lifecycle.decide(&mut broker, &request, accept) {
+                                Ok(Some(event)) => { enqueue(&events, &ctx, event)?; Ok(()) },
+                                Ok(None) => Ok(()),
+                                Err(reason) => return Err(reason), // no ambiguous pending grant
+                            }
+                        },
                     };
                     if let Err(message) = outcome {
                         if lifecycle.cancel_requested {
@@ -907,7 +981,7 @@ async fn drive(
 }
 
 impl EngineProbe {
-    pub fn start(executable: PathBuf, project: PathBuf, ctx: egui::Context) -> Self {
+    pub fn start(executable: PathBuf, project: PathBuf, ctx: egui::Context, coding_enabled: bool) -> Self {
         let (shutdown, receiver) = oneshot::channel();
         let (commands, inbox) = mpsc::channel(MAX_COMMANDS);
         let status = Arc::new(AtomicU8::new(ProbeStatus::Connecting as u8));
@@ -930,6 +1004,7 @@ impl EngineProbe {
                     thread_events,
                     thread_status,
                     ctx,
+                    coding_enabled,
                 )),
                 Err(_) => {
                     if let Ok(mut queue) = thread_events.lock() {
@@ -968,6 +1043,15 @@ impl EngineProbe {
         self.commands
             .try_send(Command::Submit(prompt))
             .map_err(|_| "Codex command queue is full or disconnected.")
+    }
+
+    pub fn decide(&self, request: Approval, accept: bool) -> Result<(), &'static str> {
+        if self.status() != ProbeStatus::Ready { return Err("Codex handshake is not ready."); }
+        if self.commands.try_send(Command::Decide(request, accept)).is_err() {
+            self.emergency_stop.store(true, Ordering::Release);
+            return Err("Approval queue unavailable; stopping the owned process.");
+        }
+        Ok(())
     }
 
     pub fn cancel(&self) -> Result<(), &'static str> {
