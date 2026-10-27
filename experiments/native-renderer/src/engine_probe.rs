@@ -760,6 +760,166 @@ impl TurnLifecycle {
     }
 }
 
+// Single in-flight authoritative history request. No local session database,
+// replay queue, or automatic post-crash turn resubmission exists.
+#[derive(Clone, Debug)]
+enum HistoryRequest {
+    List { append: bool },
+    Read { thread: String },
+    Resume { thread: String },
+    Turns { thread: String, prepend: bool },
+}
+
+#[derive(Default)]
+struct HistoryFlow {
+    pending: Option<(u64, HistoryRequest)>,
+    known: Vec<ThreadEntry>,
+    selected: Option<String>,
+    next_threads: Option<String>,
+    next_turns: Option<String>,
+}
+
+impl HistoryFlow {
+    fn request(
+        &mut self,
+        broker: &mut Broker,
+        method: ClientMethod,
+        params: Value,
+        operation: HistoryRequest,
+    ) -> Result<(), &'static str> {
+        if self.pending.is_some() {
+            return Err("Codex history request already in progress.");
+        }
+        let id = broker.call(method, params)
+            .map_err(|_| "Codex history request failed validation.")?;
+        self.pending = Some((id, operation));
+        Ok(())
+    }
+
+    fn list(&mut self, broker: &mut Broker, project: &Path, append: bool) -> Result<(), &'static str> {
+        if !append {
+            self.known.clear();
+            self.next_threads = None;
+        }
+        if append && (self.known.len() >= session_history::MAX_THREADS || self.next_threads.is_none()) {
+            return Ok(());
+        }
+        let cwd = project.to_str().ok_or("Project path is not valid UTF-8.")?;
+        let mut params = json!({"cwd":cwd,"limit":session_history::THREAD_PAGE_SIZE,
+            "sourceKinds":["cli","vscode","appServer"]});
+        if append {
+            params["cursor"] = Value::String(self.next_threads.clone().expect("checked"));
+        }
+        self.request(broker, ClientMethod::ThreadList, params, HistoryRequest::List { append })
+    }
+
+    fn select(&mut self, broker: &mut Broker, id: String) -> Result<(), &'static str> {
+        if !self.known.iter().any(|e| e.id == id) {
+            return Err("Selected thread was not in the trusted project listing.");
+        }
+        self.request(broker, ClientMethod::ThreadRead,
+            json!({"threadId":id,"includeTurns":false}),
+            HistoryRequest::Read { thread:id })
+    }
+
+    fn turns(&mut self, broker: &mut Broker, thread: &str, prepend: bool)
+        -> Result<(), &'static str>
+    {
+        if self.selected.as_deref() != Some(thread) {
+            return Err("Codex history thread selection changed.");
+        }
+        let mut params = json!({"threadId":thread,"limit":session_history::TURN_PAGE_SIZE,
+            "sortDirection":"desc","itemsView":"full"});
+        if prepend {
+            let Some(cursor) = self.next_turns.clone() else { return Ok(()); };
+            params["cursor"] = Value::String(cursor);
+        } else {
+            self.next_turns = None;
+        }
+        self.request(broker, ClientMethod::ThreadTurnsList, params,
+            HistoryRequest::Turns { thread:thread.to_owned(), prepend })
+    }
+
+    fn handle_reply(
+        &mut self,
+        broker: &mut Broker,
+        event: &Event,
+        lifecycle: &mut TurnLifecycle,
+        project: &Path,
+    ) -> Result<Option<Option<ProbeEvent>>, &'static str> {
+        let Event::Reply { id, outcome, .. } = event else {
+            return Ok(None);
+        };
+        let Some((pending_id, _)) = &self.pending else { return Ok(None); };
+        if id != pending_id { return Ok(None); }
+        let (_, request) = self.pending.take().expect("checked");
+        let Ok(result) = outcome else {
+            // Explicit unsupported capability, no silent fallback to unbounded
+            // thread/read(includeTurns=true), replay, or new thread execution.
+            return Ok(Some(Some(ProbeEvent::HistoryCapabilityBlocked(
+                "Official thread paging/read/resume is unsupported or rejected by this Codex App Server."
+            ))));
+        };
+        match request {
+            HistoryRequest::List { append } => {
+                let (entries, next) = session_history::parse_thread_page(result, project)?;
+                if !append { self.known.clear(); }
+                let mut new_entries = Vec::new();
+                for entry in entries {
+                    if self.known.len() == session_history::MAX_THREADS { break; }
+                    if !self.known.iter().any(|known| known.id == entry.id) {
+                        self.known.push(entry.clone());
+                        new_entries.push(entry);
+                    }
+                }
+                self.next_threads = if self.known.len() >= session_history::MAX_THREADS {
+                    None
+                } else { next };
+                Ok(Some(Some(ProbeEvent::ThreadPage { entries:new_entries, append,
+                    has_more:self.next_threads.is_some() })))
+            }
+            HistoryRequest::Read { thread } => {
+                session_history::verify_thread_identity(result, &thread, project)?;
+                let cwd = project.to_str().ok_or("Project path is not valid UTF-8.")?;
+                self.request(broker, ClientMethod::ThreadResume,
+                    json!({"threadId":thread,"cwd":cwd,"approvalPolicy":"never",
+                        "sandbox":"read-only","excludeTurns":true}),
+                    HistoryRequest::Resume { thread })?;
+                Ok(Some(None))
+            }
+            HistoryRequest::Resume { thread } => {
+                if session_history::safe_cursor(result.pointer("/thread/id"))?.is_none() {
+                    // The identity must exist; verify even when the result omits
+                    // echoed policy fields. The preceding read checked trusted cwd,
+                    // and all subsequent turns force sandbox+approval overrides.
+                    return Err("Codex resume did not confirm a thread identity.");
+                }
+                if result.pointer("/thread/id").and_then(Value::as_str) != Some(&thread) {
+                    return Err("Codex resumed a different thread identity.");
+                }
+                if result.pointer("/thread/cwd").and_then(Value::as_str).is_some() {
+                    session_history::verify_thread_identity(result, &thread, project)?;
+                }
+                lifecycle.thread = Some(thread.clone());
+                lifecycle.project = Some(project.to_path_buf());
+                self.selected = Some(thread.clone());
+                self.next_turns = None;
+                self.turns(broker, &thread, false)?;
+                Ok(Some(Some(ProbeEvent::ThreadSelected { thread_id:Some(thread) })))
+            }
+            HistoryRequest::Turns { thread, prepend } => {
+                if self.selected.as_deref() != Some(thread.as_str()) {
+                    return Ok(Some(None)); // stale after selection change
+                }
+                let (rows, next) = session_history::parse_turn_page(result)?;
+                self.next_turns = next;
+                Ok(Some(Some(ProbeEvent::HistoryPage {thread_id:thread, rows, prepend,
+                    has_more:self.next_turns.is_some()})))
+            }
+        }
+    }
+}
+
 async fn flush(broker: &mut Broker, supervisor: &mut EngineSupervisor) -> Result<(), &'static str> {
     while let Some(frame) = broker.take_outbound() {
         let payload: Value = serde_json::from_slice(&frame)
