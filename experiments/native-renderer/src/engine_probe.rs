@@ -1191,7 +1191,7 @@ impl Drop for EngineProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ultima_protocol_bridge::NotificationKind;
+    use ultima_protocol_bridge::{ApprovalKind, NotificationKind};
 
     fn ready() -> Broker {
         let mut b = Broker::new(Limits::default()).unwrap();
