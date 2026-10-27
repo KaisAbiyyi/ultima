@@ -23,6 +23,8 @@ const MAX_COMMANDS: usize = 8;
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(20);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
+const HISTORY_TIMEOUT: Duration = Duration::from_secs(30);
+const RESUMED_TURN_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -53,6 +55,7 @@ pub enum ProbeEvent {
         rows: Vec<HistoryRow>,
         prepend: bool,
         has_more: bool,
+        active_turn: Option<String>,
     },
     HistoryCapabilityBlocked(&'static str),
     TurnCancelledBeforeStart,
@@ -396,6 +399,7 @@ struct TurnLifecycle {
     // turn/started. Never expose it until a separate official start identity
     // confirms the exact same turn; this holds only one <=256-byte ID.
     unverified_completion: Option<UnverifiedCompletion>,
+    resumed_turn_started: Option<Instant>,
 }
 
 impl TurnLifecycle {
@@ -450,6 +454,7 @@ impl TurnLifecycle {
         self.rpc_started = Some(Instant::now());
         self.cancel_started = None;
         self.unverified_completion = None;
+        self.resumed_turn_started = None;
         Ok(())
     }
 
@@ -576,6 +581,7 @@ impl TurnLifecycle {
         self.cancel_started = None;
         self.assistant_item = None;
         self.unverified_completion = None;
+        self.resumed_turn_started = None;
         event
     }
 
@@ -585,6 +591,11 @@ impl TurnLifecycle {
             .is_some_and(|start| now.saturating_duration_since(start) >= CANCEL_TIMEOUT)
         {
             return Some("Codex did not acknowledge cancellation; owned process stopped.");
+        }
+        if self.resumed_turn_started.is_some_and(|start|
+            now.saturating_duration_since(start) >= RESUMED_TURN_TIMEOUT)
+        {
+            return Some("Codex resumed active turn without a terminal; owned process stopped.");
         }
         if self
             .rpc_started
@@ -780,7 +791,7 @@ enum HistoryRequest {
 
 #[derive(Default)]
 struct HistoryFlow {
-    pending: Option<(u64, HistoryRequest)>,
+    pending: Option<(u64, HistoryRequest, Instant)>,
     known: Vec<ThreadEntry>,
     selected: Option<String>,
     next_threads: Option<String>,
@@ -788,6 +799,13 @@ struct HistoryFlow {
 }
 
 impl HistoryFlow {
+    fn timeout_error(&self, now: Instant) -> Option<&'static str> {
+        self.pending.as_ref().and_then(|(_, _, start)| {
+            (now.saturating_duration_since(*start) >= HISTORY_TIMEOUT)
+                .then_some("Codex history RPC timed out; owned process stopped.")
+        })
+    }
+
     fn request(
         &mut self,
         broker: &mut Broker,
@@ -801,7 +819,7 @@ impl HistoryFlow {
         let id = broker
             .call(method, params)
             .map_err(|_| "Codex history request failed validation.")?;
-        self.pending = Some((id, operation));
+        self.pending = Some((id, operation, Instant::now()));
         Ok(())
     }
 
@@ -886,13 +904,13 @@ impl HistoryFlow {
         let Event::Reply { id, outcome, .. } = event else {
             return Ok(None);
         };
-        let Some((pending_id, _)) = &self.pending else {
+        let Some((pending_id, _, _)) = &self.pending else {
             return Ok(None);
         };
         if id != pending_id {
             return Ok(None);
         }
-        let (_, request) = self.pending.take().expect("checked");
+        let (_, request, _) = self.pending.take().expect("checked");
         let Ok(result) = outcome else {
             // Explicit unsupported capability, no silent fallback to unbounded
             // thread/read(includeTurns=true), replay, or new thread execution.
@@ -959,13 +977,27 @@ impl HistoryFlow {
                 if self.selected.as_deref() != Some(thread.as_str()) {
                     return Ok(Some(None)); // stale after selection change
                 }
+                let active_turn = if prepend {
+                    None
+                } else {
+                    session_history::active_turn_in_page(result)?
+                };
                 let (rows, next) = session_history::parse_turn_page(result)?;
+                if let Some(id) = &active_turn {
+                    if lifecycle.busy || lifecycle.turn_request.is_some() {
+                        return Err("Codex resume returned conflicting active-turn state.");
+                    }
+                    lifecycle.turn = Some(id.clone());
+                    lifecycle.busy = true;
+                    lifecycle.resumed_turn_started = Some(Instant::now());
+                }
                 self.next_turns = next;
                 Ok(Some(Some(ProbeEvent::HistoryPage {
                     thread_id: thread,
                     rows,
                     prepend,
                     has_more: self.next_turns.is_some(),
+                    active_turn,
                 })))
             }
         }
@@ -1056,6 +1088,9 @@ async fn drive(
                         return Err("Codex initial handshake timed out.");
                     }
                     if let Some(reason) = lifecycle.timeout_error(Instant::now()) {
+                        return Err(reason);
+                    }
+                    if let Some(reason) = history.timeout_error(Instant::now()) {
                         return Err(reason);
                     }
                 }
@@ -1343,6 +1378,22 @@ mod tests {
         json!({"thread":{"id":"thread-a","cwd":cwd},"cwd":cwd,
             "sandbox":{"type":"readOnly","networkAccess":false},
             "approvalPolicy":"never"})
+    }
+
+    #[test]
+    fn lost_history_reply_expires_without_retry_or_turn_execution() {
+        let mut broker = ready();
+        let mut history = HistoryFlow::default();
+        history.request(&mut broker, ClientMethod::ThreadList,
+            json!({"limit":session_history::THREAD_PAGE_SIZE}),
+            HistoryRequest::List { append: false }).unwrap();
+        assert_eq!(history.timeout_error(Instant::now()), None);
+        history.pending.as_mut().unwrap().2 = Instant::now() - HISTORY_TIMEOUT - Duration::from_secs(1);
+        assert_eq!(history.timeout_error(Instant::now()),
+            Some("Codex history RPC timed out; owned process stopped."));
+        let rpc: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(rpc["method"], "thread/list");
+        assert!(broker.take_outbound().is_none());
     }
 
     #[test]

@@ -130,6 +130,30 @@ fn user_item_text(item: &Value) -> Option<String> {
     }
 }
 
+/// Resume adopts server-owned active work. It never replays a queued prompt.
+pub fn active_turn_in_page(value: &Value) -> Result<Option<String>, &'static str> {
+    let turns = value.get("data").and_then(Value::as_array)
+        .ok_or("Codex active-turn history was malformed.")?;
+    if turns.len() > TURN_PAGE_SIZE as usize {
+        return Err("Codex active-turn page exceeded its bound.");
+    }
+    let mut active = None;
+    for turn in turns {
+        let status = turn.get("status").and_then(Value::as_str)
+            .ok_or("Codex turn status was missing.");
+        let status = status?;
+        if matches!(status, "inProgress" | "in_progress" | "running") {
+            let id = bounded_id(turn.get("id"))
+                .ok_or("Codex active-turn identity was invalid.")?;
+            if active.is_some() {
+                return Err("Codex reported multiple active turns.");
+            }
+            active = Some(id.to_owned());
+        }
+    }
+    Ok(active)
+}
+
 pub fn parse_turn_page(value: &Value) -> Result<(Vec<HistoryRow>, Option<String>), &'static str> {
     let data = value
         .get("data")
@@ -251,6 +275,18 @@ mod tests {
     fn missing_full_items_and_unsafe_cursor_are_explicit_failures() {
         assert!(parse_turn_page(&json!({"data":[{"id":"x"}]})).is_err());
         assert!(parse_turn_page(&json!({"data":[],"nextCursor":"x".repeat(2049)})).is_err());
+    }
+
+    #[test]
+    fn active_turn_state_is_single_and_authoritative() {
+        assert_eq!(active_turn_in_page(&json!({"data":[{"id":"t","status":"inProgress"}]})),
+            Ok(Some("t".into())));
+        assert_eq!(active_turn_in_page(&json!({"data":[{"id":"t","status":"completed"}]})),
+            Ok(None));
+        assert!(active_turn_in_page(&json!({"data":[
+            {"id":"a","status":"inProgress"},{"id":"b","status":"inProgress"}
+        ]})).is_err());
+        assert!(active_turn_in_page(&json!({"data":[{"id":"a"}]})).is_err());
     }
 
     #[test]
