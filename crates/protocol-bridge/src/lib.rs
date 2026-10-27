@@ -124,6 +124,9 @@ pub enum ClientMethod {
     Initialize,
     ModelList,
     ThreadStart,
+    ThreadList,
+    ThreadRead,
+    ThreadTurnsList,
     ThreadResume,
     TurnStart,
     TurnInterrupt,
@@ -134,6 +137,9 @@ impl ClientMethod {
             Self::Initialize => "initialize",
             Self::ModelList => "model/list",
             Self::ThreadStart => "thread/start",
+            Self::ThreadList => "thread/list",
+            Self::ThreadRead => "thread/read",
+            Self::ThreadTurnsList => "thread/turns/list",
             Self::ThreadResume => "thread/resume",
             Self::TurnStart => "turn/start",
             Self::TurnInterrupt => "turn/interrupt",
@@ -164,6 +170,21 @@ impl ClientMethod {
                         .is_none_or(|v| v.as_str().is_some_and(|s| !s.is_empty()))
                     && !(p.get("sandbox").is_some_and(|v| !v.is_null())
                         && p.get("permissions").is_some_and(|v| !v.is_null()))
+            }
+            Self::ThreadList => {
+                p.get("cwd").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
+                    && p.get("limit").and_then(Value::as_u64).is_some_and(|n| (1..=24).contains(&n))
+                    && p.get("cursor").is_none_or(|v| v.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 2048))
+            }
+            Self::ThreadRead => {
+                non_empty("threadId") && p.get("includeTurns") == Some(&Value::Bool(false))
+            }
+            Self::ThreadTurnsList => {
+                non_empty("threadId")
+                    && p.get("limit").and_then(Value::as_u64).is_some_and(|n| (1..=12).contains(&n))
+                    && p.get("sortDirection").and_then(Value::as_str) == Some("desc")
+                    && p.get("itemsView").and_then(Value::as_str) == Some("full")
+                    && p.get("cursor").is_none_or(|v| v.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 2048))
             }
             Self::ThreadResume => {
                 non_empty("threadId")
