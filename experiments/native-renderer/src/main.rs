@@ -580,13 +580,12 @@ impl RendererSpike {
                         item.diff.as_str()
                     }
                 });
-                if ui.button("Review exact command / diff").clicked() {
-                    if evidence
+                if ui.button("Review exact command / diff").clicked()
+                    && evidence
                         .as_ref()
                         .is_some_and(|item| item.complete && !item.truncated)
-                    {
-                        self.reviewed_approval = Some(request.id.clone());
-                    }
+                {
+                    self.reviewed_approval = Some(request.id.clone());
                 }
                 if self.reviewed_approval.as_ref() == Some(&request.id) {
                     ScrollArea::both().max_height(175.0).show(ui, |ui| {
