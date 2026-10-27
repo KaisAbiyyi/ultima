@@ -118,6 +118,9 @@ The exact-build script also embeds the Git HEAD SHA into the release executable;
 the verifier rejects receipts from any other SHA, including ordinary `cargo`
 builds stamped `UNBOUND`, so earlier sessions cannot be reused after a source
 change.
+Every process generates an opaque 128-bit session token; the verifier rejects
+duplicate tokens, so one receipt cannot count as three independent sessions.
+The token contains no user or prompt data and is not an integrity signature.
 It reports per-run sample counts, p50/p95, executable SHA256, Cargo.lock SHA256,
 source SHA and the available official Codex CLI version. Each run has exactly
 one `main`-to-paint startup sample. Normal streaming loads and real displayed

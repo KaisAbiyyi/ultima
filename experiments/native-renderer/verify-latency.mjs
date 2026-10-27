@@ -21,6 +21,7 @@ export function inspectDiagnostic(receipts, expectedSourceSha = null) {
     'processMainToFirstComposerPaintCallback'];
   const sums = Object.fromEntries(series.map(name => [name, []]));
   const reportedSource = receipts[0]?.sourceSha;
+  const sessionNonces = new Set();
   if (typeof reportedSource !== 'string' || !/^[a-f0-9]{40}$/.test(reportedSource) ||
       (expectedSourceSha && expectedSourceSha !== reportedSource)) {
     throw Error('Source SHA missing or mismatched: unbound/stale timing receipt');
@@ -29,10 +30,14 @@ export function inspectDiagnostic(receipts, expectedSourceSha = null) {
     if (receipt?.kind !== 'NC10B_GLOW_PAINT_DIAGNOSTIC' ||
         receipt.version !== 1 || receipt.presentationVerified !== false ||
         receipt.sourceSha !== reportedSource ||
+        typeof receipt.sessionNonce !== 'string' ||
+        !/^[a-f0-9]{32}$/.test(receipt.sessionNonce) ||
+        sessionNonces.has(receipt.sessionNonce) ||
         !receipt.stage?.includes('before buffer swap') ||
         receipt.acceptance !== 'NOT_RUN: independent Windows screen-presentation receipt required') {
-      throw Error('Native timing receipt type/explicit non-acceptance is invalid');
+      throw Error('Native receipt invalid, duplicated, or not explicitly non-accepted');
     }
+    sessionNonces.add(receipt.sessionNonce);
     for (const name of series) {
       const sample = receipt[name];
       const minSamples = name === 'processMainToFirstComposerPaintCallback' ? 1 : 30;

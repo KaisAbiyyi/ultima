@@ -2,7 +2,9 @@
 //! This callback precedes buffer swap/compositor scanout. Independent Windows
 //! pixel/UIA evidence is still required for displayed-frame acceptance.
 use serde_json::{json, Value};
+use std::collections::hash_map::RandomState;
 use std::collections::VecDeque;
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -63,7 +65,21 @@ struct Samples {
 pub struct LatencyRecorder {
     samples: Arc<Mutex<Samples>>,
     started_at: Instant,
+    session_nonce: String,
     receipt: Option<PathBuf>,
+}
+
+// A fresh, opaque per-process token prevents accidentally counting a copied
+// receipt twice as two independent repetitions. It contains no prompt, path,
+// user, or process identifier, and it is not a cryptographic attestation.
+fn session_nonce() -> String {
+    let nonce_part = || {
+        let mut hasher = RandomState::new().build_hasher();
+        Instant::now().hash(&mut hasher);
+        std::process::id().hash(&mut hasher);
+        hasher.finish()
+    };
+    format!("{:016x}{:016x}", nonce_part(), nonce_part())
 }
 
 impl LatencyRecorder {
@@ -71,6 +87,7 @@ impl LatencyRecorder {
         Self {
             samples: Arc::new(Mutex::new(Samples::default())),
             started_at,
+            session_nonce: session_nonce(),
             receipt,
         }
     }
@@ -103,6 +120,7 @@ impl LatencyRecorder {
         json!({
             "kind": "NC10B_GLOW_PAINT_DIAGNOSTIC",
             "version": 1,
+            "sessionNonce": self.session_nonce,
             // Embedded at compile time by the SHA-bound exact-build helper.
             // Ordinary cargo builds remain UNBOUND and cannot qualify.
             "sourceSha": option_env!("NC10B_BUILD_SOURCE_SHA").unwrap_or("UNBOUND"),
@@ -193,5 +211,16 @@ mod tests {
             recorder.report()["rawKeyDuringActiveTurnToPaintCallback"]["samples"],
             1
         );
+    }
+
+    #[test]
+    fn independent_recorder_instances_have_distinct_opaque_session_nonces() {
+        let first = LatencyRecorder::new(Instant::now(), None);
+        let second = LatencyRecorder::new(Instant::now(), None);
+        let a = first.report()["sessionNonce"].as_str().unwrap().to_owned();
+        let b = second.report()["sessionNonce"].as_str().unwrap().to_owned();
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
     }
 }

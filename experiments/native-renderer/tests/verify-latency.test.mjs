@@ -4,10 +4,12 @@ import { inspectDiagnostic } from '../verify-latency.mjs';
 
 const measure = (n = 80, p95Ms = 20) =>
   ({ samples: n, overflow: 0, p50Ms: 10, p95Ms, maxMs: p95Ms });
+let sequence = 0;
 const receipt = () => ({
   kind: 'NC10B_GLOW_PAINT_DIAGNOSTIC',
   version: 1,
   sourceSha: 'a'.repeat(40),
+  sessionNonce: (++sequence).toString(16).padStart(32, '0'),
   stage: 'OpenGL callback before buffer swap; not compositor presentation',
   presentationVerified: false,
   acceptance: 'NOT_RUN: independent Windows screen-presentation receipt required',
@@ -30,6 +32,7 @@ test('fails closed on missing, truncated, deceptive or nonnumeric receipts', () 
   for (const mutate of [
     x => { x.presentationVerified = true; },
     x => { x.sourceSha = 'b'.repeat(40); },
+    x => { x.sessionNonce = 'invalid'; },
     x => { x.acceptance = 'PASS'; },
     x => { x.streamReceivedToPaintCallback.samples = 0; },
     x => { x.streamReceivedToPaintCallback.samples = 1; },
@@ -44,6 +47,13 @@ test('fails closed on missing, truncated, deceptive or nonnumeric receipts', () 
   }
   assert.throws(() => inspectDiagnostic([receipt(), receipt(), receipt()], 'b'.repeat(40)),
     /Source SHA missing or mismatched/);
+});
+
+test('rejects duplicated receipts even if passed through three different filenames', () => {
+  const original = receipt();
+  assert.throws(() => inspectDiagnostic([original, original, original]), /duplicated/);
+  const copied = structuredClone(original);
+  assert.throws(() => inspectDiagnostic([original, receipt(), copied]), /duplicated/);
 });
 
 test('diagnostic budget exceedance is reported as failed, not coerced to PASS', () => {
