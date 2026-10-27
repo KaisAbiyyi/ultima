@@ -85,8 +85,16 @@ impl ProbeEvent {
                 text.len() + 512
             }
             Self::Error(message) => message.len() + 512,
-            Self::ThreadPage { entries, .. } => entries.iter().map(|e| e.label.len() + e.id.len() + 128).sum::<usize>() + 512,
-            Self::HistoryPage { rows, .. } => rows.iter().map(|r| r.preview.len() + 128).sum::<usize>() + 512,
+            Self::ThreadPage { entries, .. } => {
+                entries
+                    .iter()
+                    .map(|e| e.label.len() + e.id.len() + 128)
+                    .sum::<usize>()
+                    + 512
+            }
+            Self::HistoryPage { rows, .. } => {
+                rows.iter().map(|r| r.preview.len() + 128).sum::<usize>() + 512
+            }
             _ => 512,
         }
     }
@@ -790,18 +798,26 @@ impl HistoryFlow {
         if self.pending.is_some() {
             return Err("Codex history request already in progress.");
         }
-        let id = broker.call(method, params)
+        let id = broker
+            .call(method, params)
             .map_err(|_| "Codex history request failed validation.")?;
         self.pending = Some((id, operation));
         Ok(())
     }
 
-    fn list(&mut self, broker: &mut Broker, project: &Path, append: bool) -> Result<(), &'static str> {
+    fn list(
+        &mut self,
+        broker: &mut Broker,
+        project: &Path,
+        append: bool,
+    ) -> Result<(), &'static str> {
         if !append {
             self.known.clear();
             self.next_threads = None;
         }
-        if append && (self.known.len() >= session_history::MAX_THREADS || self.next_threads.is_none()) {
+        if append
+            && (self.known.len() >= session_history::MAX_THREADS || self.next_threads.is_none())
+        {
             return Ok(());
         }
         let cwd = project.to_str().ok_or("Project path is not valid UTF-8.")?;
@@ -810,34 +826,54 @@ impl HistoryFlow {
         if append {
             params["cursor"] = Value::String(self.next_threads.clone().expect("checked"));
         }
-        self.request(broker, ClientMethod::ThreadList, params, HistoryRequest::List { append })
+        self.request(
+            broker,
+            ClientMethod::ThreadList,
+            params,
+            HistoryRequest::List { append },
+        )
     }
 
     fn select(&mut self, broker: &mut Broker, id: String) -> Result<(), &'static str> {
         if !self.known.iter().any(|e| e.id == id) {
             return Err("Selected thread was not in the trusted project listing.");
         }
-        self.request(broker, ClientMethod::ThreadRead,
+        self.request(
+            broker,
+            ClientMethod::ThreadRead,
             json!({"threadId":id,"includeTurns":false}),
-            HistoryRequest::Read { thread:id })
+            HistoryRequest::Read { thread: id },
+        )
     }
 
-    fn turns(&mut self, broker: &mut Broker, thread: &str, prepend: bool)
-        -> Result<(), &'static str>
-    {
+    fn turns(
+        &mut self,
+        broker: &mut Broker,
+        thread: &str,
+        prepend: bool,
+    ) -> Result<(), &'static str> {
         if self.selected.as_deref() != Some(thread) {
             return Err("Codex history thread selection changed.");
         }
         let mut params = json!({"threadId":thread,"limit":session_history::TURN_PAGE_SIZE,
             "sortDirection":"desc","itemsView":"full"});
         if prepend {
-            let Some(cursor) = self.next_turns.clone() else { return Ok(()); };
+            let Some(cursor) = self.next_turns.clone() else {
+                return Ok(());
+            };
             params["cursor"] = Value::String(cursor);
         } else {
             self.next_turns = None;
         }
-        self.request(broker, ClientMethod::ThreadTurnsList, params,
-            HistoryRequest::Turns { thread:thread.to_owned(), prepend })
+        self.request(
+            broker,
+            ClientMethod::ThreadTurnsList,
+            params,
+            HistoryRequest::Turns {
+                thread: thread.to_owned(),
+                prepend,
+            },
+        )
     }
 
     fn handle_reply(
@@ -850,8 +886,12 @@ impl HistoryFlow {
         let Event::Reply { id, outcome, .. } = event else {
             return Ok(None);
         };
-        let Some((pending_id, _)) = &self.pending else { return Ok(None); };
-        if id != pending_id { return Ok(None); }
+        let Some((pending_id, _)) = &self.pending else {
+            return Ok(None);
+        };
+        if id != pending_id {
+            return Ok(None);
+        }
         let (_, request) = self.pending.take().expect("checked");
         let Ok(result) = outcome else {
             // Explicit unsupported capability, no silent fallback to unbounded
@@ -863,10 +903,14 @@ impl HistoryFlow {
         match request {
             HistoryRequest::List { append } => {
                 let (entries, next) = session_history::parse_thread_page(result, project)?;
-                if !append { self.known.clear(); }
+                if !append {
+                    self.known.clear();
+                }
                 let mut new_entries = Vec::new();
                 for entry in entries {
-                    if self.known.len() == session_history::MAX_THREADS { break; }
+                    if self.known.len() == session_history::MAX_THREADS {
+                        break;
+                    }
                     if !self.known.iter().any(|known| known.id == entry.id) {
                         self.known.push(entry.clone());
                         new_entries.push(entry);
@@ -874,17 +918,25 @@ impl HistoryFlow {
                 }
                 self.next_threads = if self.known.len() >= session_history::MAX_THREADS {
                     None
-                } else { next };
-                Ok(Some(Some(ProbeEvent::ThreadPage { entries:new_entries, append,
-                    has_more:self.next_threads.is_some() })))
+                } else {
+                    next
+                };
+                Ok(Some(Some(ProbeEvent::ThreadPage {
+                    entries: new_entries,
+                    append,
+                    has_more: self.next_threads.is_some(),
+                })))
             }
             HistoryRequest::Read { thread } => {
                 session_history::verify_thread_identity(result, &thread, project)?;
                 let cwd = project.to_str().ok_or("Project path is not valid UTF-8.")?;
-                self.request(broker, ClientMethod::ThreadResume,
+                self.request(
+                    broker,
+                    ClientMethod::ThreadResume,
                     json!({"threadId":thread,"cwd":cwd,"approvalPolicy":"never",
                         "sandbox":"read-only","excludeTurns":true}),
-                    HistoryRequest::Resume { thread })?;
+                    HistoryRequest::Resume { thread },
+                )?;
                 Ok(Some(None))
             }
             HistoryRequest::Resume { thread } => {
@@ -897,7 +949,11 @@ impl HistoryFlow {
                 if result.pointer("/thread/id").and_then(Value::as_str) != Some(thread.as_str()) {
                     return Err("Codex resumed a different thread identity.");
                 }
-                if result.pointer("/thread/cwd").and_then(Value::as_str).is_some() {
+                if result
+                    .pointer("/thread/cwd")
+                    .and_then(Value::as_str)
+                    .is_some()
+                {
                     session_history::verify_thread_identity(result, &thread, project)?;
                 }
                 lifecycle.thread = Some(thread.clone());
@@ -905,7 +961,9 @@ impl HistoryFlow {
                 self.selected = Some(thread.clone());
                 self.next_turns = None;
                 self.turns(broker, &thread, false)?;
-                Ok(Some(Some(ProbeEvent::ThreadSelected { thread_id:Some(thread) })))
+                Ok(Some(Some(ProbeEvent::ThreadSelected {
+                    thread_id: Some(thread),
+                })))
             }
             HistoryRequest::Turns { thread, prepend } => {
                 if self.selected.as_deref() != Some(thread.as_str()) {
@@ -913,8 +971,12 @@ impl HistoryFlow {
                 }
                 let (rows, next) = session_history::parse_turn_page(result)?;
                 self.next_turns = next;
-                Ok(Some(Some(ProbeEvent::HistoryPage {thread_id:thread, rows, prepend,
-                    has_more:self.next_turns.is_some()})))
+                Ok(Some(Some(ProbeEvent::HistoryPage {
+                    thread_id: thread,
+                    rows,
+                    prepend,
+                    has_more: self.next_turns.is_some(),
+                })))
             }
         }
     }
@@ -1221,7 +1283,8 @@ impl EngineProbe {
         if self.status() != ProbeStatus::Ready {
             return Err("Codex handshake is not ready.");
         }
-        self.commands.try_send(command)
+        self.commands
+            .try_send(command)
             .map_err(|_| "Codex history command queue is unavailable.")
     }
 
@@ -2045,13 +2108,17 @@ mod tests {
         assert_eq!(request["method"], "thread/list");
         assert_eq!(request["params"]["cwd"], cwd);
         assert_eq!(request["params"]["limit"], 24);
-        let event = reply(&mut broker, request["id"].as_u64().unwrap(), json!({
-            "data":[
-                {"id":"a","cwd":cwd,"preview":"First","ephemeral":false},
-                {"id":"b","cwd":cwd,"preview":"Second","ephemeral":false}
-            ],
-            "nextCursor":null
-        }));
+        let event = reply(
+            &mut broker,
+            request["id"].as_u64().unwrap(),
+            json!({
+                "data":[
+                    {"id":"a","cwd":cwd,"preview":"First","ephemeral":false},
+                    {"id":"b","cwd":cwd,"preview":"Second","ephemeral":false}
+                ],
+                "nextCursor":null
+            }),
+        );
         assert!(matches!(
             flow.handle_reply(&mut broker, &event, &mut lifecycle, &project).unwrap(),
             Some(Some(ProbeEvent::ThreadPage {entries, ..})) if entries.len() == 2
@@ -2063,8 +2130,11 @@ mod tests {
         let read: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
         assert_eq!(read["method"], "thread/read");
         assert_eq!(read["params"]["includeTurns"], false);
-        let event = reply(&mut broker, read["id"].as_u64().unwrap(),
-            json!({"thread":{"id":"a","cwd":cwd}}));
+        let event = reply(
+            &mut broker,
+            read["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"a","cwd":cwd}}),
+        );
         assert!(matches!(
             flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
             Ok(Some(None))
@@ -2074,24 +2144,33 @@ mod tests {
         assert_eq!(resume["params"]["excludeTurns"], true);
         assert_eq!(resume["params"]["sandbox"], "read-only");
         assert_eq!(resume["params"]["approvalPolicy"], "never");
-        let event = reply(&mut broker, resume["id"].as_u64().unwrap(),
-            json!({"thread":{"id":"a","cwd":cwd}}));
+        let event = reply(
+            &mut broker,
+            resume["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"a","cwd":cwd}}),
+        );
         assert!(matches!(
             flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
-            Ok(Some(Some(ProbeEvent::ThreadSelected {thread_id:Some(_)})))
+            Ok(Some(Some(ProbeEvent::ThreadSelected {
+                thread_id: Some(_)
+            })))
         ));
         assert_eq!(lifecycle.thread.as_deref(), Some("a"));
         let turns: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
         assert_eq!(turns["method"], "thread/turns/list");
         assert_eq!(turns["params"]["itemsView"], "full");
-        let event = reply(&mut broker, turns["id"].as_u64().unwrap(), json!({"data":[
+        let event = reply(
+            &mut broker,
+            turns["id"].as_u64().unwrap(),
+            json!({"data":[
             {"id":"t1","status":"interrupted","items":[
                 {"type":"userMessage","content":[{"type":"text","text":"original prompt"}]}
             ]}
-        ],"nextCursor":"older"}));
+        ],"nextCursor":"older"}),
+        );
         assert!(matches!(
             flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
-            Ok(Some(Some(ProbeEvent::HistoryPage {has_more:true, ..})))
+            Ok(Some(Some(ProbeEvent::HistoryPage { has_more: true, .. })))
         ));
         assert_eq!(broker.pending_count(), 0);
         assert!(broker.take_outbound().is_none()); // no replay of interrupted turn
@@ -2099,29 +2178,43 @@ mod tests {
         flow.turns(&mut broker, "a", true).unwrap();
         let older: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
         assert_eq!(older["params"]["cursor"], "older");
-        let event = reply(&mut broker, older["id"].as_u64().unwrap(),
-            json!({"data":[],"nextCursor":null}));
-        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project).unwrap();
+        let event = reply(
+            &mut broker,
+            older["id"].as_u64().unwrap(),
+            json!({"data":[],"nextCursor":null}),
+        );
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .unwrap();
 
         // Switch: only known IDs from the verified current-project listing.
         assert!(flow.select(&mut broker, "foreign".into()).is_err());
         flow.select(&mut broker, "b".into()).unwrap();
         let next: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
         assert_eq!(next["method"], "thread/read");
-        let event = reply(&mut broker, next["id"].as_u64().unwrap(),
-            json!({"thread":{"id":"b","cwd":cwd}}));
-        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project).unwrap();
+        let event = reply(
+            &mut broker,
+            next["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"b","cwd":cwd}}),
+        );
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .unwrap();
         let resumed: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
-        let event = reply(&mut broker, resumed["id"].as_u64().unwrap(),
-            json!({"thread":{"id":"b","cwd":cwd}}));
-        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project).unwrap();
+        let event = reply(
+            &mut broker,
+            resumed["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"b","cwd":cwd}}),
+        );
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .unwrap();
         assert_eq!(lifecycle.thread.as_deref(), Some("b"));
 
         // Restart/new process creates a fresh broker+flow, rehydrating from
         // official thread/list; it does not persist or execute another prompt.
         let mut after_restart = HistoryFlow::default();
         let mut fresh_broker = ready();
-        after_restart.list(&mut fresh_broker, &project, false).unwrap();
+        after_restart
+            .list(&mut fresh_broker, &project, false)
+            .unwrap();
         let list: Value = serde_json::from_slice(&fresh_broker.take_outbound().unwrap()).unwrap();
         assert_eq!(list["method"], "thread/list");
     }
@@ -2134,8 +2227,13 @@ mod tests {
         let mut lifecycle = TurnLifecycle::default();
         flow.list(&mut broker, &project, false).unwrap();
         let request: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
-        broker.ingest_line(json!({"id":request["id"],"error":{"code":-32601,"message":"Method not found"}})
-            .to_string().as_bytes()).unwrap();
+        broker
+            .ingest_line(
+                json!({"id":request["id"],"error":{"code":-32601,"message":"Method not found"}})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
         let event = broker.take_event().unwrap();
         assert!(matches!(
             flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
@@ -2144,5 +2242,4 @@ mod tests {
         assert!(flow.known.is_empty());
         assert!(broker.take_outbound().is_none());
     }
-
 }
