@@ -15,7 +15,6 @@ use engine_probe::{EngineProbe, ProbeEvent, ProbeStatus};
 use icons::Icon;
 use latency::{Kind, LatencyRecorder};
 use native_tools::ToolEvidence;
-use ultima_protocol_bridge::{Approval, ApprovalKind, RpcId};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -23,6 +22,7 @@ use std::time::Instant;
 use theme::{
     body, mono, small, BORDER, CANVAS, GREEN, HOVER, MUTED, RAISED, SECONDARY, SURFACE, TEXT,
 };
+use ultima_protocol_bridge::{Approval, ApprovalKind, RpcId};
 
 const MAX_HISTORY_ROWS: usize = 10_000;
 const MAX_DRAFT_CHARS: usize = 8 * 1024;
@@ -403,17 +403,28 @@ impl RendererSpike {
                 }
             }
             ProbeEvent::ToolSnapshot(item) => {
-                if self.active_turn.as_ref() != Some(&(item.thread.clone(), item.turn.clone())) { return; }
-                if let Some(index) = self.tool_rows.iter().position(|old|
-                    old.thread == item.thread && old.turn == item.turn && old.id == item.id) {
-                    if self.tool_rows[index] != item { self.reviewed_approval = None; }
+                if self.active_turn.as_ref() != Some(&(item.thread.clone(), item.turn.clone())) {
+                    return;
+                }
+                if let Some(index) = self.tool_rows.iter().position(|old| {
+                    old.thread == item.thread && old.turn == item.turn && old.id == item.id
+                }) {
+                    if self.tool_rows[index] != item {
+                        self.reviewed_approval = None;
+                    }
                     self.tool_rows.remove(index);
                 }
                 self.tool_rows.push(item);
-                if self.tool_rows.len() > native_tools::MAX_ITEMS { self.tool_rows.remove(0); }
+                if self.tool_rows.len() > native_tools::MAX_ITEMS {
+                    self.tool_rows.remove(0);
+                }
             }
             ProbeEvent::ApprovalPending(request) => {
-                if self.active_turn.as_ref() != Some(&(request.thread_id.clone(), request.turn_id.clone())) { return; }
+                if self.active_turn.as_ref()
+                    != Some(&(request.thread_id.clone(), request.turn_id.clone()))
+                {
+                    return;
+                }
                 if !self.pending_approvals.iter().any(|a| a.id == request.id) {
                     self.pending_approvals.push(request);
                 }
@@ -516,7 +527,9 @@ impl RendererSpike {
     }
 
     fn decide_current(&mut self, accept: bool) {
-        let Some(request) = self.pending_approvals.first().cloned() else { return; };
+        let Some(request) = self.pending_approvals.first().cloned() else {
+            return;
+        };
         // Remove before enqueue: no double-click replay if native command ACK is lost.
         self.pending_approvals.remove(0);
         let reviewed = self.reviewed_approval.take() == Some(request.id.clone());
@@ -532,38 +545,75 @@ impl RendererSpike {
     }
 
     fn approval_card(&mut self, ui: &mut egui::Ui) {
-        let Some(request) = self.pending_approvals.first().cloned() else { return; };
-        let evidence = self.tool_rows.iter().rev().find(|item|
-            item.thread == request.thread_id && item.turn == request.turn_id &&
-            item.id == request.item_id && item.kind == request.kind).cloned();
-        Frame::new().fill(RAISED).stroke(Stroke::new(1.0, BORDER))
-            .inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
-                ui.label(RichText::new("OFFICIAL TOOL APPROVAL · ALLOW ONCE").color(TEXT).strong());
-                ui.label(mono(format!("request: {:?} · turn: {}", request.id, request.turn_id)));
-                let preview = evidence.as_ref().map(|item| if item.kind == ApprovalKind::Command {
-                    item.command.as_str()
-                } else {
-                    item.diff.as_str()
+        let Some(request) = self.pending_approvals.first().cloned() else {
+            return;
+        };
+        let evidence = self
+            .tool_rows
+            .iter()
+            .rev()
+            .find(|item| {
+                item.thread == request.thread_id
+                    && item.turn == request.turn_id
+                    && item.id == request.item_id
+                    && item.kind == request.kind
+            })
+            .cloned();
+        Frame::new()
+            .fill(RAISED)
+            .stroke(Stroke::new(1.0, BORDER))
+            .inner_margin(Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new("OFFICIAL TOOL APPROVAL · ALLOW ONCE")
+                        .color(TEXT)
+                        .strong(),
+                );
+                ui.label(mono(format!(
+                    "request: {:?} · turn: {}",
+                    request.id, request.turn_id
+                )));
+                let preview = evidence.as_ref().map(|item| {
+                    if item.kind == ApprovalKind::Command {
+                        item.command.as_str()
+                    } else {
+                        item.diff.as_str()
+                    }
                 });
                 if ui.button("Review exact command / diff").clicked() {
-                    if evidence.as_ref().is_some_and(|item| item.complete && !item.truncated) {
+                    if evidence
+                        .as_ref()
+                        .is_some_and(|item| item.complete && !item.truncated)
+                    {
                         self.reviewed_approval = Some(request.id.clone());
                     }
                 }
                 if self.reviewed_approval.as_ref() == Some(&request.id) {
                     ScrollArea::both().max_height(175.0).show(ui, |ui| {
-                        ui.label(RichText::new(preview.unwrap_or("Missing official preview.")).monospace());
+                        ui.label(
+                            RichText::new(preview.unwrap_or("Missing official preview."))
+                                .monospace(),
+                        );
                     });
                 } else {
                     ui.label(small("Unreviewed request. Never approved automatically."));
                 }
                 ui.horizontal(|ui| {
-                    if ui.button("Decline").clicked() { self.decide_current(false); }
-                    if ui.add_enabled(
-                        self.reviewed_approval.as_ref() == Some(&request.id) &&
-                        evidence.as_ref().is_some_and(|item| item.complete && !item.truncated),
-                        egui::Button::new("Allow once")
-                    ).clicked() { self.decide_current(true); }
+                    if ui.button("Decline").clicked() {
+                        self.decide_current(false);
+                    }
+                    if ui
+                        .add_enabled(
+                            self.reviewed_approval.as_ref() == Some(&request.id)
+                                && evidence
+                                    .as_ref()
+                                    .is_some_and(|item| item.complete && !item.truncated),
+                            egui::Button::new("Allow once"),
+                        )
+                        .clicked()
+                    {
+                        self.decide_current(true);
+                    }
                 });
             });
     }
@@ -1113,7 +1163,13 @@ impl RendererSpike {
                 self.approval_card(ui);
                 ui.horizontal(|ui| {
                     ui.menu_button(
-                        RichText::new(if self.coding_enabled { "●  Approval-gated coding" } else { "●  Read-Only" }).color(SECONDARY).size(11.0),
+                        RichText::new(if self.coding_enabled {
+                            "●  Approval-gated coding"
+                        } else {
+                            "●  Read-Only"
+                        })
+                        .color(SECONDARY)
+                        .size(11.0),
                         |ui| {
                             ui.set_min_width(222.0);
                             ui.label(mono("SANDBOX PERMISSION"));
@@ -1141,7 +1197,9 @@ impl RendererSpike {
                                 ui.add_space(4.0);
                             }
                             ui.separator();
-                            ui.label(small("Mode fixed at launch; permission changes require reconnect."));
+                            ui.label(small(
+                                "Mode fixed at launch; permission changes require reconnect.",
+                            ));
                         },
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1482,10 +1540,9 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             theme::use_system_fonts(&cc.egui_ctx);
             theme::configure(&cc.egui_ctx);
-            let engine = exe
-                .clone()
-                .zip(project.clone())
-                .map(|(exe, project)| EngineProbe::start(exe, project, cc.egui_ctx.clone(), coding_enabled));
+            let engine = exe.clone().zip(project.clone()).map(|(exe, project)| {
+                EngineProbe::start(exe, project, cc.egui_ctx.clone(), coding_enabled)
+            });
             let mut app = RendererSpike::with_latency(
                 history_rows,
                 show_reference,
