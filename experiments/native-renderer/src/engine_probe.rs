@@ -1,6 +1,7 @@
 //! Opt-in official Codex App Server client for the native-renderer experiment.
 //! Transport, JSONL protocol, process-tree teardown and approval policy are
 //! owned by the production Rust crates. There are no automatic tool approvals.
+use crate::session_history::{self, HistoryRow, ThreadEntry};
 use eframe::egui;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -39,6 +40,21 @@ pub enum ProbeEvent {
     ThreadReady {
         thread_id: String,
     },
+    ThreadPage {
+        entries: Vec<ThreadEntry>,
+        append: bool,
+        has_more: bool,
+    },
+    ThreadSelected {
+        thread_id: Option<String>,
+    },
+    HistoryPage {
+        thread_id: String,
+        rows: Vec<HistoryRow>,
+        prepend: bool,
+        has_more: bool,
+    },
+    HistoryCapabilityBlocked(&'static str),
     TurnCancelledBeforeStart,
     TurnStarted {
         thread_id: String,
@@ -69,6 +85,8 @@ impl ProbeEvent {
                 text.len() + 512
             }
             Self::Error(message) => message.len() + 512,
+            Self::ThreadPage { entries, .. } => entries.iter().map(|e| e.label.len() + e.id.len() + 128).sum::<usize>() + 512,
+            Self::HistoryPage { rows, .. } => rows.iter().map(|r| r.preview.len() + 128).sum::<usize>() + 512,
             _ => 512,
         }
     }
@@ -183,6 +201,10 @@ impl DisplayEvents {
 enum Command {
     Submit(String),
     Cancel,
+    NewThread,
+    SelectThread(String),
+    MoreThreads,
+    MoreHistory,
 }
 
 pub struct EngineProbe {
@@ -968,6 +990,30 @@ impl EngineProbe {
         self.commands
             .try_send(Command::Submit(prompt))
             .map_err(|_| "Codex command queue is full or disconnected.")
+    }
+
+    pub fn new_thread(&self) -> Result<(), &'static str> {
+        self.send_history_command(Command::NewThread)
+    }
+
+    pub fn select_thread(&self, id: String) -> Result<(), &'static str> {
+        self.send_history_command(Command::SelectThread(id))
+    }
+
+    pub fn load_more_threads(&self) -> Result<(), &'static str> {
+        self.send_history_command(Command::MoreThreads)
+    }
+
+    pub fn load_more_history(&self) -> Result<(), &'static str> {
+        self.send_history_command(Command::MoreHistory)
+    }
+
+    fn send_history_command(&self, command: Command) -> Result<(), &'static str> {
+        if self.status() != ProbeStatus::Ready {
+            return Err("Codex handshake is not ready.");
+        }
+        self.commands.try_send(command)
+            .map_err(|_| "Codex history command queue is unavailable.")
     }
 
     pub fn cancel(&self) -> Result<(), &'static str> {
