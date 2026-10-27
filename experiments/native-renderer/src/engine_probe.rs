@@ -795,7 +795,11 @@ impl TurnLifecycle {
                             text: delta.to_owned(),
                         }))
                     }
-                    NotificationKind::ItemCompleted if self.exact_turn(&params) => {
+                    NotificationKind::ItemCompleted
+                        if self.exact_turn(&params)
+                            && params.pointer("/item/type").and_then(Value::as_str)
+                                == Some("agentMessage") =>
+                    {
                         let item = params.get("item");
                         if item.and_then(|v| v.get("type")).and_then(Value::as_str)
                             != Some("agentMessage")
@@ -1212,6 +1216,40 @@ mod tests {
         json!({"thread":{"id":"thread-a","cwd":cwd},"cwd":cwd,
             "sandbox":{"type":"readOnly","networkAccess":false},
             "approvalPolicy":"never"})
+    }
+
+    #[test]
+    fn completed_tool_items_are_routed_before_generic_completion() {
+        let mut f = TurnLifecycle {
+            busy: true,
+            thread: Some("thread-a".into()),
+            turn: Some("turn-a".into()),
+            project: Some(std::env::current_dir().unwrap()),
+            ..Default::default()
+        };
+        let mut broker = ready();
+        for (kind, id, item) in [
+            (ApprovalKind::Command, "cmd", json!({"id":"cmd","type":"commandExecution",
+                "command":"echo ok","aggregatedOutput":"done","exitCode":0})),
+            (ApprovalKind::FileChange, "file", json!({"id":"file","type":"fileChange",
+                "changes":[{"path":"example.txt","diff":"@@ -0,0 +1 @@\\n+new"}]})),
+        ] {
+            let event = f.on_event(&mut broker, Event::Notification {
+                kind: NotificationKind::ItemCompleted,
+                params: json!({"threadId":"thread-a","turnId":"turn-a","item":item}),
+            }).unwrap();
+            let Some(ProbeEvent::ToolSnapshot(snapshot)) = event else {
+                panic!("item completion was dropped");
+            };
+            assert_eq!(snapshot.id, id);
+            assert_eq!(snapshot.kind, kind);
+            assert_eq!(snapshot.state, "completed");
+            if kind == ApprovalKind::Command {
+                assert_eq!(snapshot.output, "done");
+            } else {
+                assert!(snapshot.diff.contains("example.txt"));
+            }
+        }
     }
 
     #[test]

@@ -186,6 +186,7 @@ struct RendererSpike {
     tool_rows: Vec<ToolEvidence>,
     pending_approvals: Vec<Approval>,
     reviewed_approval: Option<RpcId>,
+    approval_dispatching: Option<RpcId>,
     coding_enabled: bool,
     active_turn: Option<(String, String)>,
     awaiting_turn_start: bool,
@@ -249,6 +250,7 @@ impl RendererSpike {
             tool_rows: Vec::new(),
             pending_approvals: Vec::new(),
             reviewed_approval: None,
+            approval_dispatching: None,
             coding_enabled: false,
             active_turn: None,
             awaiting_turn_start: false,
@@ -321,6 +323,7 @@ impl RendererSpike {
             ProbeEvent::TurnCancelledBeforeStart => {
                 self.pending_approvals.clear();
                 self.reviewed_approval = None;
+                self.approval_dispatching = None;
                 if self.awaiting_turn_start && self.active_turn.is_none() {
                     self.awaiting_turn_start = false;
                     self.last_turn_status = Some("cancelled before start".to_owned());
@@ -332,6 +335,7 @@ impl RendererSpike {
                 self.tool_rows.clear();
                 self.pending_approvals.clear();
                 self.reviewed_approval = None;
+                self.approval_dispatching = None;
                 self.active_turn = Some((thread_id, turn_id));
                 self.awaiting_turn_start = false;
                 self.last_turn_status = Some("running".to_owned());
@@ -392,6 +396,7 @@ impl RendererSpike {
                 self.awaiting_turn_start = false;
                 self.pending_approvals.clear();
                 self.reviewed_approval = None;
+                self.approval_dispatching = None;
                 self.last_turn_status = Some(status.clone());
                 if let Some(last) = self.live_rows.last_mut().filter(|row| !row.from_user) {
                     if last.preview.is_empty() {
@@ -432,6 +437,9 @@ impl RendererSpike {
             ProbeEvent::ApprovalResolved(id) => {
                 self.pending_approvals.retain(|a| a.id != id);
                 self.reviewed_approval = None;
+                if self.approval_dispatching.as_ref() == Some(&id) {
+                    self.approval_dispatching = None;
+                }
             }
             ProbeEvent::Error(message) => {
                 // A failed turn emits a sanitized Error *before* its final
@@ -453,6 +461,7 @@ impl RendererSpike {
                 self.live_error = Some(message);
                 self.pending_approvals.clear();
                 self.reviewed_approval = None;
+                self.approval_dispatching = None;
             }
         }
     }
@@ -530,9 +539,11 @@ impl RendererSpike {
         let Some(request) = self.pending_approvals.first().cloned() else {
             return;
         };
-        // Remove before enqueue: no double-click replay if native command ACK is lost.
-        self.pending_approvals.remove(0);
-        let reviewed = self.reviewed_approval.take() == Some(request.id.clone());
+        // Enqueue is not broker confirmation. Do not hide or lose pending approval.
+        if self.approval_dispatching.is_some() {
+            return;
+        }
+        let reviewed = self.reviewed_approval.as_ref() == Some(&request.id);
         let snapshot = self
             .tool_rows
             .iter()
@@ -549,8 +560,9 @@ impl RendererSpike {
             return;
         }
         if let Some(engine) = self.engine.as_ref() {
-            if let Err(reason) = engine.decide(request, accept, snapshot) {
-                self.live_error = Some(reason.to_owned());
+            match engine.decide(request.clone(), accept, snapshot) {
+                Ok(()) => self.approval_dispatching = Some(request.id),
+                Err(reason) => self.live_error = Some(reason.to_owned()),
             }
         }
     }
@@ -609,12 +621,16 @@ impl RendererSpike {
                     ui.label(small("Unreviewed request. Never approved automatically."));
                 }
                 ui.horizontal(|ui| {
-                    if ui.button("Decline").clicked() {
+                    if ui
+                        .add_enabled(self.approval_dispatching.is_none(), egui::Button::new("Decline"))
+                        .clicked()
+                    {
                         self.decide_current(false);
                     }
                     if ui
                         .add_enabled(
-                            self.reviewed_approval.as_ref() == Some(&request.id)
+                            self.approval_dispatching.is_none()
+                                && self.reviewed_approval.as_ref() == Some(&request.id)
                                 && evidence
                                     .as_ref()
                                     .is_some_and(|item| item.complete && !item.truncated),
@@ -1758,6 +1774,25 @@ mod tests {
         );
         assert!(app.live_error.is_none());
         assert_eq!(app.live_rows[1].preview, "Turn cancelled before execution.");
+    }
+
+    #[test]
+    fn invalid_review_cannot_remove_pending_approval() {
+        let mut app = RendererSpike::new(0, false, None, None);
+        let request = Approval {
+            id: RpcId::String("r".into()),
+            kind: ApprovalKind::Command,
+            thread_id: "t".into(), turn_id: "u".into(),
+            item_id: "i".into(), started_at_ms: 1,
+        };
+        app.pending_approvals.push(request.clone());
+        app.decide_current(true);
+        assert_eq!(app.pending_approvals, vec![request.clone()]);
+        assert_eq!(app.approval_dispatching, None);
+        app.decide_current(false);
+        assert_eq!(app.pending_approvals, vec![request.clone()]);
+        app.apply_probe_event(ProbeEvent::ApprovalResolved(request.id));
+        assert!(app.pending_approvals.is_empty());
     }
 
     #[test]
