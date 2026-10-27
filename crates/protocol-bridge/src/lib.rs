@@ -538,7 +538,7 @@ impl Broker {
                     // An oversized request is declined, not presented as a
                     // clipped preview which might hide elevated permissions.
                     let descriptor = Value::Object(p.cloned().unwrap_or_default());
-                    if serde_json::to_vec(&descriptor).is_err_or(|bytes| bytes.len() > 8 * 1024) {
+                    if serde_json::to_vec(&descriptor).map_or(true, |bytes| bytes.len() > 8 * 1024) {
                         return self.error_reply(
                             id,
                             -32602,
