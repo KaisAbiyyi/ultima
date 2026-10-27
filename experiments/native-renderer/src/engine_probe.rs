@@ -1975,16 +1975,18 @@ mod tests {
             coding_enabled: true,
             ..Default::default()
         };
-        let tool = lifecycle.on_event(
-            &mut broker,
-            Event::Notification {
-                kind: NotificationKind::ItemStarted,
-                params: json!({
-                    "threadId":"thread-a","turnId":"turn-a",
-                    "item":{"id":"item-a","type":"commandExecution","command":"echo reviewed"}
-                }),
-            },
-        ).unwrap();
+        let tool = lifecycle
+            .on_event(
+                &mut broker,
+                Event::Notification {
+                    kind: NotificationKind::ItemStarted,
+                    params: json!({
+                        "threadId":"thread-a","turnId":"turn-a",
+                        "item":{"id":"item-a","type":"commandExecution","command":"echo reviewed"}
+                    }),
+                },
+            )
+            .unwrap();
         assert!(matches!(tool, Some(ProbeEvent::ToolSnapshot(_))));
         broker.ingest_line(br#"{"id":"request-a","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"item-a","startedAtMs":1}}"#).unwrap();
         let event = broker.take_event().unwrap();
@@ -2019,23 +2021,30 @@ mod tests {
             coding_enabled: true,
             ..Default::default()
         };
-        lifecycle.on_event(
-            &mut broker,
-            Event::Notification {
-                kind: NotificationKind::ItemStarted,
-                params: json!({
-                    "threadId":"thread-a","turnId":"turn-a",
-                    "item":{"id":"item-a","type":"commandExecution","command":"echo reviewed"}
-                }),
-            },
-        ).unwrap();
+        lifecycle
+            .on_event(
+                &mut broker,
+                Event::Notification {
+                    kind: NotificationKind::ItemStarted,
+                    params: json!({
+                        "threadId":"thread-a","turnId":"turn-a",
+                        "item":{"id":"item-a","type":"commandExecution","command":"echo reviewed"}
+                    }),
+                },
+            )
+            .unwrap();
         broker.ingest_line(br#"{"id":"request-a","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"item-a","startedAtMs":1}}"#).unwrap();
         let arrival = broker.take_event().unwrap();
         let Some(ProbeEvent::ApprovalPending(pending)) =
-            lifecycle.on_event(&mut broker, arrival).unwrap() else {
-                panic!("Expected pending approval");
-            };
-        broker.ingest_line(br#"{"method":"serverRequest/resolved","params":{"requestId":"request-a"}}"#).unwrap();
+            lifecycle.on_event(&mut broker, arrival).unwrap()
+        else {
+            panic!("Expected pending approval");
+        };
+        broker
+            .ingest_line(
+                br#"{"method":"serverRequest/resolved","params":{"requestId":"request-a"}}"#,
+            )
+            .unwrap();
         let event = broker.take_event().unwrap();
         assert!(matches!(
             lifecycle.on_event(&mut broker, event),
@@ -2044,5 +2053,4 @@ mod tests {
         assert!(lifecycle.decide(&mut broker, &pending, true).is_err());
         assert!(broker.take_outbound().is_none());
     }
-
 }
