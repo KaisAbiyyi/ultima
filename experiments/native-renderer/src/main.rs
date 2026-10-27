@@ -291,7 +291,9 @@ impl RendererSpike {
 
     fn active_title(&self) -> &str {
         if self.engine.is_some() {
-            return self.native_threads.iter()
+            return self
+                .native_threads
+                .iter()
                 .find(|entry| Some(entry.id.as_str()) == self.selected_native_thread.as_deref())
                 .map(|entry| entry.label.as_str())
                 .unwrap_or("Official Codex session");
@@ -307,7 +309,8 @@ impl RendererSpike {
         // New is a local deselection, never a thread/start or turn/start RPC.
         if let Some(engine) = &self.engine {
             if self.active_turn.is_some() || self.awaiting_turn_start {
-                self.live_error = Some("Finish or stop the current turn before changing threads.".to_owned());
+                self.live_error =
+                    Some("Finish or stop the current turn before changing threads.".to_owned());
                 return;
             }
             if let Err(error) = engine.new_thread() {
@@ -337,15 +340,21 @@ impl RendererSpike {
                 self.more_native_history = false;
                 self.live_error = None;
             }
-            ProbeEvent::ThreadPage { entries, append, has_more } => {
-                if !append { self.native_threads.clear(); }
+            ProbeEvent::ThreadPage {
+                entries,
+                append,
+                has_more,
+            } => {
+                if !append {
+                    self.native_threads.clear();
+                }
                 for entry in entries {
                     if !self.native_threads.iter().any(|known| known.id == entry.id) {
                         self.native_threads.push(entry);
                     }
                 }
-                self.more_native_threads = has_more
-                    && self.native_threads.len() < session_history::MAX_THREADS;
+                self.more_native_threads =
+                    has_more && self.native_threads.len() < session_history::MAX_THREADS;
             }
             ProbeEvent::ThreadSelected { thread_id } => {
                 self.selected_native_thread = thread_id;
@@ -357,11 +366,17 @@ impl RendererSpike {
                 self.more_native_history = false;
                 self.live_error = None;
             }
-            ProbeEvent::HistoryPage { thread_id, rows, prepend, has_more } => {
+            ProbeEvent::HistoryPage {
+                thread_id,
+                rows,
+                prepend,
+                has_more,
+            } => {
                 if Some(thread_id.as_str()) != self.selected_native_thread.as_deref() {
                     return;
                 }
-                let old = rows.into_iter()
+                let old = rows
+                    .into_iter()
                     .map(|HistoryRow { from_user, preview }| ChatRow { from_user, preview })
                     .collect::<Vec<_>>();
                 if prepend {
@@ -372,7 +387,8 @@ impl RendererSpike {
                     self.native_history = old;
                 }
                 if self.native_history.len() > session_history::MAX_HISTORY_ROWS {
-                    self.native_history.truncate(session_history::MAX_HISTORY_ROWS);
+                    self.native_history
+                        .truncate(session_history::MAX_HISTORY_ROWS);
                     self.more_native_history = false;
                 } else {
                     self.more_native_history = has_more;
@@ -666,12 +682,13 @@ impl RendererSpike {
                         ui.add_space(6.0);
                         let threads = self.native_threads.clone();
                         for entry in threads {
-                            let selected = self.selected_native_thread.as_deref()
-                                == Some(entry.id.as_str());
+                            let selected =
+                                self.selected_native_thread.as_deref() == Some(entry.id.as_str());
                             if ghost_row(ui, &entry.label, selected, 0.0, None).clicked() {
                                 if self.active_turn.is_some() || self.awaiting_turn_start {
                                     self.live_error = Some(
-                                        "Finish or stop the active turn before switching threads.".to_owned()
+                                        "Finish or stop the active turn before switching threads."
+                                            .to_owned(),
                                     );
                                 } else if let Some(engine) = &self.engine {
                                     if let Err(message) = engine.select_thread(entry.id) {
@@ -680,9 +697,7 @@ impl RendererSpike {
                                 }
                             }
                         }
-                        if self.more_native_threads
-                            && ui.button("Load more threads").clicked()
-                        {
+                        if self.more_native_threads && ui.button("Load more threads").clicked() {
                             if let Some(engine) = &self.engine {
                                 if let Err(message) = engine.load_more_threads() {
                                     self.live_error = Some(message.to_owned());
