@@ -656,6 +656,44 @@ impl RendererSpike {
             ui.add_space(4.0);
 
             let remaining = (ui.available_height() - 63.0).max(80.0);
+            if self.engine.is_some() {
+                ScrollArea::vertical()
+                    .id_salt("native-persisted-thread-navigation")
+                    .max_height(remaining)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.label(mono("PERSISTED THREADS"));
+                        ui.add_space(6.0);
+                        let threads = self.native_threads.clone();
+                        for entry in threads {
+                            let selected = self.selected_native_thread.as_deref()
+                                == Some(entry.id.as_str());
+                            if ghost_row(ui, &entry.label, selected, 0.0, None).clicked() {
+                                if self.active_turn.is_some() || self.awaiting_turn_start {
+                                    self.live_error = Some(
+                                        "Finish or stop the active turn before switching threads.".to_owned()
+                                    );
+                                } else if let Some(engine) = &self.engine {
+                                    if let Err(message) = engine.select_thread(entry.id) {
+                                        self.live_error = Some(message.to_owned());
+                                    }
+                                }
+                            }
+                        }
+                        if self.more_native_threads
+                            && ui.button("Load more threads").clicked()
+                        {
+                            if let Some(engine) = &self.engine {
+                                if let Err(message) = engine.load_more_threads() {
+                                    self.live_error = Some(message.to_owned());
+                                }
+                            }
+                        }
+                        ui.add_space(6.0);
+                        ui.label(small("Official Codex history · read-only pagination"));
+                    });
+                return; // No fictional fixture threads in connected mode.
+            }
             ScrollArea::vertical()
                 .id_salt("sidebar-navigation")
                 .max_height(remaining)
@@ -783,6 +821,30 @@ impl RendererSpike {
                     .strong(),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if self.engine.as_ref().is_some_and(|engine| {
+                    matches!(engine.status(), ProbeStatus::Failed | ProbeStatus::Stopped)
+                }) && ui.button("Reconnect").clicked() {
+                    if let Some((exe, project)) = &self.engine_paths {
+                        // Explicit user action: never replay a pending prompt,
+                        // and the official thread list is reloaded on handshake.
+                        let replacement = EngineProbe::start(
+                            exe.clone(), project.clone(), ui.ctx().clone()
+                        );
+                        self.engine = Some(replacement);
+                        self.active_turn = None;
+                        self.awaiting_turn_start = false;
+                        self.live_rows.clear();
+                        self.native_threads.clear();
+                        self.native_history.clear();
+                        self.selected_native_thread = None;
+                        self.more_native_threads = false;
+                        self.more_native_history = false;
+                        self.last_turn_status = Some("unconfirmed after reconnect".to_owned());
+                        self.live_error = Some(
+                            "A disconnected turn is not automatically resumed or replayed. Inspect official persisted history.".to_owned()
+                        );
+                    }
+                }
                 if ui.add(egui::Button::new("clear").frame(false)).clicked() {
                     self.new_preview();
                 }
@@ -955,14 +1017,24 @@ impl RendererSpike {
     }
 
     fn conversation(&mut self, ui: &mut egui::Ui) {
-        if self.engine.is_some() && !self.live_rows.is_empty() {
+        if self.engine.is_some() {
             ScrollArea::vertical()
-                .id_salt("native-live-conversation")
+                .id_salt("native-official-thread-conversation")
                 .stick_to_bottom(true)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     centered_width(ui, 768.0, |ui| {
-                        for row in &self.live_rows {
+                        if self.more_native_history && ui.button("Load older turns").clicked() {
+                            if let Some(engine) = &self.engine {
+                                if let Err(message) = engine.load_more_history() {
+                                    self.live_error = Some(message.to_owned());
+                                }
+                            }
+                        }
+                        if self.native_history.is_empty() && self.live_rows.is_empty() {
+                            ui.label(small("Select an official Codex thread or start a new one."));
+                        }
+                        for row in self.native_history.iter().chain(self.live_rows.iter()) {
                             ui.label(mono(if row.from_user { "you" } else { "codex" }));
                             ui.add_space(4.0);
                             ui.label(RichText::new(&row.preview).color(if row.from_user {
@@ -1442,13 +1514,15 @@ fn main() -> eframe::Result {
                 .clone()
                 .zip(project.clone())
                 .map(|(exe, project)| EngineProbe::start(exe, project, cc.egui_ctx.clone()));
-            Ok(Box::new(RendererSpike::with_latency(
+            let mut renderer = RendererSpike::with_latency(
                 history_rows,
                 show_reference,
                 engine,
                 project_label.clone(),
                 LatencyRecorder::new(main_started, latency_receipt.clone()),
-            )))
+            );
+            renderer.engine_paths = exe.clone().zip(project.clone());
+            Ok(Box::new(renderer))
         }),
     )
 }
