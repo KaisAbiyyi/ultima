@@ -103,6 +103,9 @@ impl LatencyRecorder {
         json!({
             "kind": "NC10B_GLOW_PAINT_DIAGNOSTIC",
             "version": 1,
+            // Embedded at compile time by the SHA-bound exact-build helper.
+            // Ordinary cargo builds remain UNBOUND and cannot qualify.
+            "sourceSha": option_env!("NC10B_BUILD_SOURCE_SHA").unwrap_or("UNBOUND"),
             "stage": "OpenGL callback before buffer swap; not compositor presentation",
             "presentationVerified": false,
             "clock": "monotonic Instant",

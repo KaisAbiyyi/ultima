@@ -12,7 +12,7 @@ import { verifyExactBuild } from './build-exact.mjs';
 const script = fileURLToPath(import.meta.url);
 const MAX_SAMPLES = 4096;
 
-export function inspectDiagnostic(receipts) {
+export function inspectDiagnostic(receipts, expectedSourceSha = null) {
   if (!Array.isArray(receipts) || receipts.length < 3) {
     throw Error('At least 3 independent native sessions are required');
   }
@@ -20,9 +20,15 @@ export function inspectDiagnostic(receipts) {
     'rawKeyDuringActiveTurnToPaintCallback',
     'processMainToFirstComposerPaintCallback'];
   const sums = Object.fromEntries(series.map(name => [name, []]));
+  const reportedSource = receipts[0]?.sourceSha;
+  if (typeof reportedSource !== 'string' || !/^[a-f0-9]{40}$/.test(reportedSource) ||
+      (expectedSourceSha && expectedSourceSha !== reportedSource)) {
+    throw Error('Source SHA missing or mismatched: unbound/stale timing receipt');
+  }
   for (const receipt of receipts) {
     if (receipt?.kind !== 'NC10B_GLOW_PAINT_DIAGNOSTIC' ||
         receipt.version !== 1 || receipt.presentationVerified !== false ||
+        receipt.sourceSha !== reportedSource ||
         !receipt.stage?.includes('before buffer swap') ||
         receipt.acceptance !== 'NOT_RUN: independent Windows screen-presentation receipt required') {
       throw Error('Native timing receipt type/explicit non-acceptance is invalid');
@@ -67,7 +73,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === script) {
   const verified = await verifyExactBuild();
   const receipts = await Promise.all(files.map(async file =>
     JSON.parse(await readFile(file, 'utf8'))));
-  const summary = inspectDiagnostic(receipts);
+  const summary = inspectDiagnostic(receipts, verified.sourceSha);
   let codexVersion = 'NOT_RUN';
   // The local fixture specifies an explicitly trusted Codex installation.
   // Never record credentials, args, prompt content, environment or paths.

@@ -7,6 +7,7 @@ const measure = (n = 80, p95Ms = 20) =>
 const receipt = () => ({
   kind: 'NC10B_GLOW_PAINT_DIAGNOSTIC',
   version: 1,
+  sourceSha: 'a'.repeat(40),
   stage: 'OpenGL callback before buffer swap; not compositor presentation',
   presentationVerified: false,
   acceptance: 'NOT_RUN: independent Windows screen-presentation receipt required',
@@ -28,6 +29,7 @@ test('fails closed on missing, truncated, deceptive or nonnumeric receipts', () 
   assert.throws(() => inspectDiagnostic([receipt()]), /3 independent/);
   for (const mutate of [
     x => { x.presentationVerified = true; },
+    x => { x.sourceSha = 'b'.repeat(40); },
     x => { x.acceptance = 'PASS'; },
     x => { x.streamReceivedToPaintCallback.samples = 0; },
     x => { x.streamReceivedToPaintCallback.samples = 1; },
@@ -40,6 +42,8 @@ test('fails closed on missing, truncated, deceptive or nonnumeric receipts', () 
     mutate(altered);
     assert.throws(() => inspectDiagnostic([receipt(), altered, receipt()]));
   }
+  assert.throws(() => inspectDiagnostic([receipt(), receipt(), receipt()], 'b'.repeat(40)),
+    /Source SHA missing or mismatched/);
 });
 
 test('diagnostic budget exceedance is reported as failed, not coerced to PASS', () => {
