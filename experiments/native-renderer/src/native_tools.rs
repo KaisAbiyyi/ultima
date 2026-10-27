@@ -67,7 +67,7 @@ fn safe_path(path: &str, project: &Path) -> bool {
     let mut ancestor = project.to_path_buf();
     for component in target.components() {
         ancestor.push(component.as_os_str());
-        if ancestor.exists() {
+        if ancestor.symlink_metadata().is_ok() {
             let Ok(real) = ancestor.canonicalize() else {
                 return false;
             };
@@ -273,15 +273,18 @@ impl ToolLedger {
         self.pending.push(approval);
         true
     }
-    pub fn consume(&mut self, approval: &Approval, project: &Path) -> bool {
+    pub fn take(&mut self, approval: &Approval) -> bool {
         let Some(index) = self.pending.iter().position(|p| p == approval) else {
             return false;
         };
+        self.pending.remove(index);
+        true
+    }
+    pub fn consume(&mut self, approval: &Approval, project: &Path) -> bool {
         if !self.matches_evidence(approval, project) {
             return false;
         }
-        self.pending.remove(index);
-        true
+        self.take(approval)
     }
 }
 
@@ -401,4 +404,27 @@ mod tests {
         assert!(ledger.pending().is_empty());
         assert!(!ledger.consume(&approval(), &project()));
     }
+    #[test]
+    fn deny_requires_exact_pending_identity_but_not_valid_preview() {
+        let mut ledger = ToolLedger::default();
+        ledger.capture(
+            NotificationKind::ItemStarted,
+            &command("commandExecution", "echo ok"),
+            &project(),
+        );
+        let expected = approval();
+        assert!(ledger.offer(expected.clone(), &project()));
+        ledger.capture(
+            NotificationKind::ItemCompleted,
+            &command("commandExecution", &"x".repeat(MAX_COMMAND + 1)),
+            &project(),
+        );
+        assert!(!ledger.consume(&expected, &project()));
+        let mut wrong = expected.clone();
+        wrong.turn_id = "foreign".into();
+        assert!(!ledger.take(&wrong));
+        assert!(ledger.take(&expected));
+        assert!(!ledger.take(&expected));
+    }
+
 }
