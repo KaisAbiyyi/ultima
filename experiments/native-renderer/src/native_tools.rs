@@ -251,8 +251,8 @@ mod tests {
     }
     #[test] fn bounded_output_and_truncated_command_disallow_accept() {
         let mut ledger=ToolLedger::default();
-        let command=command("commandExecution",&"a".repeat(MAX_COMMAND+1));
-        ledger.capture(NotificationKind::ItemStarted,&command,&project());
+        let oversized=command("commandExecution",&"a".repeat(MAX_COMMAND+1));
+        ledger.capture(NotificationKind::ItemStarted,&oversized,&project());
         assert!(!ledger.offer(approval(),&project()));
         ledger.clear();
         ledger.capture(NotificationKind::ItemStarted,&command("commandExecution","echo ok"),&project());
