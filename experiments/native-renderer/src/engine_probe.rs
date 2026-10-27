@@ -192,7 +192,7 @@ impl DisplayEvents {
 enum Command {
     Submit(String),
     Cancel,
-    Decide(Approval, bool),
+    Decide(Approval, bool, Option<ToolEvidence>),
 }
 
 pub struct EngineProbe {
@@ -632,24 +632,29 @@ impl TurnLifecycle {
         broker: &mut Broker,
         expected: &Approval,
         accept: bool,
+        reviewed: Option<&ToolEvidence>,
     ) -> Result<Option<ProbeEvent>, &'static str> {
         let project = self
             .project
             .as_deref()
             .ok_or("Codex project context unavailable.")?;
-        let admissible = if accept {
-            self.tools.consume(expected, project)
-        } else {
-            self.tools.take(expected)
-        };
         if !self.busy
             || !self.coding_enabled
             || self.cancel_requested
             || self.thread.as_deref() != Some(&expected.thread_id)
             || self.turn.as_deref() != Some(&expected.turn_id)
-            || !admissible
         {
             return Err("Approval is stale, mismatched, or lacks complete review evidence.");
+        }
+        let admissible = if accept {
+            reviewed.is_some_and(|snapshot| {
+                self.tools.consume_reviewed(expected, project, snapshot)
+            })
+        } else {
+            self.tools.take(expected)
+        };
+        if !admissible {
+            return Err("Approval preview changed or request is no longer pending.");
         }
         broker
             .decide_exact_approval(
@@ -977,8 +982,8 @@ async fn drive(
                     let outcome = match command {
                         Command::Submit(text) => lifecycle.submit(&mut broker, &project, text),
                         Command::Cancel => lifecycle.cancel(&mut broker),
-                        Command::Decide(request, accept) => {
-                            match lifecycle.decide(&mut broker, &request, accept) {
+                        Command::Decide(request, accept, reviewed) => {
+                            match lifecycle.decide(&mut broker, &request, accept, reviewed.as_ref()) {
                                 Ok(Some(event)) => { enqueue(&events, &ctx, event)?; Ok(()) },
                                 Ok(None) => Ok(()),
                                 Err(reason) => return Err(reason), // no ambiguous pending grant
@@ -1123,13 +1128,13 @@ impl EngineProbe {
             .map_err(|_| "Codex command queue is full or disconnected.")
     }
 
-    pub fn decide(&self, request: Approval, accept: bool) -> Result<(), &'static str> {
+    pub fn decide(&self, request: Approval, accept: bool, reviewed: Option<ToolEvidence>) -> Result<(), &'static str> {
         if self.status() != ProbeStatus::Ready {
             return Err("Codex handshake is not ready.");
         }
         if self
             .commands
-            .try_send(Command::Decide(request, accept))
+            .try_send(Command::Decide(request, accept, reviewed))
             .is_err()
         {
             self.emergency_stop.store(true, Ordering::Release);
@@ -1986,7 +1991,9 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(matches!(tool, Some(ProbeEvent::ToolSnapshot(_))));
+        let Some(ProbeEvent::ToolSnapshot(reviewed)) = tool else {
+            panic!("Missing actual reviewed tool evidence");
+        };
         broker.ingest_line(br#"{"id":"request-a","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"item-a","startedAtMs":1}}"#).unwrap();
         let event = broker.take_event().unwrap();
         let pending = lifecycle.on_event(&mut broker, event).unwrap();
@@ -1995,16 +2002,16 @@ mod tests {
         };
         let mut forged = approval.clone();
         forged.item_id = "not-the-reviewed-tool".to_owned();
-        assert!(lifecycle.decide(&mut broker, &forged, true).is_err());
+        assert!(lifecycle.decide(&mut broker, &forged, true, Some(&reviewed)).is_err());
         assert!(broker.take_outbound().is_none());
         assert!(matches!(
-            lifecycle.decide(&mut broker, &approval, true),
+            lifecycle.decide(&mut broker, &approval, true, Some(&reviewed)),
             Ok(Some(ProbeEvent::ApprovalResolved(_)))
         ));
         let outbound: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
         assert_eq!(outbound["id"], "request-a");
         assert_eq!(outbound["result"]["decision"], "accept");
-        assert!(lifecycle.decide(&mut broker, &approval, true).is_err());
+        assert!(lifecycle.decide(&mut broker, &approval, true, Some(&reviewed)).is_err());
         assert!(broker.take_outbound().is_none());
     }
 
@@ -2020,7 +2027,7 @@ mod tests {
             coding_enabled: true,
             ..Default::default()
         };
-        lifecycle
+        let tool = lifecycle
             .on_event(
                 &mut broker,
                 Event::Notification {
@@ -2032,6 +2039,9 @@ mod tests {
                 },
             )
             .unwrap();
+        let Some(ProbeEvent::ToolSnapshot(reviewed)) = tool else {
+            panic!("Missing actual reviewed tool evidence");
+        };
         broker.ingest_line(br#"{"id":"request-a","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"item-a","startedAtMs":1}}"#).unwrap();
         let arrival = broker.take_event().unwrap();
         let Some(ProbeEvent::ApprovalPending(pending)) =
@@ -2049,7 +2059,7 @@ mod tests {
             lifecycle.on_event(&mut broker, event),
             Ok(Some(ProbeEvent::ApprovalResolved(_)))
         ));
-        assert!(lifecycle.decide(&mut broker, &pending, true).is_err());
+        assert!(lifecycle.decide(&mut broker, &pending, true, Some(&reviewed)).is_err());
         assert!(broker.take_outbound().is_none());
     }
 }
