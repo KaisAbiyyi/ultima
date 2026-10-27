@@ -1386,12 +1386,7 @@ mod tests {
         let mut broker = ready();
         let mut history = HistoryFlow::default();
         history
-            .request(
-                &mut broker,
-                ClientMethod::ThreadList,
-                json!({"limit":session_history::THREAD_PAGE_SIZE}),
-                HistoryRequest::List { append: false },
-            )
+            .list(&mut broker, &std::env::current_dir().unwrap(), false)
             .unwrap();
         assert_eq!(history.timeout_error(Instant::now()), None);
         history.pending.as_mut().unwrap().2 =
