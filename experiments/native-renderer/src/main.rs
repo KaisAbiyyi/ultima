@@ -1587,6 +1587,115 @@ mod tests {
     }
 
     #[test]
+    fn selected_history_text_survives_append() {
+        let ctx = egui::Context::default();
+        let mut app = RendererSpike::new(1, false, None, None);
+        app.history[0].preview = "select this synthetic message".into();
+        let frame = |app: &mut RendererSpike, events| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    virtual_conversation(
+                        ui,
+                        &app.history,
+                        &mut app.history_layout,
+                        &mut app.history_width,
+                        "select-test",
+                        false,
+                        0.0,
+                    );
+                });
+            })
+        };
+        let _ = frame(&mut app, vec![]);
+        let start = egui::pos2(25.0, 40.0);
+        let end = egui::pos2(180.0, 40.0);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(start), button(start, true)],
+        );
+        let _ = frame(&mut app, vec![egui::Event::PointerMoved(end)]);
+        let _ = frame(&mut app, vec![button(end, false)]);
+        let copied = frame(&mut app, vec![egui::Event::Copy]);
+        let extract = |out: &egui::FullOutput| {
+            out.platform_output
+                .commands
+                .iter()
+                .find_map(|cmd| match cmd {
+                    egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                    _ => None,
+                })
+        };
+        let before = extract(&copied).expect("selection copied before append");
+        assert!(!before.is_empty());
+        app.history.push(ChatRow {
+            id: 1,
+            from_user: true,
+            preview: "new".into(),
+        });
+        app.history_layout.push(65.0);
+        let copied = frame(&mut app, vec![egui::Event::Copy]);
+        assert_eq!(extract(&copied), Some(before));
+    }
+
+    #[test]
+    fn wheel_navigates_virtual_history() {
+        let ctx = egui::Context::default();
+        let mut app = RendererSpike::new(100, false, None, None);
+        let id = std::cell::Cell::new(None);
+        let frame = |app: &mut RendererSpike, events| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    id.set(Some(virtual_conversation(
+                        ui,
+                        &app.history,
+                        &mut app.history_layout,
+                        &mut app.history_width,
+                        "wheel-test",
+                        false,
+                        0.0,
+                    )));
+                });
+            });
+        };
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(egui::pos2(200.0, 200.0))],
+        );
+        frame(
+            &mut app,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: Vec2::new(0.0, -400.0),
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let state = egui::scroll_area::State::load(&ctx, id.get().unwrap()).unwrap();
+        assert!(state.offset.y > 0.0, "wheel must move viewport");
+    }
+
+    #[test]
     fn bounded_history_and_default_preview_are_separate() {
         let large = RendererSpike::new(MAX_HISTORY_ROWS + 5, false, None, None);
         assert_eq!(large.history.len(), MAX_HISTORY_ROWS);
