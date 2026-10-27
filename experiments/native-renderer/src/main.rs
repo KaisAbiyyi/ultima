@@ -2,6 +2,7 @@
 //! Native-only, offline visual implementation of the supplied Codex wrapper UI.
 //! This prototype does not issue turns, execute tools, or grant permissions.
 mod engine_probe;
+mod history_layout;
 mod icons;
 mod latency;
 mod theme;
@@ -11,6 +12,7 @@ use eframe::egui::{
     Sense, Stroke, TextEdit, Vec2,
 };
 use engine_probe::{EngineProbe, ProbeEvent, ProbeStatus};
+use history_layout::HeightIndex;
 use icons::Icon;
 use latency::{Kind, LatencyRecorder};
 use std::path::PathBuf;
@@ -160,6 +162,92 @@ fn centered_width(ui: &mut egui::Ui, max_width: f32, add: impl FnOnce(&mut egui:
 struct ChatRow {
     from_user: bool,
     preview: String,
+    id: u64,
+}
+
+// Layout only the viewport and one neighboring row on each side. Heights are
+// measured lazily, indexed in logarithmic time, and corrected above the
+// viewport without moving the user's current anchor.
+fn virtual_conversation(
+    ui: &mut egui::Ui,
+    rows: &[ChatRow],
+    heights: &mut HeightIndex,
+    last_width: &mut f32,
+    id: &'static str,
+    stick_to_bottom: bool,
+    removed_height: f32,
+) -> egui::Id {
+    let width = ui.available_width().clamp(1.0, 768.0);
+    if (*last_width - width).abs() > 0.5 || heights.len() != rows.len() {
+        *heights = HeightIndex::new(rows.len(), 65.0);
+        *last_width = width;
+    }
+    let mut anchor_correction = 0.0;
+    let mut changed = false;
+    if removed_height > 0.0 {
+        let scroll_id = ui.make_persistent_id(egui::Id::new(id));
+        if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), scroll_id) {
+            state.offset.y = (state.offset.y - removed_height).max(0.0);
+            state.store(ui.ctx(), scroll_id);
+        }
+    }
+    let output = ScrollArea::vertical()
+        .id_salt(id)
+        .stick_to_bottom(stick_to_bottom)
+        .auto_shrink([false, false])
+        .show_viewport(ui, |ui, viewport| {
+            ui.set_height(heights.total());
+            if rows.is_empty() {
+                return;
+            }
+            let anchor = heights.row_at(viewport.min.y);
+            let old_anchor_offset = heights.offset(anchor);
+            let range = heights.visible(viewport.min.y, viewport.height(), 1);
+            let left = ui.max_rect().left() + ((ui.available_width() - width) * 0.5).max(0.0);
+            for i in range {
+                let y = ui.max_rect().top() + heights.offset(i);
+                let rect = egui::Rect::from_min_size(egui::pos2(left, y), Vec2::new(width, 1.0));
+                let row = &rows[i];
+                let measured = ui
+                    .scope_builder(
+                        egui::UiBuilder::new().id_salt(row.id).max_rect(rect),
+                        |ui| {
+                            ui.push_id(row.id, |ui| {
+                                ui.label(mono(if row.from_user { "you" } else { "codex" }));
+                                ui.add_space(4.0);
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&row.preview).color(if row.from_user {
+                                            TEXT
+                                        } else {
+                                            SECONDARY
+                                        }),
+                                    )
+                                    .wrap()
+                                    .selectable(true),
+                                );
+                                ui.add_space(17.0);
+                            });
+                        },
+                    )
+                    .response
+                    .rect
+                    .height()
+                    .max(1.0);
+                changed |= heights.set(i, measured);
+            }
+            anchor_correction = heights.offset(anchor) - old_anchor_offset;
+            ui.set_height(heights.total());
+        });
+    if anchor_correction.abs() > 0.5 {
+        let mut state = output.state;
+        state.offset.y = (state.offset.y + anchor_correction).max(0.0);
+        state.store(ui.ctx(), output.id);
+    }
+    if changed {
+        ui.ctx().request_repaint();
+    }
+    output.id
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -180,6 +268,12 @@ struct RendererSpike {
     draft: String,
     history: Vec<ChatRow>,
     live_rows: Vec<ChatRow>,
+    history_layout: HeightIndex,
+    live_layout: HeightIndex,
+    history_width: f32,
+    live_width: f32,
+    next_row_id: u64,
+    live_removed_height: f32,
     active_turn: Option<(String, String)>,
     awaiting_turn_start: bool,
     live_error: Option<String>,
@@ -222,10 +316,12 @@ impl RendererSpike {
         let history = (0..history_rows.min(MAX_HISTORY_ROWS))
             .map(|i| ChatRow {
                 from_user: i % 2 == 0,
-                preview: format!(
-                    "Fixture message {}: bounded read-only renderer workload; no Codex execution.",
-                    i + 1
-                ),
+                id: i as u64,
+                preview: if i % 100 == 0 {
+                    format!("Fixture message {} — synthetic code and diff\n{}\n--- a/example.rs\n+++ b/example.rs\n{}", i + 1, REFERENCE_PATCH.repeat(4), "+ bounded synthetic line\n- old synthetic line\n".repeat(30))
+                } else {
+                    format!("Fixture message {}: bounded read-only renderer workload; no Codex execution.", i + 1)
+                },
             })
             .collect();
         Self {
@@ -239,6 +335,12 @@ impl RendererSpike {
             draft: String::new(),
             history,
             live_rows: Vec::new(),
+            history_layout: HeightIndex::new(history_rows.min(MAX_HISTORY_ROWS), 65.0),
+            live_layout: HeightIndex::new(0, 65.0),
+            history_width: 0.0,
+            live_width: 0.0,
+            next_row_id: 0,
+            live_removed_height: 0.0,
             active_turn: None,
             awaiting_turn_start: false,
             live_error: None,
@@ -298,8 +400,16 @@ impl RendererSpike {
     fn push_live_row(&mut self, from_user: bool, preview: String) {
         if self.live_rows.len() == MAX_LIVE_ROWS {
             self.live_rows.remove(0);
+            self.live_removed_height += self.live_layout.remove_first();
         }
-        self.live_rows.push(ChatRow { from_user, preview });
+        let id = self.next_row_id;
+        self.next_row_id = self.next_row_id.wrapping_add(1);
+        self.live_rows.push(ChatRow {
+            from_user,
+            preview,
+            id,
+        });
+        self.live_layout.push(65.0);
     }
 
     fn apply_probe_event(&mut self, event: ProbeEvent) {
@@ -880,24 +990,15 @@ impl RendererSpike {
 
     fn conversation(&mut self, ui: &mut egui::Ui) {
         if self.engine.is_some() && !self.live_rows.is_empty() {
-            ScrollArea::vertical()
-                .id_salt("native-live-conversation")
-                .stick_to_bottom(true)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    centered_width(ui, 768.0, |ui| {
-                        for row in &self.live_rows {
-                            ui.label(mono(if row.from_user { "you" } else { "codex" }));
-                            ui.add_space(4.0);
-                            ui.label(RichText::new(&row.preview).color(if row.from_user {
-                                TEXT
-                            } else {
-                                SECONDARY
-                            }));
-                            ui.add_space(17.0);
-                        }
-                    });
-                });
+            virtual_conversation(
+                ui,
+                &self.live_rows,
+                &mut self.live_layout,
+                &mut self.live_width,
+                "native-live-conversation",
+                true,
+                std::mem::take(&mut self.live_removed_height),
+            );
             return;
         }
         if self.history.is_empty() {
@@ -915,27 +1016,15 @@ impl RendererSpike {
                 });
             return;
         }
-        // Only visible rows are constructed/painter-laid-out: 10,000 rows
-        // must not allocate 10,000 epaint objects per frame.
-        ScrollArea::vertical()
-            .id_salt("native-fixture-chat")
-            .auto_shrink([false, false])
-            .show_rows(ui, 49.0, self.history.len(), |ui, rows| {
-                centered_width(ui, 768.0, |ui| {
-                    for i in rows {
-                        let row = &self.history[i];
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(if row.from_user { "you" } else { "codex" })
-                                    .font(FontId::monospace(11.0))
-                                    .color(if row.from_user { TEXT } else { SECONDARY }),
-                            );
-                            ui.label(RichText::new(&row.preview).size(12.0).color(SECONDARY));
-                        });
-                        ui.add_space(14.0);
-                    }
-                });
-            });
+        virtual_conversation(
+            ui,
+            &self.history,
+            &mut self.history_layout,
+            &mut self.history_width,
+            "native-fixture-chat",
+            false,
+            0.0,
+        );
     }
 
     fn composer(&mut self, ui: &mut egui::Ui) {
@@ -1380,6 +1469,231 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn virtual_history_scroll_and_composer_focus_survive_append() {
+        let ctx = egui::Context::default();
+        let mut app = RendererSpike::new(9_999, false, None, None);
+        let composer_id = egui::Id::new("test-composer");
+        let scroll_id = std::cell::Cell::new(None);
+        let run_frame = |app: &mut RendererSpike| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.allocate_ui(Vec2::new(780.0, 450.0), |ui| {
+                        scroll_id.set(Some(virtual_conversation(
+                            ui,
+                            &app.history,
+                            &mut app.history_layout,
+                            &mut app.history_width,
+                            "test-history",
+                            false,
+                            0.0,
+                        )));
+                    });
+                    ui.add(TextEdit::singleline(&mut app.draft).id(composer_id));
+                });
+            });
+        };
+        run_frame(&mut app);
+        let measured = app.history_layout.measured_heights();
+        assert!(
+            measured[0] > 500.0,
+            "long synthetic code remains readable: {}",
+            measured[0]
+        );
+        assert!(
+            measured
+                .iter()
+                .filter(|height| (**height - 65.0).abs() > 0.5)
+                .count()
+                < 30,
+            "only viewport rows should be measured"
+        );
+        let id = scroll_id.get().unwrap();
+        let mut state = egui::scroll_area::State::load(&ctx, id).unwrap();
+        state.offset.y = 300_000.0;
+        state.store(&ctx, id);
+        ctx.memory_mut(|m| m.request_focus(composer_id));
+        run_frame(&mut app);
+        let before = egui::scroll_area::State::load(&ctx, id).unwrap().offset.y;
+        assert!(before > 200_000.0, "scroll reached the middle: {before}");
+        assert!(ctx.memory(|m| m.has_focus(composer_id)));
+        app.history.push(ChatRow {
+            id: 9_999,
+            from_user: true,
+            preview: "inserted".into(),
+        });
+        app.history_layout.push(65.0);
+        run_frame(&mut app);
+        let after = egui::scroll_area::State::load(&ctx, id).unwrap().offset.y;
+        assert!((after - before).abs() < 1.0, "{before} -> {after}");
+        assert!(ctx.memory(|m| m.has_focus(composer_id)));
+    }
+
+    #[test]
+    fn live_eviction_preserves_visible_anchor_and_row_identity() {
+        let ctx = egui::Context::default();
+        let mut app = RendererSpike::new(0, false, None, None);
+        for i in 0..MAX_LIVE_ROWS {
+            app.push_live_row(i % 2 == 0, format!("live message {i}"));
+        }
+        let scroll_id = std::cell::Cell::new(None);
+        let run_frame = |app: &mut RendererSpike| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    scroll_id.set(Some(virtual_conversation(
+                        ui,
+                        &app.live_rows,
+                        &mut app.live_layout,
+                        &mut app.live_width,
+                        "test-live",
+                        false,
+                        std::mem::take(&mut app.live_removed_height),
+                    )));
+                });
+            });
+        };
+        run_frame(&mut app);
+        let id = scroll_id.get().unwrap();
+        let mut state = egui::scroll_area::State::load(&ctx, id).unwrap();
+        state.offset.y = 10_000.0;
+        state.store(&ctx, id);
+        run_frame(&mut app);
+        let before = egui::scroll_area::State::load(&ctx, id).unwrap().offset.y;
+        let row = app.live_layout.row_at(before);
+        let anchor_id = app.live_rows[row].id;
+        let within = before - app.live_layout.offset(row);
+        app.push_live_row(true, "new message".into());
+        run_frame(&mut app);
+        let after = egui::scroll_area::State::load(&ctx, id).unwrap().offset.y;
+        let new_row = app.live_layout.row_at(after);
+        assert_eq!(app.live_rows[new_row].id, anchor_id);
+        assert!((after - app.live_layout.offset(new_row) - within).abs() < 1.0);
+        assert_eq!(app.live_rows.len(), MAX_LIVE_ROWS);
+    }
+
+    #[test]
+    fn selected_history_text_survives_append() {
+        let ctx = egui::Context::default();
+        let mut app = RendererSpike::new(1, false, None, None);
+        app.history[0].preview = "select this synthetic message".into();
+        let frame = |app: &mut RendererSpike, events| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    virtual_conversation(
+                        ui,
+                        &app.history,
+                        &mut app.history_layout,
+                        &mut app.history_width,
+                        "select-test",
+                        false,
+                        0.0,
+                    );
+                });
+            })
+        };
+        let _ = frame(&mut app, vec![]);
+        let start = egui::pos2(25.0, 40.0);
+        let end = egui::pos2(180.0, 40.0);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(start), button(start, true)],
+        );
+        let _ = frame(&mut app, vec![egui::Event::PointerMoved(end)]);
+        let _ = frame(&mut app, vec![button(end, false)]);
+        let copied = frame(&mut app, vec![egui::Event::Copy]);
+        let extract = |out: &egui::FullOutput| {
+            out.platform_output
+                .commands
+                .iter()
+                .find_map(|cmd| match cmd {
+                    egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                    _ => None,
+                })
+        };
+        let before = extract(&copied).expect("selection copied before append");
+        assert!(!before.is_empty());
+        app.history.push(ChatRow {
+            id: 1,
+            from_user: true,
+            preview: "new".into(),
+        });
+        app.history_layout.push(65.0);
+        let copied = frame(&mut app, vec![egui::Event::Copy]);
+        assert_eq!(extract(&copied), Some(before));
+    }
+
+    #[test]
+    fn wheel_navigates_virtual_history() {
+        let ctx = egui::Context::default();
+        let mut app = RendererSpike::new(100, false, None, None);
+        let id = std::cell::Cell::new(None);
+        let frame = |app: &mut RendererSpike, events| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    id.set(Some(virtual_conversation(
+                        ui,
+                        &app.history,
+                        &mut app.history_layout,
+                        &mut app.history_width,
+                        "wheel-test",
+                        false,
+                        0.0,
+                    )));
+                });
+            });
+        };
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(egui::pos2(200.0, 200.0))],
+        );
+        frame(
+            &mut app,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: Vec2::new(0.0, -400.0),
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let state = egui::scroll_area::State::load(&ctx, id.get().unwrap()).unwrap();
+        assert!(state.offset.y > 0.0, "wheel must move viewport");
+    }
 
     #[test]
     fn bounded_history_and_default_preview_are_separate() {
