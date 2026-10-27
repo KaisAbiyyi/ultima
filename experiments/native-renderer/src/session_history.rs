@@ -22,7 +22,9 @@ pub struct HistoryRow {
 }
 
 fn bounded_id(value: Option<&Value>) -> Option<&str> {
-    value.and_then(Value::as_str).filter(|s| !s.is_empty() && s.len() <= 256)
+    value
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && s.len() <= 256)
 }
 
 pub fn safe_cursor(value: Option<&Value>) -> Result<Option<String>, &'static str> {
@@ -34,7 +36,9 @@ pub fn safe_cursor(value: Option<&Value>) -> Result<Option<String>, &'static str
 }
 
 fn trusted_cwd(cwd: Option<&str>, project: &Path) -> bool {
-    let Some(cwd) = cwd else { return false; };
+    let Some(cwd) = cwd else {
+        return false;
+    };
     project.canonicalize().ok() == Path::new(cwd).canonicalize().ok()
         && project.canonicalize().is_ok()
 }
@@ -43,7 +47,9 @@ pub fn parse_thread_page(
     value: &Value,
     project: &Path,
 ) -> Result<(Vec<ThreadEntry>, Option<String>), &'static str> {
-    let data = value.get("data").and_then(Value::as_array)
+    let data = value
+        .get("data")
+        .and_then(Value::as_array)
         .ok_or("Codex thread listing was invalid.")?;
     if data.len() > THREAD_PAGE_SIZE as usize {
         return Err("Codex thread listing exceeded the page limit.");
@@ -61,12 +67,18 @@ pub fn parse_thread_page(
         if thread.get("ephemeral").and_then(Value::as_bool) == Some(true) {
             continue;
         }
-        let title = thread.get("name").and_then(Value::as_str)
+        let title = thread
+            .get("name")
+            .and_then(Value::as_str)
             .or_else(|| thread.get("preview").and_then(Value::as_str))
-            .filter(|s| !s.trim().is_empty()).unwrap_or("Untitled thread");
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("Untitled thread");
         let label = truncate_utf8(title, 96);
         if !entries.iter().any(|e: &ThreadEntry| e.id == id) {
-            entries.push(ThreadEntry { id: id.to_owned(), label });
+            entries.push(ThreadEntry {
+                id: id.to_owned(),
+                label,
+            });
         }
     }
     Ok((entries, safe_cursor(value.get("nextCursor"))?))
@@ -85,7 +97,9 @@ pub fn verify_thread_identity(
     expected: &str,
     project: &Path,
 ) -> Result<(), &'static str> {
-    let thread = value.get("thread").ok_or("Codex thread metadata was missing.")?;
+    let thread = value
+        .get("thread")
+        .ok_or("Codex thread metadata was missing.")?;
     if bounded_id(thread.get("id")) != Some(expected) {
         return Err("Codex thread identity changed unexpectedly.");
     }
@@ -109,13 +123,17 @@ fn user_item_text(item: &Value) -> Option<String> {
             text.push_str(value);
         }
     }
-    if text.is_empty() { None } else { Some(text) }
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
-pub fn parse_turn_page(
-    value: &Value,
-) -> Result<(Vec<HistoryRow>, Option<String>), &'static str> {
-    let data = value.get("data").and_then(Value::as_array)
+pub fn parse_turn_page(value: &Value) -> Result<(Vec<HistoryRow>, Option<String>), &'static str> {
+    let data = value
+        .get("data")
+        .and_then(Value::as_array)
         .ok_or("Codex paginated turn history is unavailable.")?;
     if data.len() > TURN_PAGE_SIZE as usize {
         return Err("Codex history exceeded the turn page limit.");
@@ -125,7 +143,9 @@ pub fn parse_turn_page(
     // chronological. Reverse turns, never reverse items inside a turn.
     for turn in data.iter().rev() {
         bounded_id(turn.get("id")).ok_or("Codex history had an invalid turn ID.")?;
-        let items = turn.get("items").and_then(Value::as_array)
+        let items = turn
+            .get("items")
+            .and_then(Value::as_array)
             .ok_or("Codex did not return full paginated turn items.")?;
         if items.len() > 128 {
             return Err("Codex turn exceeded the supported item limit.");
@@ -133,12 +153,17 @@ pub fn parse_turn_page(
         for item in items {
             let parsed = match item.get("type").and_then(Value::as_str) {
                 Some("userMessage") => user_item_text(item).map(|preview| HistoryRow {
-                    from_user: true, preview
+                    from_user: true,
+                    preview,
                 }),
-                Some("agentMessage") => item.get("text").and_then(Value::as_str)
-                    .map(|value| HistoryRow {
-                        from_user: false, preview: truncate_utf8(value, MAX_ROW_BYTES)
-                    }),
+                Some("agentMessage") => {
+                    item.get("text")
+                        .and_then(Value::as_str)
+                        .map(|value| HistoryRow {
+                            from_user: false,
+                            preview: truncate_utf8(value, MAX_ROW_BYTES),
+                        })
+                }
                 _ => None, // Never render tool commands, secrets or arbitrary items.
             };
             if let Some(row) = parsed {
@@ -153,7 +178,8 @@ pub fn parse_turn_page(
         if let Some(status) = turn.get("status").and_then(Value::as_str) {
             if matches!(status, "interrupted" | "failed" | "cancelled") {
                 rows.push(HistoryRow {
-                    from_user: false, preview: format!("Turn ended: {status}")
+                    from_user: false,
+                    preview: format!("Turn ended: {status}"),
                 });
             }
         }
@@ -188,7 +214,12 @@ mod tests {
         let good = json!({"thread":{"id":"a","cwd":cwd.to_str().unwrap()}});
         assert!(verify_thread_identity(&good, "a", &cwd).is_ok());
         assert!(verify_thread_identity(&good, "b", &cwd).is_err());
-        assert!(verify_thread_identity(&json!({"thread":{"id":"a","cwd":"/tmp/foreign"}}), "a", &cwd).is_err());
+        assert!(verify_thread_identity(
+            &json!({"thread":{"id":"a","cwd":"/tmp/foreign"}}),
+            "a",
+            &cwd
+        )
+        .is_err());
     }
 
     #[test]
@@ -204,8 +235,15 @@ mod tests {
             ]}
         ],"nextCursor":"older"});
         let (rows, cursor) = parse_turn_page(&page).unwrap();
-        assert_eq!(rows.iter().map(|r| r.preview.as_str()).collect::<Vec<_>>(),
-            ["old prompt","old answer","new prompt","Turn ended: failed"]);
+        assert_eq!(
+            rows.iter().map(|r| r.preview.as_str()).collect::<Vec<_>>(),
+            [
+                "old prompt",
+                "old answer",
+                "new prompt",
+                "Turn ended: failed"
+            ]
+        );
         assert_eq!(cursor.as_deref(), Some("older"));
     }
 
