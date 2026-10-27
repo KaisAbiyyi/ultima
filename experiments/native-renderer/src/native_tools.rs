@@ -185,6 +185,7 @@ impl ToolLedger {
             return Some(item.clone());
         }
         let data = params.get("item")?;
+        let completed = kind == NotificationKind::ItemCompleted;
         let kind = match data.get("type").and_then(Value::as_str) {
             Some("commandExecution") => ApprovalKind::Command,
             Some("fileChange") => ApprovalKind::FileChange,
@@ -208,7 +209,7 @@ impl ToolLedger {
         if item.kind != kind {
             return None;
         }
-        item.state = if kind == NotificationKind::ItemCompleted {
+        item.state = if completed {
             "completed"
         } else {
             "running"
