@@ -27,33 +27,53 @@ pub struct ToolEvidence {
 }
 
 fn identifier(v: Option<&Value>) -> Option<&str> {
-    v.and_then(Value::as_str).filter(|s| !s.is_empty() && s.len() <= 256)
+    v.and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && s.len() <= 256)
 }
 fn text(v: Option<&Value>, limit: usize) -> (String, bool) {
     let raw = v.and_then(Value::as_str).unwrap_or("");
     let mut end = raw.len().min(limit);
-    while !raw.is_char_boundary(end) { end -= 1; }
+    while !raw.is_char_boundary(end) {
+        end -= 1;
+    }
     (raw[..end].to_owned(), raw.len() > end)
 }
 fn safe_path(path: &str, project: &Path) -> bool {
-    if path.is_empty() || path.len() > MAX_PATH || path.contains('\\') ||
-        path.contains(':') || path.contains('%') || path.chars().any(char::is_control) ||
-        path.starts_with('/') || path.ends_with('/') {
+    if path.is_empty()
+        || path.len() > MAX_PATH
+        || path.contains('\\')
+        || path.contains(':')
+        || path.contains('%')
+        || path.chars().any(char::is_control)
+        || path.starts_with('/')
+        || path.ends_with('/')
+    {
         return false;
     }
     let target = Path::new(path);
-    if !target.components().all(|c| matches!(c, Component::Normal(_))) ||
-        path.split('/').any(|part| part == "." || part == ".." || part.is_empty()) {
+    if !target
+        .components()
+        .all(|c| matches!(c, Component::Normal(_)))
+        || path
+            .split('/')
+            .any(|part| part == "." || part == ".." || part.is_empty())
+    {
         return false;
     }
-    let Ok(root) = project.canonicalize() else { return false; };
+    let Ok(root) = project.canonicalize() else {
+        return false;
+    };
     // Follow every existing ancestor, including symlinks; reject escape even for a new file.
     let mut ancestor = project.to_path_buf();
     for component in target.components() {
         ancestor.push(component.as_os_str());
         if ancestor.exists() {
-            let Ok(real) = ancestor.canonicalize() else { return false; };
-            if !real.starts_with(&root) { return false; }
+            let Ok(real) = ancestor.canonicalize() else {
+                return false;
+            };
+            if !real.starts_with(&root) {
+                return false;
+            }
         }
     }
     true
@@ -62,25 +82,42 @@ fn file_preview(raw: &Value, project: &Path) -> (Vec<String>, String, bool) {
     let Some(changes) = raw.get("changes").and_then(Value::as_array) else {
         return (Vec::new(), String::new(), false);
     };
-    if changes.is_empty() || changes.len() > MAX_CHANGES ||
-        ["truncated","isTruncated","partial","hasMore"].iter()
-            .any(|k| raw.get(k).and_then(Value::as_bool) == Some(true)) ||
-        ["totalChanges","changeCount"].iter().any(|k|
-            raw.get(k).is_some_and(|v| v.as_u64() != Some(changes.len() as u64))) {
+    if changes.is_empty()
+        || changes.len() > MAX_CHANGES
+        || ["truncated", "isTruncated", "partial", "hasMore"]
+            .iter()
+            .any(|k| raw.get(k).and_then(Value::as_bool) == Some(true))
+        || ["totalChanges", "changeCount"].iter().any(|k| {
+            raw.get(k)
+                .is_some_and(|v| v.as_u64() != Some(changes.len() as u64))
+        })
+    {
         return (Vec::new(), String::new(), false);
     }
     let mut paths = Vec::new();
     let mut diff = String::new();
     for change in changes {
-        let Some(path) = identifier(change.get("path")) else { return (paths, diff, false); };
-        let Some(chunk) = change.get("diff").and_then(Value::as_str) else { return (paths, diff, false); };
-        if !safe_path(path, project) || chunk.trim().is_empty() ||
-            paths.iter().any(|p| p == path) ||
-            ["truncated","isTruncated","partial","hasMore"].iter()
-                .any(|k| change.get(k).and_then(Value::as_bool) == Some(true)) {
+        let Some(path) = identifier(change.get("path")) else {
+            return (paths, diff, false);
+        };
+        let Some(chunk) = change.get("diff").and_then(Value::as_str) else {
+            return (paths, diff, false);
+        };
+        if !safe_path(path, project)
+            || chunk.trim().is_empty()
+            || paths.iter().any(|p| p == path)
+            || ["truncated", "isTruncated", "partial", "hasMore"]
+                .iter()
+                .any(|k| change.get(k).and_then(Value::as_bool) == Some(true))
+        {
             return (paths, diff, false);
         }
-        let segment = format!("{}{}\n{}", if diff.is_empty() { "" } else { "\n\n" }, path, chunk);
+        let segment = format!(
+            "{}{}\n{}",
+            if diff.is_empty() { "" } else { "\n\n" },
+            path,
+            chunk
+        );
         if segment.len() > MAX_DIFF.saturating_sub(diff.len()) {
             return (paths, diff, false);
         }
@@ -101,17 +138,25 @@ impl ToolLedger {
         self.items.clear();
         self.pending.clear();
     }
-    pub fn clear_pending(&mut self) { self.pending.clear(); }
-    pub fn pending(&self) -> &[Approval] { &self.pending }
+    pub fn clear_pending(&mut self) {
+        self.pending.clear();
+    }
+    pub fn pending(&self) -> &[Approval] {
+        &self.pending
+    }
     pub fn resolved(&mut self, params: &Value) -> Option<RpcId> {
-        let id = ["requestId","serverRequestId","id"].iter()
+        let id = ["requestId", "serverRequestId", "id"]
+            .iter()
             .find_map(|k| serde_json::from_value::<RpcId>(params.get(k)?.clone()).ok())?;
         self.pending.retain(|p| p.id != id);
         Some(id)
     }
-    pub fn capture(&mut self, kind: NotificationKind, params: &Value, project: &Path)
-        -> Option<ToolEvidence>
-    {
+    pub fn capture(
+        &mut self,
+        kind: NotificationKind,
+        params: &Value,
+        project: &Path,
+    ) -> Option<ToolEvidence> {
         let thread = identifier(params.get("threadId"))?;
         let turn = identifier(params.get("turnId"))?;
         let id = if kind == NotificationKind::CommandOutputDelta {
@@ -119,16 +164,22 @@ impl ToolLedger {
         } else {
             identifier(params.get("item").and_then(|v| v.get("id")))?
         };
-        let pos = self.items.iter().position(|item| item.thread == thread &&
-            item.turn == turn && item.id == id);
+        let pos = self
+            .items
+            .iter()
+            .position(|item| item.thread == thread && item.turn == turn && item.id == id);
         if kind == NotificationKind::CommandOutputDelta {
             let index = pos?;
             let item = &mut self.items[index];
-            if item.kind != ApprovalKind::Command { return None; }
+            if item.kind != ApprovalKind::Command {
+                return None;
+            }
             let (delta, clipped) = text(params.get("delta"), MAX_OUTPUT);
             let available = MAX_OUTPUT.saturating_sub(item.output.len());
             let mut end = delta.len().min(available);
-            while !delta.is_char_boundary(end) { end -= 1; }
+            while !delta.is_char_boundary(end) {
+                end -= 1;
+            }
             item.output.push_str(&delta[..end]);
             item.truncated |= clipped || end < delta.len();
             return Some(item.clone());
@@ -139,19 +190,39 @@ impl ToolLedger {
             Some("fileChange") => ApprovalKind::FileChange,
             _ => return None,
         };
-        let mut item = pos.and_then(|i| self.items.get(i).cloned()).unwrap_or(ToolEvidence {
-            thread: thread.into(), turn: turn.into(), id: id.into(), kind,
-            state: "running".into(), command: String::new(), output: String::new(),
-            diff: String::new(), paths: Vec::new(), complete: false, truncated: false,
-        });
-        if item.kind != kind { return None; }
-        item.state = if kind == NotificationKind::ItemCompleted { "completed" } else { "running" }.into();
+        let mut item = pos
+            .and_then(|i| self.items.get(i).cloned())
+            .unwrap_or(ToolEvidence {
+                thread: thread.into(),
+                turn: turn.into(),
+                id: id.into(),
+                kind,
+                state: "running".into(),
+                command: String::new(),
+                output: String::new(),
+                diff: String::new(),
+                paths: Vec::new(),
+                complete: false,
+                truncated: false,
+            });
+        if item.kind != kind {
+            return None;
+        }
+        item.state = if kind == NotificationKind::ItemCompleted {
+            "completed"
+        } else {
+            "running"
+        }
+        .into();
         if item.kind == ApprovalKind::Command {
             let command = match data.get("command") {
                 Some(Value::String(v)) => v.clone(),
-                Some(Value::Array(v)) if v.iter().all(Value::is_string) =>
-                    v.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "),
-                _ => String::new()
+                Some(Value::Array(v)) if v.iter().all(Value::is_string) => v
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                _ => String::new(),
             };
             let (view, clipped) = text(Some(&Value::String(command.clone())), MAX_COMMAND);
             item.command = view;
@@ -169,35 +240,50 @@ impl ToolLedger {
             item.complete = valid;
             item.truncated |= !valid;
         }
-        if let Some(index) = pos { self.items.remove(index); }
+        if let Some(index) = pos {
+            self.items.remove(index);
+        }
         self.items.push(item.clone());
-        if self.items.len() > MAX_ITEMS { self.items.remove(0); }
+        if self.items.len() > MAX_ITEMS {
+            self.items.remove(0);
+        }
         Some(item)
     }
     pub fn matches_evidence(&self, approval: &Approval, project: &Path) -> bool {
         self.items.iter().any(|item| {
-            item.thread == approval.thread_id && item.turn == approval.turn_id &&
-            item.id == approval.item_id && item.kind == approval.kind &&
-            item.complete && !item.truncated &&
-            match item.kind {
-                ApprovalKind::Command => !item.command.trim().is_empty(),
-                ApprovalKind::FileChange =>
-                    !item.diff.is_empty() && !item.paths.is_empty() &&
-                    item.paths.iter().all(|path| safe_path(path, project))
-            }
+            item.thread == approval.thread_id
+                && item.turn == approval.turn_id
+                && item.id == approval.item_id
+                && item.kind == approval.kind
+                && item.complete
+                && !item.truncated
+                && match item.kind {
+                    ApprovalKind::Command => !item.command.trim().is_empty(),
+                    ApprovalKind::FileChange => {
+                        !item.diff.is_empty()
+                            && !item.paths.is_empty()
+                            && item.paths.iter().all(|path| safe_path(path, project))
+                    }
+                }
         })
     }
     pub fn offer(&mut self, approval: Approval, project: &Path) -> bool {
-        if !self.matches_evidence(&approval, project) || self.pending.len() >= MAX_PENDING ||
-            self.pending.iter().any(|p| p.id == approval.id) {
+        if !self.matches_evidence(&approval, project)
+            || self.pending.len() >= MAX_PENDING
+            || self.pending.iter().any(|p| p.id == approval.id)
+        {
             return false;
         }
         self.pending.push(approval);
         true
     }
     pub fn consume(&mut self, approval: &Approval, project: &Path) -> bool {
-        let Some(index) = self.pending.iter().position(|p| p == approval) else { return false; };
-        if !self.matches_evidence(approval, project) { return false; }
+        let Some(index) = self.pending.iter().position(|p| p == approval) else {
+            return false;
+        };
+        if !self.matches_evidence(approval, project) {
+            return false;
+        }
         self.pending.remove(index);
         true
     }
@@ -207,17 +293,30 @@ impl ToolLedger {
 mod tests {
     use super::*;
     use serde_json::json;
-    fn project() -> std::path::PathBuf { std::env::current_dir().unwrap() }
+    fn project() -> std::path::PathBuf {
+        std::env::current_dir().unwrap()
+    }
     fn command(typ: &str, value: &str) -> Value {
         json!({"threadId":"t","turnId":"u","item":{"id":"i","type":typ,"command":value}})
     }
     fn approval() -> Approval {
-        Approval { id: RpcId::String("r".into()), kind: ApprovalKind::Command,
-            thread_id:"t".into(), turn_id:"u".into(), item_id:"i".into(),started_at_ms:1 }
+        Approval {
+            id: RpcId::String("r".into()),
+            kind: ApprovalKind::Command,
+            thread_id: "t".into(),
+            turn_id: "u".into(),
+            item_id: "i".into(),
+            started_at_ms: 1,
+        }
     }
-    #[test] fn exact_request_one_shot_and_cancel_clear() {
-        let mut ledger=ToolLedger::default();
-        ledger.capture(NotificationKind::ItemStarted,&command("commandExecution","echo hello"),&project());
+    #[test]
+    fn exact_request_one_shot_and_cancel_clear() {
+        let mut ledger = ToolLedger::default();
+        ledger.capture(
+            NotificationKind::ItemStarted,
+            &command("commandExecution", "echo hello"),
+            &project(),
+        );
         assert!(ledger.offer(approval(), &project()));
         assert!(!ledger.offer(approval(), &project()));
         assert!(ledger.consume(&approval(), &project()));
@@ -226,47 +325,84 @@ mod tests {
         ledger.clear_pending();
         assert!(!ledger.consume(&approval(), &project()));
     }
-    #[test] fn wrong_identity_and_missing_preview_denied() {
-        let mut ledger=ToolLedger::default();
-        assert!(!ledger.offer(approval(),&project()));
-        ledger.capture(NotificationKind::ItemStarted,&command("commandExecution","echo ok"),&project());
+    #[test]
+    fn wrong_identity_and_missing_preview_denied() {
+        let mut ledger = ToolLedger::default();
+        assert!(!ledger.offer(approval(), &project()));
+        ledger.capture(
+            NotificationKind::ItemStarted,
+            &command("commandExecution", "echo ok"),
+            &project(),
+        );
         for mut v in [approval(), approval(), approval()] {
-            if v.id==RpcId::String("r".into()) { v.thread_id="foreign".into(); }
-            assert!(!ledger.offer(v,&project()));
+            if v.id == RpcId::String("r".into()) {
+                v.thread_id = "foreign".into();
+            }
+            assert!(!ledger.offer(v, &project()));
         }
-        let mut v=approval();v.item_id="other".into();
-        assert!(!ledger.offer(v,&project()));
+        let mut v = approval();
+        v.item_id = "other".into();
+        assert!(!ledger.offer(v, &project()));
     }
-    #[test] fn unsafe_paths_and_partial_diffs_are_unapprovable() {
-        for path in ["../escape","/abs","C:/Windows/x","folder\\evil","a/./b","a//b","a%2fb"] {
-            assert!(!safe_path(path,&project()), "{path}");
+    #[test]
+    fn unsafe_paths_and_partial_diffs_are_unapprovable() {
+        for path in [
+            "../escape",
+            "/abs",
+            "C:/Windows/x",
+            "folder\\evil",
+            "a/./b",
+            "a//b",
+            "a%2fb",
+        ] {
+            assert!(!safe_path(path, &project()), "{path}");
         }
-        let mut ledger=ToolLedger::default();
-        let item=json!({"threadId":"t","turnId":"u","item":{"id":"f","type":"fileChange",
+        let mut ledger = ToolLedger::default();
+        let item = json!({"threadId":"t","turnId":"u","item":{"id":"f","type":"fileChange",
             "changes":[{"path":"src/lib.rs","diff":"@@ -1 +1 @@\n-a\n+b"}],"partial":true}});
-        let snapshot=ledger.capture(NotificationKind::ItemStarted,&item,&project()).unwrap();
+        let snapshot = ledger
+            .capture(NotificationKind::ItemStarted, &item, &project())
+            .unwrap();
         assert!(!snapshot.complete);
-        let mut a=approval();a.kind=ApprovalKind::FileChange;a.item_id="f".into();
-        assert!(!ledger.offer(a,&project()));
+        let mut a = approval();
+        a.kind = ApprovalKind::FileChange;
+        a.item_id = "f".into();
+        assert!(!ledger.offer(a, &project()));
     }
-    #[test] fn bounded_output_and_truncated_command_disallow_accept() {
-        let mut ledger=ToolLedger::default();
-        let oversized=command("commandExecution",&"a".repeat(MAX_COMMAND+1));
-        ledger.capture(NotificationKind::ItemStarted,&oversized,&project());
-        assert!(!ledger.offer(approval(),&project()));
+    #[test]
+    fn bounded_output_and_truncated_command_disallow_accept() {
+        let mut ledger = ToolLedger::default();
+        let oversized = command("commandExecution", &"a".repeat(MAX_COMMAND + 1));
+        ledger.capture(NotificationKind::ItemStarted, &oversized, &project());
+        assert!(!ledger.offer(approval(), &project()));
         ledger.clear();
-        ledger.capture(NotificationKind::ItemStarted,&command("commandExecution","echo ok"),&project());
-        let delta=json!({"threadId":"t","turnId":"u","itemId":"i","delta":"a".repeat(MAX_OUTPUT+1)});
-        let value=ledger.capture(NotificationKind::CommandOutputDelta,&delta,&project()).unwrap();
-        assert!(value.truncated && value.output.len()<=MAX_OUTPUT);
-        assert!(!ledger.offer(approval(),&project()));
+        ledger.capture(
+            NotificationKind::ItemStarted,
+            &command("commandExecution", "echo ok"),
+            &project(),
+        );
+        let delta =
+            json!({"threadId":"t","turnId":"u","itemId":"i","delta":"a".repeat(MAX_OUTPUT+1)});
+        let value = ledger
+            .capture(NotificationKind::CommandOutputDelta, &delta, &project())
+            .unwrap();
+        assert!(value.truncated && value.output.len() <= MAX_OUTPUT);
+        assert!(!ledger.offer(approval(), &project()));
     }
-    #[test] fn broker_resolution_removes_stale_request() {
-        let mut ledger=ToolLedger::default();
-        ledger.capture(NotificationKind::ItemStarted,&command("commandExecution","echo ok"),&project());
-        assert!(ledger.offer(approval(),&project()));
-        assert_eq!(ledger.resolved(&json!({"requestId":"r"})),Some(RpcId::String("r".into())));
+    #[test]
+    fn broker_resolution_removes_stale_request() {
+        let mut ledger = ToolLedger::default();
+        ledger.capture(
+            NotificationKind::ItemStarted,
+            &command("commandExecution", "echo ok"),
+            &project(),
+        );
+        assert!(ledger.offer(approval(), &project()));
+        assert_eq!(
+            ledger.resolved(&json!({"requestId":"r"})),
+            Some(RpcId::String("r".into()))
+        );
         assert!(ledger.pending().is_empty());
-        assert!(!ledger.consume(&approval(),&project()));
+        assert!(!ledger.consume(&approval(), &project()));
     }
 }
