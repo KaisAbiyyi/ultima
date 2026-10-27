@@ -2210,6 +2210,30 @@ mod tests {
     }
 
     #[test]
+    fn resume_without_verified_sandbox_never_binds_a_thread() {
+        let project = std::env::current_dir().unwrap();
+        let cwd = project.to_str().unwrap();
+        let mut broker = ready();
+        let mut flow = HistoryFlow::default();
+        flow.known.push(ThreadEntry {
+            id: "owned".to_owned(), label: "Known".to_owned()
+        });
+        let mut lifecycle = TurnLifecycle::default();
+        flow.select(&mut broker, "owned".to_owned()).unwrap();
+        let read: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        let event = reply(&mut broker, read["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"owned","cwd":cwd}}));
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project).unwrap();
+        let resume: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        let event = reply(&mut broker, resume["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"owned","cwd":cwd},"cwd":cwd,
+                "approvalPolicy":"on-request","sandbox":{"type":"workspaceWrite","networkAccess":true}}));
+        assert!(flow.handle_reply(&mut broker, &event, &mut lifecycle, &project).is_err());
+        assert!(lifecycle.thread.is_none());
+        assert!(broker.take_outbound().is_none());
+    }
+
+    #[test]
     fn malformed_or_unsupported_official_history_fails_closed() {
         let project = std::env::current_dir().unwrap();
         let mut broker = ready();
