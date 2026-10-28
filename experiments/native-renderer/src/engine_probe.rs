@@ -2265,6 +2265,104 @@ mod tests {
     }
 
     #[test]
+    fn resumed_active_turn_blocks_duplicate_execution_until_exact_terminal() {
+        let project = std::env::current_dir().unwrap();
+        let cwd = project.to_str().unwrap();
+        let mut broker = ready();
+        let mut flow = HistoryFlow::default();
+        let mut lifecycle = TurnLifecycle::default();
+        flow.known.push(ThreadEntry {
+            id: "owned".into(),
+            label: "Trusted".into(),
+        });
+
+        flow.select(&mut broker, "owned".into()).unwrap();
+        let read: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        let event = reply(
+            &mut broker,
+            read["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"owned","cwd":cwd}}),
+        );
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .unwrap();
+        let resume: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        let event = reply(
+            &mut broker,
+            resume["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"owned","cwd":cwd},"cwd":cwd,
+                "approvalPolicy":"never",
+                "sandbox":{"type":"readOnly","networkAccess":false}}),
+        );
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .unwrap();
+
+        let turns: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(turns["method"], "thread/turns/list");
+        let event = reply(
+            &mut broker,
+            turns["id"].as_u64().unwrap(),
+            json!({"data":[{"id":"running-turn","status":"inProgress","items":[]}],
+                "nextCursor":null}),
+        );
+        assert!(matches!(
+            flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
+            Ok(Some(Some(ProbeEvent::HistoryPage {
+                active_turn: Some(_), ..
+            })))
+        ));
+        assert!(lifecycle.busy);
+        assert_eq!(lifecycle.turn.as_deref(), Some("running-turn"));
+        assert!(lifecycle.resumed_turn_started.is_some());
+        assert_eq!(
+            lifecycle.submit(&mut broker, &project, "never replay".into()),
+            Err("Codex is already processing a turn.")
+        );
+        assert!(broker.take_outbound().is_none());
+
+        let unrelated = lifecycle
+            .on_event(
+                &mut broker,
+                Event::Notification {
+                    kind: NotificationKind::TurnCompleted,
+                    params: json!({"threadId":"owned",
+                        "turn":{"id":"other","status":"completed"}}),
+                },
+            )
+            .unwrap();
+        assert!(unrelated.is_none());
+        assert!(lifecycle.busy);
+        assert!(broker.take_outbound().is_none());
+
+        assert_eq!(
+            lifecycle
+                .on_event(
+                    &mut broker,
+                    Event::Notification {
+                        kind: NotificationKind::TurnCompleted,
+                        params: json!({"threadId":"owned",
+                            "turn":{"id":"running-turn","status":"completed"}}),
+                    },
+                )
+                .unwrap(),
+            Some(ProbeEvent::TurnCompleted {
+                thread_id: "owned".into(),
+                turn_id: "running-turn".into(),
+                status: "completed".into()
+            })
+        );
+        assert!(!lifecycle.busy);
+        assert!(lifecycle.resumed_turn_started.is_none());
+        lifecycle
+            .submit(&mut broker, &project, "new explicit prompt".into())
+            .unwrap();
+        let started: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(started["method"], "turn/start");
+        assert_eq!(started["params"]["threadId"], "owned");
+        assert_eq!(started["params"]["input"][0]["text"], "new explicit prompt");
+        assert!(broker.take_outbound().is_none());
+    }
+
+    #[test]
     fn resume_without_verified_sandbox_never_binds_a_thread() {
         let project = std::env::current_dir().unwrap();
         let cwd = project.to_str().unwrap();
