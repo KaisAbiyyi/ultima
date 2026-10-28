@@ -68,16 +68,35 @@ fn parse_approval(value: &Value) -> Result<Approval, String> {
         Some("fileChange") => ApprovalKind::FileChange,
         _ => return Err(safe_error("Invalid approval kind")),
     };
+    let thread_id = field("threadId")?;
+    let turn_id = field("turnId")?;
+    let item_id = field("itemId")?;
+    let started_at_ms = value
+        .get("startedAtMs")
+        .and_then(Value::as_u64)
+        .ok_or("Invalid approval timestamp")?;
+    // The webview must echo the exact immutable server-origin descriptor.
+    // Never synthesize an empty one: it would bypass cross-crate binding.
+    let request = value
+        .get("request")
+        .filter(|request| request.is_object())
+        .ok_or_else(|| safe_error("Missing authoritative approval descriptor"))?;
+    if serde_json::to_vec(request).map_or(true, |bytes| bytes.len() > 8 * 1024)
+        || request.get("threadId").and_then(Value::as_str) != Some(thread_id.as_str())
+        || request.get("turnId").and_then(Value::as_str) != Some(turn_id.as_str())
+        || request.get("itemId").and_then(Value::as_str) != Some(item_id.as_str())
+        || request.get("startedAtMs").and_then(Value::as_u64) != Some(started_at_ms)
+    {
+        return Err(safe_error("Inconsistent approval descriptor"));
+    }
     Ok(Approval {
         id,
         kind,
-        thread_id: field("threadId")?,
-        turn_id: field("turnId")?,
-        item_id: field("itemId")?,
-        started_at_ms: value
-            .get("startedAtMs")
-            .and_then(Value::as_u64)
-            .ok_or("Invalid approval timestamp")?,
+        thread_id,
+        turn_id,
+        item_id,
+        started_at_ms,
+        request: request.clone(),
     })
 }
 fn safe_error(reason: &str) -> String {
@@ -208,6 +227,7 @@ async fn drive(
                                             "turnId":approval.turn_id,
                                             "itemId":approval.item_id,
                                             "startedAtMs":approval.started_at_ms,
+                                            "request":approval.request,
                                         }}));
                                     }
                                     other => {
@@ -537,11 +557,23 @@ mod nc07_approval_tests {
     use super::*;
     #[test]
     fn only_full_approval_identity_is_accepted() {
-        let approved = json!({"id":"a","kind":"command","threadId":"t","turnId":"z","itemId":"i","startedAtMs":15});
+        let approved = json!({"id":"a","kind":"command","threadId":"t","turnId":"z","itemId":"i","startedAtMs":15,
+            "request":{"threadId":"t","turnId":"z","itemId":"i","startedAtMs":15,
+                "command":"echo reviewed","cwd":"/project"}});
         let parsed = parse_approval(&approved).unwrap();
         assert_eq!(parsed.id, RpcId::String("a".to_string()));
         assert_eq!(parsed.kind, ApprovalKind::Command);
+        assert_eq!(parsed.request["command"], "echo reviewed");
+        let mut altered_command = approved.clone();
+        altered_command["request"]["command"] = json!("echo mutated");
+        assert_ne!(parse_approval(&altered_command).unwrap(), parsed);
+        let mut foreign_item = approved.clone();
+        foreign_item["request"]["itemId"] = json!("different");
+        let mut truncated = approved.clone();
+        truncated.as_object_mut().unwrap().remove("request");
         for invalid in [
+            foreign_item,
+            truncated,
             json!({"id":"a","kind":"unknown","threadId":"t","turnId":"z","itemId":"i","startedAtMs":15}),
             json!({"id":"a","kind":"command","threadId":"t","turnId":"z","itemId":"","startedAtMs":15}),
             json!({"id":"a","kind":"command","threadId":"t","turnId":"z","itemId":"i"}),
