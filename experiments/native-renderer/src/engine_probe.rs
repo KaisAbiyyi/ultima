@@ -2307,7 +2307,8 @@ mod tests {
         assert!(matches!(
             flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
             Ok(Some(Some(ProbeEvent::HistoryPage {
-                active_turn: Some(_), ..
+                active_turn: Some(_),
+                ..
             })))
         ));
         assert!(lifecycle.busy);
