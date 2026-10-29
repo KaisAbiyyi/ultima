@@ -414,9 +414,9 @@ mod tests {
                 "item":{"id":"i","type":"commandExecution","command":["echo","safe"],"cwd":cwd}}),
         );
         let mut request_vector = original.clone();
-        request_vector.request["command"] = json!(["echo","safe"]);
+        request_vector.request["command"] = json!(["echo", "safe"]);
         let mut reviewed_vector = reviewed("echo safe", cwd);
-        reviewed_vector["commandDescriptor"] = json!(["echo","safe"]);
+        reviewed_vector["commandDescriptor"] = json!(["echo", "safe"]);
         assert!(!ledger.matches(&original, &reviewed_vector, &root));
         assert!(ledger.matches(&request_vector, &reviewed_vector, &root));
     }
