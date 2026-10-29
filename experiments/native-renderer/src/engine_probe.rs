@@ -1209,11 +1209,8 @@ async fn drive(
     let (ctx, coding_enabled) = ui_context;
     let (executable, project) = paths;
     let prepared = (|| {
-        let selection = crate::native_runtime::resolve(
-            &executable,
-            &project,
-            runtime_store.as_deref(),
-        )?;
+        let selection =
+            crate::native_runtime::resolve(&executable, &project, runtime_store.as_deref())?;
         let broker = Broker::new(Limits::default())
             .map_err(|_| "Codex protocol broker failed initialization.")?;
         Ok::<_, &'static str>((selection, broker))

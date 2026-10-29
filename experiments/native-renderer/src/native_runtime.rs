@@ -87,11 +87,12 @@ mod tests {
     fn nc12_system_default_never_creates_separate_runtime_selection() {
         use std::fs;
         use std::time::{SystemTime, UNIX_EPOCH};
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "ultima-nc10g-{}-{nonce}",
-            std::process::id()
-        ));
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("ultima-nc10g-{}-{nonce}", std::process::id()));
         fs::create_dir(&root).unwrap();
         let executable = root.join(if cfg!(windows) { "codex.exe" } else { "codex" });
         fs::write(&executable, b"synthetic only: never executed").unwrap();
@@ -105,7 +106,10 @@ mod tests {
         assert!(selection.manager.is_some());
         assert_eq!(selection.selected, Choice::System);
         selection.rollback_after_confirmed_failure().unwrap();
-        assert_eq!(selection.manager.as_ref().unwrap().selected(), Choice::System);
+        assert_eq!(
+            selection.manager.as_ref().unwrap().selected(),
+            Choice::System
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 }

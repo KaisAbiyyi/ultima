@@ -4,8 +4,8 @@
 mod engine_probe;
 mod icons;
 mod latency;
-mod native_tools;
 mod native_runtime;
+mod native_tools;
 mod session_history;
 mod theme;
 
@@ -1784,7 +1784,11 @@ fn main() -> eframe::Result {
             theme::configure(&cc.egui_ctx);
             let engine = exe.clone().zip(project.clone()).map(|(exe, project)| {
                 EngineProbe::start(
-                    exe, project, cc.egui_ctx.clone(), coding_enabled, runtime_store.clone(),
+                    exe,
+                    project,
+                    cc.egui_ctx.clone(),
+                    coding_enabled,
+                    runtime_store.clone(),
                 )
             });
             let mut app = RendererSpike::with_latency(
