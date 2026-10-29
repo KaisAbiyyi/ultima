@@ -3,11 +3,12 @@
 //! The system executable remains the fallback; managed is checked by NC-12.
 use std::path::Path;
 use ultima_app_server_supervisor::EngineConfig;
-use ultima_runtime_manager::{Approval, Choice, Manager};
+use ultima_runtime_manager::{Approval, Choice, LaunchSnapshot, Manager};
 
 pub(crate) struct Selection {
     pub config: EngineConfig,
     manager: Option<Manager>,
+    lease: Option<LaunchSnapshot>,
     selected: Choice,
 }
 
@@ -60,6 +61,7 @@ fn resolve_against_host(
         return Ok(Selection {
             config: system,
             manager: None,
+            lease: None,
             selected: Choice::System,
         });
     };
@@ -83,27 +85,37 @@ fn resolve_against_host(
     // No native updater, store creation or ownership marker generation.
     let manager = Manager::open_existing(store, Approval::official().ok().into_iter().collect())
         .map_err(|_| "Existing NC-12 host store failed ownership verification.")?;
-    let selected = manager.selected();
-    let config = manager
-        .engine_config(system_exe, system_root, project, project)
-        .map_err(|_| "NC-12 selected executable failed verification.")?;
+    // Hold the cross-process NC-12 journal update lock until after the
+    // supervisor has fully stopped the selected child/process tree.
+    let lease = manager
+        .launch_snapshot(system_exe, system_root, project, project)
+        .map_err(|_| "NC-12 coherent runtime launch snapshot unavailable.")?;
+    let selected = lease.choice.clone();
+    let config = lease.config.clone();
     Ok(Selection {
         config,
         manager: Some(manager),
+        lease: Some(lease),
         selected,
     })
 }
 
 impl Selection {
+    pub(crate) fn is_managed(&self) -> bool {
+        matches!(self.selected, Choice::Managed(_))
+    }
+
     /// Call only AFTER the supervisor has reaped its owned process tree and
     /// the session gate is finalized. Never automatically retry a new engine.
     pub(crate) fn rollback_after_confirmed_failure(&self) -> Result<(), &'static str> {
-        let (Some(manager), Choice::Managed(failed)) = (&self.manager, &self.selected) else {
+        let (Some(manager), Some(lease), Choice::Managed(failed)) =
+            (&self.manager, &self.lease, &self.selected)
+        else {
             return Ok(());
         };
         let recovered = manager
-            .rollback()
-            .map_err(|_| "NC-12 managed rollback failed; reconnect blocked.")?;
+            .rollback_launch(lease)
+            .map_err(|_| "NC-12 conditional rollback refused; trusted-host recovery required.")?;
         if recovered == Choice::Managed(failed.clone()) || manager.selected() != recovered {
             return Err("NC-12 did not verify a distinct runtime fallback.");
         }

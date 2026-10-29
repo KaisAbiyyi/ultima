@@ -1237,7 +1237,9 @@ async fn drive(
         // A failed managed spawn must not be silently retried. Roll back
         // only if the supervisor confirms that no owned engine remains.
         let reaped = supervisor.stop().await.is_ok();
-        let recovered = reaped && selection.rollback_after_confirmed_failure().is_ok();
+        let recovered = reaped
+            && selection.is_managed()
+            && selection.rollback_after_confirmed_failure().is_ok();
         if let Ok(mut queue) = events.lock() {
             queue.fatal(if recovered {
                 "Codex process failed to start; runtime fallback requires explicit reconnect."
@@ -1409,17 +1411,12 @@ async fn drive(
     } else {
         gate.finish_unexpected(1, clean && result.is_err()).await
     };
-    // Never rollback while a failed or unconfirmed process may still own
-    // tool execution. NC-12 only updates its verified journal after teardown.
-    let rollback_error = if result.is_err() && clean && finalized {
-        selection.rollback_after_confirmed_failure().err()
-    } else {
-        None
-    };
-    if result.is_err() || !clean || !finalized || rollback_error.is_some() {
-        let error = rollback_error
-            .or_else(|| result.err())
-            .unwrap_or("Codex process shutdown could not be verified.");
+    // Protocol/history/transport/user Stop and ordinary session failures are
+    // not proof that the selected managed executable is defective. Never
+    // mutate the shared host journal for these unrelated failures.
+    // Only a confirmed managed spawn failure above can request rollback.
+    if result.is_err() || !clean || !finalized {
+        let error = result.err().unwrap_or("Codex process shutdown could not be verified.");
         if let Ok(mut queue) = events.lock() {
             queue.fatal(error);
         }
