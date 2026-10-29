@@ -5,6 +5,7 @@ mod engine_probe;
 mod icons;
 mod latency;
 mod native_tools;
+mod session_history;
 mod theme;
 
 use eframe::egui::{
@@ -15,6 +16,7 @@ use engine_probe::{EngineProbe, ProbeEvent, ProbeStatus};
 use icons::Icon;
 use latency::{Kind, LatencyRecorder};
 use native_tools::ToolEvidence;
+use session_history::{HistoryRow, ThreadEntry};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -181,6 +183,7 @@ struct RendererSpike {
     overlay: Overlay,
     search: String,
     draft: String,
+    queued_prompt: Option<String>,
     history: Vec<ChatRow>,
     live_rows: Vec<ChatRow>,
     tool_rows: Vec<ToolEvidence>,
@@ -188,6 +191,12 @@ struct RendererSpike {
     reviewed_approval: Option<RpcId>,
     approval_dispatching: Option<RpcId>,
     coding_enabled: bool,
+    native_history: Vec<ChatRow>,
+    native_threads: Vec<ThreadEntry>,
+    selected_native_thread: Option<String>,
+    more_native_threads: bool,
+    more_native_history: bool,
+    engine_paths: Option<(PathBuf, PathBuf)>,
     active_turn: Option<(String, String)>,
     awaiting_turn_start: bool,
     live_error: Option<String>,
@@ -245,6 +254,7 @@ impl RendererSpike {
             overlay: Overlay::None,
             search: String::new(),
             draft: String::new(),
+            queued_prompt: None,
             history,
             live_rows: Vec::new(),
             tool_rows: Vec::new(),
@@ -252,6 +262,12 @@ impl RendererSpike {
             reviewed_approval: None,
             approval_dispatching: None,
             coding_enabled: false,
+            native_history: Vec::new(),
+            native_threads: Vec::new(),
+            selected_native_thread: None,
+            more_native_threads: false,
+            more_native_history: false,
+            engine_paths: None,
             active_turn: None,
             awaiting_turn_start: false,
             live_error: None,
@@ -290,7 +306,12 @@ impl RendererSpike {
 
     fn active_title(&self) -> &str {
         if self.engine.is_some() {
-            return "Official Codex session";
+            return self
+                .native_threads
+                .iter()
+                .find(|entry| Some(entry.id.as_str()) == self.selected_native_thread.as_deref())
+                .map(|entry| entry.label.as_str())
+                .unwrap_or("Official Codex session");
         }
         if self.standalone {
             CHAT_TITLES[self.selected_thread.min(CHAT_TITLES.len() - 1)]
@@ -300,7 +321,18 @@ impl RendererSpike {
     }
 
     fn new_preview(&mut self) {
-        // Local-only interaction; no fake Codex thread or approval is created.
+        // New is a local deselection, never a thread/start or turn/start RPC.
+        if let Some(engine) = &self.engine {
+            if self.active_turn.is_some() || self.awaiting_turn_start {
+                self.live_error =
+                    Some("Finish or stop the current turn before changing threads.".to_owned());
+                return;
+            }
+            if let Err(error) = engine.new_thread() {
+                self.live_error = Some(error.to_owned());
+                return;
+            }
+        }
         self.draft.clear();
         if self.engine.is_none() {
             self.show_reference = false;
@@ -317,14 +349,87 @@ impl RendererSpike {
 
     fn apply_probe_event(&mut self, event: ProbeEvent) {
         match event {
-            ProbeEvent::ThreadReady { .. } => {
+            ProbeEvent::ThreadReady { thread_id } => {
+                self.selected_native_thread = Some(thread_id);
+                self.native_history.clear();
+                self.more_native_history = false;
                 self.live_error = None;
+            }
+            ProbeEvent::ThreadPage {
+                entries,
+                append,
+                has_more,
+            } => {
+                if !append {
+                    self.native_threads.clear();
+                }
+                for entry in entries {
+                    if !self.native_threads.iter().any(|known| known.id == entry.id) {
+                        self.native_threads.push(entry);
+                    }
+                }
+                self.more_native_threads =
+                    has_more && self.native_threads.len() < session_history::MAX_THREADS;
+            }
+            ProbeEvent::ThreadSelected { thread_id } => {
+                self.queued_prompt = None;
+                self.selected_native_thread = thread_id;
+                self.native_history.clear();
+                self.live_rows.clear();
+                self.awaiting_turn_start = false;
+                self.active_turn = None;
+                self.last_turn_status = None;
+                self.more_native_history = false;
+                self.live_error = None;
+            }
+            ProbeEvent::HistoryPage {
+                thread_id,
+                rows,
+                prepend,
+                has_more,
+                active_turn,
+            } => {
+                if Some(thread_id.as_str()) != self.selected_native_thread.as_deref() {
+                    return;
+                }
+                let old = rows
+                    .into_iter()
+                    .map(|HistoryRow { from_user, preview }| ChatRow { from_user, preview })
+                    .collect::<Vec<_>>();
+                if prepend {
+                    let mut all = old;
+                    all.append(&mut self.native_history);
+                    self.native_history = all;
+                } else {
+                    self.native_history = old;
+                }
+                if let Some(turn) = active_turn {
+                    self.active_turn = Some((thread_id, turn));
+                    self.awaiting_turn_start = false;
+                    self.last_turn_status = Some("running".into());
+                    self.push_live_row(false, String::new());
+                }
+                if self.native_history.len() > session_history::MAX_HISTORY_ROWS {
+                    // When paging backwards, never evict the newest saved
+                    // turns just to fit additional older rows.
+                    let overflow = self.native_history.len() - session_history::MAX_HISTORY_ROWS;
+                    self.native_history.drain(..overflow);
+                    self.more_native_history = false;
+                } else {
+                    self.more_native_history = has_more;
+                }
+            }
+            ProbeEvent::HistoryCapabilityBlocked(message) => {
+                self.more_native_threads = false;
+                self.more_native_history = false;
+                self.live_error = Some(message.to_owned());
             }
             ProbeEvent::TurnCancelledBeforeStart => {
                 self.pending_approvals.clear();
                 self.reviewed_approval = None;
                 self.approval_dispatching = None;
                 if self.awaiting_turn_start && self.active_turn.is_none() {
+                    self.queued_prompt = None;
                     self.awaiting_turn_start = false;
                     self.last_turn_status = Some("cancelled before start".to_owned());
                     self.live_error = None;
@@ -336,6 +441,10 @@ impl RendererSpike {
                 self.pending_approvals.clear();
                 self.reviewed_approval = None;
                 self.approval_dispatching = None;
+                if let Some(prompt) = self.queued_prompt.take() {
+                    self.push_live_row(true, prompt);
+                    self.draft.clear();
+                }
                 self.active_turn = Some((thread_id, turn_id));
                 self.awaiting_turn_start = false;
                 self.last_turn_status = Some("running".to_owned());
@@ -390,6 +499,10 @@ impl RendererSpike {
                     return;
                 }
                 if completed_before_started {
+                    if let Some(prompt) = self.queued_prompt.take() {
+                        self.push_live_row(true, prompt);
+                        self.draft.clear();
+                    }
                     self.push_live_row(false, String::new());
                 }
                 self.active_turn = None;
@@ -449,6 +562,7 @@ impl RendererSpike {
                     matches!(engine.status(), ProbeStatus::Failed | ProbeStatus::Stopped)
                 });
                 if self.active_turn.is_none() || engine_failed {
+                    self.queued_prompt = None;
                     self.awaiting_turn_start = false;
                     self.active_turn = None;
                     if !matches!(
@@ -524,12 +638,12 @@ impl RendererSpike {
         };
         match engine.submit_prompt(prompt.clone()) {
             Ok(()) => {
-                self.push_live_row(true, prompt);
+                // Only authoritative engine events may display a sent prompt.
+                self.queued_prompt = Some(prompt);
                 self.awaiting_turn_start = true;
                 self.last_turn_status = Some("starting".to_owned());
                 self.live_error = None;
                 self.show_reference = false;
-                self.draft.clear();
             }
             Err(error) => self.live_error = Some(error.to_owned()),
         }
@@ -755,6 +869,43 @@ impl RendererSpike {
             ui.add_space(4.0);
 
             let remaining = (ui.available_height() - 63.0).max(80.0);
+            if self.engine.is_some() {
+                ScrollArea::vertical()
+                    .id_salt("native-persisted-thread-navigation")
+                    .max_height(remaining)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.label(mono("PERSISTED THREADS"));
+                        ui.add_space(6.0);
+                        let threads = self.native_threads.clone();
+                        for entry in threads {
+                            let selected =
+                                self.selected_native_thread.as_deref() == Some(entry.id.as_str());
+                            if ghost_row(ui, &entry.label, selected, 0.0, None).clicked() {
+                                if self.active_turn.is_some() || self.awaiting_turn_start {
+                                    self.live_error = Some(
+                                        "Finish or stop the active turn before switching threads."
+                                            .to_owned(),
+                                    );
+                                } else if let Some(engine) = &self.engine {
+                                    if let Err(message) = engine.select_thread(entry.id) {
+                                        self.live_error = Some(message.to_owned());
+                                    }
+                                }
+                            }
+                        }
+                        if self.more_native_threads && ui.button("Load more threads").clicked() {
+                            if let Some(engine) = &self.engine {
+                                if let Err(message) = engine.load_more_threads() {
+                                    self.live_error = Some(message.to_owned());
+                                }
+                            }
+                        }
+                        ui.add_space(6.0);
+                        ui.label(small("Official Codex history · read-only pagination"));
+                    });
+                return; // No fictional fixture threads in connected mode.
+            }
             ScrollArea::vertical()
                 .id_salt("sidebar-navigation")
                 .max_height(remaining)
@@ -882,6 +1033,36 @@ impl RendererSpike {
                     .strong(),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if self.engine.as_ref().is_some_and(|engine| {
+                    matches!(engine.status(), ProbeStatus::Failed | ProbeStatus::Stopped)
+                }) && ui.button("Reconnect").clicked() {
+                    if let Some((exe, project)) = &self.engine_paths {
+                        // Explicit user action: never replay a pending prompt,
+                        // and the official thread list is reloaded on handshake.
+                        let replacement = EngineProbe::start(
+                            exe.clone(), project.clone(), ui.ctx().clone(), self.coding_enabled
+                        );
+                        self.engine = Some(replacement);
+                        // An old engine's consent/evidence can never authorize the replacement.
+                        self.pending_approvals.clear();
+                        self.reviewed_approval = None;
+                        self.approval_dispatching = None;
+                        self.tool_rows.clear();
+                        self.queued_prompt = None;
+                        self.active_turn = None;
+                        self.awaiting_turn_start = false;
+                        self.live_rows.clear();
+                        self.native_threads.clear();
+                        self.native_history.clear();
+                        self.selected_native_thread = None;
+                        self.more_native_threads = false;
+                        self.more_native_history = false;
+                        self.last_turn_status = Some("unconfirmed after reconnect".to_owned());
+                        self.live_error = Some(
+                            "A disconnected turn is not automatically resumed or replayed. Inspect official persisted history.".to_owned()
+                        );
+                    }
+                }
                 if ui.add(egui::Button::new("clear").frame(false)).clicked() {
                     self.new_preview();
                 }
@@ -1054,14 +1235,24 @@ impl RendererSpike {
     }
 
     fn conversation(&mut self, ui: &mut egui::Ui) {
-        if self.engine.is_some() && !self.live_rows.is_empty() {
+        if self.engine.is_some() {
             ScrollArea::vertical()
-                .id_salt("native-live-conversation")
+                .id_salt("native-official-thread-conversation")
                 .stick_to_bottom(true)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     centered_width(ui, 768.0, |ui| {
-                        for row in &self.live_rows {
+                        if self.more_native_history && ui.button("Load older turns").clicked() {
+                            if let Some(engine) = &self.engine {
+                                if let Err(message) = engine.load_more_history() {
+                                    self.live_error = Some(message.to_owned());
+                                }
+                            }
+                        }
+                        if self.native_history.is_empty() && self.live_rows.is_empty() {
+                            ui.label(small("Select an official Codex thread or start a new one."));
+                        }
+                        for row in self.native_history.iter().chain(self.live_rows.iter()) {
                             ui.label(mono(if row.from_user { "you" } else { "codex" }));
                             ui.add_space(4.0);
                             ui.label(RichText::new(&row.preview).color(if row.from_user {
@@ -1585,6 +1776,8 @@ fn main() -> eframe::Result {
                 LatencyRecorder::new(main_started, latency_receipt.clone()),
             );
             app.coding_enabled = coding_enabled;
+            // Retain exact validated engine paths only for explicit reconnect.
+            app.engine_paths = exe.clone().zip(project.clone());
             Ok(Box::new(app))
         }),
     )
@@ -1802,6 +1995,27 @@ mod tests {
         assert_eq!(app.pending_approvals, vec![request.clone()]);
         app.apply_probe_event(ProbeEvent::ApprovalResolved(request.id));
         assert!(app.pending_approvals.is_empty());
+    }
+
+    #[test]
+    fn history_pending_submit_never_creates_phantom_message() {
+        let mut app = RendererSpike::new(0, false, None, None);
+        app.draft = "preserved prompt".into();
+        app.queued_prompt = Some(app.draft.clone());
+        app.awaiting_turn_start = true;
+        app.apply_probe_event(ProbeEvent::Error("Thread selection is in progress.".into()));
+        assert!(app.live_rows.is_empty());
+        assert_eq!(app.draft, "preserved prompt");
+        assert!(app.queued_prompt.is_none());
+        assert!(!app.awaiting_turn_start);
+        app.queued_prompt = Some(app.draft.clone());
+        app.awaiting_turn_start = true;
+        app.apply_probe_event(ProbeEvent::TurnStarted {
+            thread_id: "t".into(),
+            turn_id: "u".into(),
+        });
+        assert_eq!(app.live_rows[0].preview, "preserved prompt");
+        assert!(app.draft.is_empty());
     }
 
     #[test]
