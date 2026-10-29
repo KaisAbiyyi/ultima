@@ -400,6 +400,10 @@ struct TurnLifecycle {
     // confirms the exact same turn; this holds only one <=256-byte ID.
     unverified_completion: Option<UnverifiedCompletion>,
     resumed_turn_started: Option<Instant>,
+    // A successful resume is not execution-safe until the FIRST official
+    // turns page proves whether the resumed thread already has active work.
+    // Persist this gate even if an RPC completes with an error.
+    resumed_unverified: Option<String>,
 }
 
 impl TurnLifecycle {
@@ -409,6 +413,9 @@ impl TurnLifecycle {
         project: &Path,
         prompt: String,
     ) -> Result<(), &'static str> {
+        if self.resumed_unverified.is_some() {
+            return Err("Resumed Codex turn state is not verified; reconnect required.");
+        }
         if self.busy {
             return Err("Codex is already processing a turn.");
         }
@@ -913,6 +920,12 @@ impl HistoryFlow {
         }
         let (_, request, _) = self.pending.take().expect("checked");
         let Ok(result) = outcome else {
+            // Once a resumed thread has been adopted, a rejected FIRST turns
+            // page is a fatal verification failure, not a recoverable UI state.
+            // The worker propagates this error into owned-process shutdown.
+            if lifecycle.resumed_unverified.is_some() {
+                return Err("Codex resumed turn verification failed; owned process stopped.");
+            }
             // Explicit unsupported capability, no silent fallback to unbounded
             // thread/read(includeTurns=true), replay, or new thread execution.
             return Ok(Some(Some(ProbeEvent::HistoryCapabilityBlocked(
@@ -965,6 +978,7 @@ impl HistoryFlow {
                 if resumed_id != thread {
                     return Err("Codex resumed a different thread identity.");
                 }
+                lifecycle.resumed_unverified = Some(thread.clone());
                 lifecycle.thread = Some(thread.clone());
                 lifecycle.project = Some(project.to_path_buf());
                 self.selected = Some(thread.clone());
@@ -976,7 +990,19 @@ impl HistoryFlow {
             }
             HistoryRequest::Turns { thread, prepend } => {
                 if self.selected.as_deref() != Some(thread.as_str()) {
-                    return Ok(Some(None)); // stale after selection change
+                    return Err("Codex turns page changed selected thread identity.");
+                }
+                let first_resume_page = !prepend
+                    && lifecycle.resumed_unverified.as_deref() == Some(thread.as_str());
+                if !prepend && !first_resume_page {
+                    return Err("Codex turns page lacked a matching resume verification gate.");
+                }
+                // Some protocol versions echo threadId in this response. If
+                // present it MUST match the broker-bound request identity.
+                if result.get("threadId").is_some()
+                    && safe_id(result.get("threadId")) != Some(thread.as_str())
+                {
+                    return Err("Codex turns page reported a foreign thread identity.");
                 }
                 let active_turn = if prepend {
                     None
@@ -993,6 +1019,12 @@ impl HistoryFlow {
                     lifecycle.resumed_turn_started = Some(Instant::now());
                 }
                 self.next_turns = next;
+                // Release only after complete validation and active-turn
+                // adoption. Any error above leaves the gate locked and the
+                // worker destroys the owned session (never prompt replay).
+                if first_resume_page {
+                    lifecycle.resumed_unverified = None;
+                }
                 Ok(Some(Some(ProbeEvent::HistoryPage {
                     thread_id: thread,
                     rows,
@@ -1106,14 +1138,15 @@ async fn drive(
                     }
                     let outcome = match command {
                         Command::Submit(text) => {
-                            if history.pending.is_some() {
-                                Err("Thread selection is in progress.")
+                            if history.pending.is_some() || lifecycle.resumed_unverified.is_some() {
+                                Err("Resumed turn verification is in progress; submission blocked.")
                             } else {
                                 lifecycle.submit(&mut broker, &project, text)
                             }
                         }
                         Command::Cancel => lifecycle.cancel(&mut broker),
-                        Command::NewThread if !lifecycle.busy && history.pending.is_none() => {
+                        Command::NewThread if !lifecycle.busy && history.pending.is_none()
+                            && lifecycle.resumed_unverified.is_none() => {
                             lifecycle.thread = None;
                             history.selected = None;
                             history.next_turns = None;
@@ -1121,13 +1154,16 @@ async fn drive(
                                 ProbeEvent::ThreadSelected {thread_id:None})?;
                             Ok(())
                         }
-                        Command::SelectThread(id) if !lifecycle.busy => {
+                        Command::SelectThread(id) if !lifecycle.busy
+                            && lifecycle.resumed_unverified.is_none() => {
                             history.select(&mut broker, id)
                         }
-                        Command::MoreThreads if !lifecycle.busy => {
+                        Command::MoreThreads if !lifecycle.busy
+                            && lifecycle.resumed_unverified.is_none() => {
                             history.list(&mut broker, &project, true)
                         }
-                        Command::MoreHistory if !lifecycle.busy => {
+                        Command::MoreHistory if !lifecycle.busy
+                            && lifecycle.resumed_unverified.is_none() => {
                             if let Some(thread) = history.selected.clone() {
                                 history.turns(&mut broker, &thread, true)
                             } else { Err("No stored thread selected.") }
