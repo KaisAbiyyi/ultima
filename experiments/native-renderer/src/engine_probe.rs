@@ -2547,10 +2547,16 @@ mod tests {
     fn stale_failed_resume_reply_cannot_reactivate_adopted_thread() {
         let (mut broker, mut flow, mut lifecycle, project, id) =
             resume_waiting_for_first_turn_page();
-        let stale = failed_first_page(&mut broker, &mut flow, &mut lifecycle, &project, id, -32601);
-        // Handler has no pending ID and ignores a duplicate/delayed reply.
+        failed_first_page(&mut broker, &mut flow, &mut lifecycle, &project, id, -32601);
+        // A delayed SUCCESS for the same first page cannot revive a failed
+        // session after its pending request has been invalidated.
+        let late_success = Event::Reply {
+            id,
+            method: ClientMethod::ThreadTurnsList,
+            outcome: Ok(json!({"data":[],"nextCursor":null})),
+        };
         assert!(matches!(
-            flow.handle_reply(&mut broker, &stale, &mut lifecycle, &project),
+            flow.handle_reply(&mut broker, &late_success, &mut lifecycle, &project),
             Ok(None)
         ));
         assert_eq!(lifecycle.resumed_unverified.as_deref(), Some("owned"));
