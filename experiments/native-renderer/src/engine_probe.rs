@@ -1416,7 +1416,9 @@ async fn drive(
     // mutate the shared host journal for these unrelated failures.
     // Only a confirmed managed spawn failure above can request rollback.
     if result.is_err() || !clean || !finalized {
-        let error = result.err().unwrap_or("Codex process shutdown could not be verified.");
+        let error = result
+            .err()
+            .unwrap_or("Codex process shutdown could not be verified.");
         if let Ok(mut queue) = events.lock() {
             queue.fatal(error);
         }

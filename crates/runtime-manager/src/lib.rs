@@ -264,7 +264,8 @@ impl Manager {
         let root = fs::canonicalize(root)?;
         let marker = root.join(MARKER);
         let marker_meta = fs::symlink_metadata(&marker)?;
-        if !marker_meta.is_file() || marker_meta.file_type().is_symlink()
+        if !marker_meta.is_file()
+            || marker_meta.file_type().is_symlink()
             || marker_meta.len() != b"ultima-managed-v1\n".len() as u64
             || fs::read(&marker)? != b"ultima-managed-v1\n"
         {
@@ -284,7 +285,10 @@ impl Manager {
             }
         }
         // Validate the existing journal before returning an attachable manager.
-        let manager = Self { root, approvals: allowed };
+        let manager = Self {
+            root,
+            approvals: allowed,
+        };
         manager.history()?;
         Ok(manager)
     }
@@ -550,18 +554,24 @@ impl Manager {
         let guard = self.lock()?;
         let entries = self.history()?;
         let generation = entries.last().map_or(0, |entry| entry.sequence);
-        let choice = entries.last().map_or(Choice::System, |entry| entry.choice.clone());
+        let choice = entries
+            .last()
+            .map_or(Choice::System, |entry| entry.choice.clone());
         let (binary, root, digest) = match &choice {
             Choice::System => (system_exe.to_path_buf(), system_root.to_path_buf(), None),
             Choice::Managed(version) => {
                 let binary = self.verified(version)?;
                 let digest = self.approval(version)?.digest().to_owned();
-                (binary, self.root.join("versions").join(version), Some(digest))
+                (
+                    binary,
+                    self.root.join("versions").join(version),
+                    Some(digest),
+                )
             }
         };
-        let config = ultima_app_server_supervisor::EngineConfig::new(
-            binary, root, project, project_root,
-        ).map_err(|_| Error::Invalid("launch snapshot config"))?;
+        let config =
+            ultima_app_server_supervisor::EngineConfig::new(binary, root, project, project_root)
+                .map_err(|_| Error::Invalid("launch snapshot config"))?;
         Ok(LaunchSnapshot {
             config,
             choice,
@@ -581,7 +591,9 @@ impl Manager {
         }
         let entries = self.history()?;
         let generation = entries.last().map_or(0, |entry| entry.sequence);
-        let current = entries.last().map_or(Choice::System, |entry| entry.choice.clone());
+        let current = entries
+            .last()
+            .map_or(Choice::System, |entry| entry.choice.clone());
         if generation != lease.generation || current != lease.choice {
             return Err(Error::Invalid("journal advanced after launch"));
         }
@@ -616,7 +628,9 @@ mod policy_tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("owned");
         let mut manager = Manager::open(&root, vec![]).unwrap();
-        let file = tmp.path().join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let file = tmp
+            .path()
+            .join(if cfg!(windows) { "codex.exe" } else { "codex" });
         fs::write(&file, b"synthetic test binary").unwrap();
         #[cfg(unix)]
         {
@@ -770,7 +784,10 @@ mod policy_tests {
         fs::create_dir(&foreign).unwrap();
         fs::write(foreign.join(".ultima-managed-runtime-v1"), b"forged\n").unwrap();
         assert!(Manager::open_existing(&foreign, vec![]).is_err());
-        assert_eq!(fs::read(foreign.join(".ultima-managed-runtime-v1")).unwrap(), b"forged\n");
+        assert_eq!(
+            fs::read(foreign.join(".ultima-managed-runtime-v1")).unwrap(),
+            b"forged\n"
+        );
         let owner = temp.path().join("production");
         Manager::open(&owner, vec![]).unwrap();
         assert!(Manager::open_existing(&owner, vec![]).is_ok());
@@ -781,7 +798,9 @@ mod policy_tests {
         let (tmp, manager, file, _) = fixture();
         manager.stage(&file, "0.164.0").unwrap();
         manager.record(Choice::Managed("0.164.0".into())).unwrap();
-        let snapshot = manager.launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path()).unwrap();
+        let snapshot = manager
+            .launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path())
+            .unwrap();
         assert_eq!(snapshot.choice, Choice::Managed("0.164.0".into()));
         assert!(snapshot.digest.is_some());
         assert!(matches!(manager.activate_system(), Err(Error::Locked)));
@@ -796,7 +815,9 @@ mod policy_tests {
         assert_eq!(manager.history().unwrap().len(), recovered_len);
         drop(snapshot);
         assert!(manager.activate_system().is_ok());
-        let reconnect = manager.launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path()).unwrap();
+        let reconnect = manager
+            .launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path())
+            .unwrap();
         assert_eq!(reconnect.choice, Choice::System);
     }
 
@@ -805,7 +826,9 @@ mod policy_tests {
         let (tmp, manager, file, _) = fixture();
         manager.stage(&file, "0.164.0").unwrap();
         manager.record(Choice::Managed("0.164.0".into())).unwrap();
-        let snapshot = manager.launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path()).unwrap();
+        let snapshot = manager
+            .launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path())
+            .unwrap();
         // Simulate a malicious/out-of-contract external writer bypassing
         // the lease; even then the rollback refuses the newer generation.
         manager.record(Choice::System).unwrap();
@@ -819,13 +842,17 @@ mod policy_tests {
     fn snapshot_blocks_system_to_managed_until_release() {
         let (tmp, manager, file, _) = fixture();
         manager.stage(&file, "0.164.0").unwrap();
-        let system = manager.launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path()).unwrap();
+        let system = manager
+            .launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path())
+            .unwrap();
         assert_eq!(system.choice, Choice::System);
         assert!(matches!(manager.activate_system(), Err(Error::Locked)));
         assert!(manager.rollback_launch(&system).is_err());
         drop(system);
         manager.record(Choice::Managed("0.164.0".into())).unwrap();
-        let managed = manager.launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path()).unwrap();
+        let managed = manager
+            .launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path())
+            .unwrap();
         assert_eq!(managed.choice, Choice::Managed("0.164.0".into()));
         assert!(manager.rollback_launch(&managed).is_ok());
     }

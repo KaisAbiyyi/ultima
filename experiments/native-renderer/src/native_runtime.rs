@@ -29,8 +29,8 @@ pub(crate) fn resolve(
 
 #[cfg(windows)]
 fn production_host_store() -> Result<std::path::PathBuf, &'static str> {
-    let roaming = std::env::var_os("APPDATA")
-        .ok_or("Production host app-data directory unavailable.")?;
+    let roaming =
+        std::env::var_os("APPDATA").ok_or("Production host app-data directory unavailable.")?;
     Ok(std::path::PathBuf::from(roaming)
         .join("com.kaisabiyyi.ultima")
         .join("managed-codex"))
@@ -142,8 +142,12 @@ mod tests {
     fn nc12_absent_and_foreign_store_are_denied_without_mutation() {
         use std::fs;
         use std::time::{SystemTime, UNIX_EPOCH};
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let root = std::env::temp_dir().join(format!("ultima-nc10g-{}-{nonce}", std::process::id()));
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("ultima-nc10g-{}-{nonce}", std::process::id()));
         fs::create_dir(&root).unwrap();
         let executable = root.join(if cfg!(windows) { "codex.exe" } else { "codex" });
         fs::write(&executable, b"synthetic only: never executed").unwrap();
@@ -162,7 +166,8 @@ mod tests {
         assert!(!trusted.exists());
         fs::create_dir_all(trusted.parent().unwrap()).unwrap();
         Manager::open(&trusted, vec![]).unwrap();
-        let choice = resolve_against_host(&executable, &root, Some(&trusted), Some(&trusted)).unwrap();
+        let choice =
+            resolve_against_host(&executable, &root, Some(&trusted), Some(&trusted)).unwrap();
         assert_eq!(choice.selected, Choice::System);
         choice.rollback_after_confirmed_failure().unwrap();
         fs::remove_dir_all(root).unwrap();
@@ -171,8 +176,8 @@ mod tests {
     #[test]
     fn nc12_system_default_does_not_need_host_store() {
         // Absence of opt-in must never access or create any NC-12 journal.
-        assert!(resolve_against_host(
-            Path::new("codex.exe"), Path::new("project"), None, None
-        ).is_err());
+        assert!(
+            resolve_against_host(Path::new("codex.exe"), Path::new("project"), None, None).is_err()
+        );
     }
 }
