@@ -1,6 +1,7 @@
 //! Opt-in official Codex App Server client for the native-renderer experiment.
 //! Transport, JSONL protocol, process-tree teardown and approval policy are
 //! owned by the production Rust crates. There are no automatic tool approvals.
+use crate::session_history::{self, HistoryRow, ThreadEntry};
 use eframe::egui;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -22,6 +23,8 @@ const MAX_COMMANDS: usize = 8;
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(20);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
+const HISTORY_TIMEOUT: Duration = Duration::from_secs(30);
+const RESUMED_TURN_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -39,6 +42,22 @@ pub enum ProbeEvent {
     ThreadReady {
         thread_id: String,
     },
+    ThreadPage {
+        entries: Vec<ThreadEntry>,
+        append: bool,
+        has_more: bool,
+    },
+    ThreadSelected {
+        thread_id: Option<String>,
+    },
+    HistoryPage {
+        thread_id: String,
+        rows: Vec<HistoryRow>,
+        prepend: bool,
+        has_more: bool,
+        active_turn: Option<String>,
+    },
+    HistoryCapabilityBlocked(&'static str),
     TurnCancelledBeforeStart,
     TurnStarted {
         thread_id: String,
@@ -69,6 +88,16 @@ impl ProbeEvent {
                 text.len() + 512
             }
             Self::Error(message) => message.len() + 512,
+            Self::ThreadPage { entries, .. } => {
+                entries
+                    .iter()
+                    .map(|e| e.label.len() + e.id.len() + 128)
+                    .sum::<usize>()
+                    + 512
+            }
+            Self::HistoryPage { rows, .. } => {
+                rows.iter().map(|r| r.preview.len() + 128).sum::<usize>() + 512
+            }
             _ => 512,
         }
     }
@@ -183,6 +212,10 @@ impl DisplayEvents {
 enum Command {
     Submit(String),
     Cancel,
+    NewThread,
+    SelectThread(String),
+    MoreThreads,
+    MoreHistory,
 }
 
 pub struct EngineProbe {
@@ -366,6 +399,11 @@ struct TurnLifecycle {
     // turn/started. Never expose it until a separate official start identity
     // confirms the exact same turn; this holds only one <=256-byte ID.
     unverified_completion: Option<UnverifiedCompletion>,
+    resumed_turn_started: Option<Instant>,
+    // A successful resume is not execution-safe until the FIRST official
+    // turns page proves whether the resumed thread already has active work.
+    // Persist this gate even if an RPC completes with an error.
+    resumed_unverified: Option<String>,
 }
 
 impl TurnLifecycle {
@@ -375,6 +413,9 @@ impl TurnLifecycle {
         project: &Path,
         prompt: String,
     ) -> Result<(), &'static str> {
+        if self.resumed_unverified.is_some() {
+            return Err("Resumed Codex turn state is not verified; reconnect required.");
+        }
         if self.busy {
             return Err("Codex is already processing a turn.");
         }
@@ -420,6 +461,7 @@ impl TurnLifecycle {
         self.rpc_started = Some(Instant::now());
         self.cancel_started = None;
         self.unverified_completion = None;
+        self.resumed_turn_started = None;
         Ok(())
     }
 
@@ -546,6 +588,7 @@ impl TurnLifecycle {
         self.cancel_started = None;
         self.assistant_item = None;
         self.unverified_completion = None;
+        self.resumed_turn_started = None;
         event
     }
 
@@ -555,6 +598,12 @@ impl TurnLifecycle {
             .is_some_and(|start| now.saturating_duration_since(start) >= CANCEL_TIMEOUT)
         {
             return Some("Codex did not acknowledge cancellation; owned process stopped.");
+        }
+        if self
+            .resumed_turn_started
+            .is_some_and(|start| now.saturating_duration_since(start) >= RESUMED_TURN_TIMEOUT)
+        {
+            return Some("Codex resumed active turn without a terminal; owned process stopped.");
         }
         if self
             .rpc_started
@@ -738,6 +787,256 @@ impl TurnLifecycle {
     }
 }
 
+// Single in-flight authoritative history request. No local session database,
+// replay queue, or automatic post-crash turn resubmission exists.
+#[derive(Clone, Debug)]
+enum HistoryRequest {
+    List { append: bool },
+    Read { thread: String },
+    Resume { thread: String },
+    Turns { thread: String, prepend: bool },
+}
+
+#[derive(Default)]
+struct HistoryFlow {
+    pending: Option<(u64, HistoryRequest, Instant)>,
+    known: Vec<ThreadEntry>,
+    selected: Option<String>,
+    next_threads: Option<String>,
+    next_turns: Option<String>,
+}
+
+impl HistoryFlow {
+    fn timeout_error(&self, now: Instant) -> Option<&'static str> {
+        self.pending.as_ref().and_then(|(_, _, start)| {
+            (now.saturating_duration_since(*start) >= HISTORY_TIMEOUT)
+                .then_some("Codex history RPC timed out; owned process stopped.")
+        })
+    }
+
+    fn request(
+        &mut self,
+        broker: &mut Broker,
+        method: ClientMethod,
+        params: Value,
+        operation: HistoryRequest,
+    ) -> Result<(), &'static str> {
+        if self.pending.is_some() {
+            return Err("Codex history request already in progress.");
+        }
+        let id = broker
+            .call(method, params)
+            .map_err(|_| "Codex history request failed validation.")?;
+        self.pending = Some((id, operation, Instant::now()));
+        Ok(())
+    }
+
+    fn list(
+        &mut self,
+        broker: &mut Broker,
+        project: &Path,
+        append: bool,
+    ) -> Result<(), &'static str> {
+        if !append {
+            self.known.clear();
+            self.next_threads = None;
+        }
+        if append
+            && (self.known.len() >= session_history::MAX_THREADS || self.next_threads.is_none())
+        {
+            return Ok(());
+        }
+        let cwd = project.to_str().ok_or("Project path is not valid UTF-8.")?;
+        let mut params = json!({"cwd":cwd,"limit":session_history::THREAD_PAGE_SIZE,
+            "sourceKinds":["cli","vscode","appServer"]});
+        if append {
+            params["cursor"] = Value::String(self.next_threads.clone().expect("checked"));
+        }
+        self.request(
+            broker,
+            ClientMethod::ThreadList,
+            params,
+            HistoryRequest::List { append },
+        )
+    }
+
+    fn select(&mut self, broker: &mut Broker, id: String) -> Result<(), &'static str> {
+        if !self.known.iter().any(|e| e.id == id) {
+            return Err("Selected thread was not in the trusted project listing.");
+        }
+        self.request(
+            broker,
+            ClientMethod::ThreadRead,
+            json!({"threadId":id,"includeTurns":false}),
+            HistoryRequest::Read { thread: id },
+        )
+    }
+
+    fn turns(
+        &mut self,
+        broker: &mut Broker,
+        thread: &str,
+        prepend: bool,
+    ) -> Result<(), &'static str> {
+        if self.selected.as_deref() != Some(thread) {
+            return Err("Codex history thread selection changed.");
+        }
+        let mut params = json!({"threadId":thread,"limit":session_history::TURN_PAGE_SIZE,
+            "sortDirection":"desc","itemsView":"full"});
+        if prepend {
+            let Some(cursor) = self.next_turns.clone() else {
+                return Ok(());
+            };
+            params["cursor"] = Value::String(cursor);
+        } else {
+            self.next_turns = None;
+        }
+        self.request(
+            broker,
+            ClientMethod::ThreadTurnsList,
+            params,
+            HistoryRequest::Turns {
+                thread: thread.to_owned(),
+                prepend,
+            },
+        )
+    }
+
+    fn handle_reply(
+        &mut self,
+        broker: &mut Broker,
+        event: &Event,
+        lifecycle: &mut TurnLifecycle,
+        project: &Path,
+    ) -> Result<Option<Option<ProbeEvent>>, &'static str> {
+        let Event::Reply { id, outcome, .. } = event else {
+            return Ok(None);
+        };
+        let Some((pending_id, _, _)) = &self.pending else {
+            return Ok(None);
+        };
+        if id != pending_id {
+            return Ok(None);
+        }
+        let (_, request, _) = self.pending.take().expect("checked");
+        let Ok(result) = outcome else {
+            // Once a resumed thread has been adopted, a rejected FIRST turns
+            // page is a fatal verification failure, not a recoverable UI state.
+            // The worker propagates this error into owned-process shutdown.
+            if lifecycle.resumed_unverified.is_some() {
+                return Err("Codex resumed turn verification failed; owned process stopped.");
+            }
+            // Explicit unsupported capability, no silent fallback to unbounded
+            // thread/read(includeTurns=true), replay, or new thread execution.
+            return Ok(Some(Some(ProbeEvent::HistoryCapabilityBlocked(
+                "Official thread paging/read/resume is unsupported or rejected by this Codex App Server."
+            ))));
+        };
+        match request {
+            HistoryRequest::List { append } => {
+                let (entries, next) = session_history::parse_thread_page(result, project)?;
+                if !append {
+                    self.known.clear();
+                }
+                let mut new_entries = Vec::new();
+                for entry in entries {
+                    if self.known.len() == session_history::MAX_THREADS {
+                        break;
+                    }
+                    if !self.known.iter().any(|known| known.id == entry.id) {
+                        self.known.push(entry.clone());
+                        new_entries.push(entry);
+                    }
+                }
+                self.next_threads = if self.known.len() >= session_history::MAX_THREADS {
+                    None
+                } else {
+                    next
+                };
+                Ok(Some(Some(ProbeEvent::ThreadPage {
+                    entries: new_entries,
+                    append,
+                    has_more: self.next_threads.is_some(),
+                })))
+            }
+            HistoryRequest::Read { thread } => {
+                session_history::verify_thread_identity(result, &thread, project)?;
+                let cwd = project.to_str().ok_or("Project path is not valid UTF-8.")?;
+                self.request(
+                    broker,
+                    ClientMethod::ThreadResume,
+                    json!({"threadId":thread,"cwd":cwd,"approvalPolicy":"never",
+                        "sandbox":"read-only","excludeTurns":true}),
+                    HistoryRequest::Resume { thread },
+                )?;
+                Ok(Some(None))
+            }
+            HistoryRequest::Resume { thread } => {
+                // A resume can change effective authorization. A metadata
+                // read is not proof that the resumed session is read-only.
+                let resumed_id = accepted_read_only_thread(result, project)?;
+                if resumed_id != thread {
+                    return Err("Codex resumed a different thread identity.");
+                }
+                lifecycle.resumed_unverified = Some(thread.clone());
+                lifecycle.thread = Some(thread.clone());
+                lifecycle.project = Some(project.to_path_buf());
+                self.selected = Some(thread.clone());
+                self.next_turns = None;
+                self.turns(broker, &thread, false)?;
+                Ok(Some(Some(ProbeEvent::ThreadSelected {
+                    thread_id: Some(thread),
+                })))
+            }
+            HistoryRequest::Turns { thread, prepend } => {
+                if self.selected.as_deref() != Some(thread.as_str()) {
+                    return Err("Codex turns page changed selected thread identity.");
+                }
+                let first_resume_page =
+                    !prepend && lifecycle.resumed_unverified.as_deref() == Some(thread.as_str());
+                if !prepend && !first_resume_page {
+                    return Err("Codex turns page lacked a matching resume verification gate.");
+                }
+                // Some protocol versions echo threadId in this response. If
+                // present it MUST match the broker-bound request identity.
+                if result.get("threadId").is_some()
+                    && safe_id(result.get("threadId")) != Some(thread.as_str())
+                {
+                    return Err("Codex turns page reported a foreign thread identity.");
+                }
+                let active_turn = if prepend {
+                    None
+                } else {
+                    session_history::active_turn_in_page(result)?
+                };
+                let (rows, next) = session_history::parse_turn_page(result)?;
+                if let Some(id) = &active_turn {
+                    if lifecycle.busy || lifecycle.turn_request.is_some() {
+                        return Err("Codex resume returned conflicting active-turn state.");
+                    }
+                    lifecycle.turn = Some(id.clone());
+                    lifecycle.busy = true;
+                    lifecycle.resumed_turn_started = Some(Instant::now());
+                }
+                self.next_turns = next;
+                // Release only after complete validation and active-turn
+                // adoption. Any error above leaves the gate locked and the
+                // worker destroys the owned session (never prompt replay).
+                if first_resume_page {
+                    lifecycle.resumed_unverified = None;
+                }
+                Ok(Some(Some(ProbeEvent::HistoryPage {
+                    thread_id: thread,
+                    rows,
+                    prepend,
+                    has_more: self.next_turns.is_some(),
+                    active_turn,
+                })))
+            }
+        }
+    }
+}
+
 async fn flush(broker: &mut Broker, supervisor: &mut EngineSupervisor) -> Result<(), &'static str> {
     while let Some(frame) = broker.take_outbound() {
         let payload: Value = serde_json::from_slice(&frame)
@@ -803,6 +1102,7 @@ async fn drive(
     }
     let mut shutdown = shutdown;
     let mut lifecycle = TurnLifecycle::default();
+    let mut history = HistoryFlow::default();
     let mut watchdog = tokio::time::interval(Duration::from_secs(1));
     let handshake_started = Instant::now();
     let result: Result<(), &'static str> = async {
@@ -823,6 +1123,9 @@ async fn drive(
                     if let Some(reason) = lifecycle.timeout_error(Instant::now()) {
                         return Err(reason);
                     }
+                    if let Some(reason) = history.timeout_error(Instant::now()) {
+                        return Err(reason);
+                    }
                 }
                 command = commands.recv() => {
                     if emergency_stop.load(Ordering::Acquire) {
@@ -834,8 +1137,38 @@ async fn drive(
                         continue;
                     }
                     let outcome = match command {
-                        Command::Submit(text) => lifecycle.submit(&mut broker, &project, text),
+                        Command::Submit(text) => {
+                            if history.pending.is_some() || lifecycle.resumed_unverified.is_some() {
+                                Err("Resumed turn verification is in progress; submission blocked.")
+                            } else {
+                                lifecycle.submit(&mut broker, &project, text)
+                            }
+                        }
                         Command::Cancel => lifecycle.cancel(&mut broker),
+                        Command::NewThread if !lifecycle.busy && history.pending.is_none()
+                            && lifecycle.resumed_unverified.is_none() => {
+                            lifecycle.thread = None;
+                            history.selected = None;
+                            history.next_turns = None;
+                            enqueue(&events, &ctx,
+                                ProbeEvent::ThreadSelected {thread_id:None})?;
+                            Ok(())
+                        }
+                        Command::SelectThread(id) if !lifecycle.busy
+                            && lifecycle.resumed_unverified.is_none() => {
+                            history.select(&mut broker, id)
+                        }
+                        Command::MoreThreads if !lifecycle.busy
+                            && lifecycle.resumed_unverified.is_none() => {
+                            history.list(&mut broker, &project, true)
+                        }
+                        Command::MoreHistory if !lifecycle.busy
+                            && lifecycle.resumed_unverified.is_none() => {
+                            if let Some(thread) = history.selected.clone() {
+                                history.turns(&mut broker, &thread, true)
+                            } else { Err("No stored thread selected.") }
+                        }
+                        _ => Err("Cannot switch or page threads during an active turn."),
                     };
                     if let Err(message) = outcome {
                         if lifecycle.cancel_requested {
@@ -860,9 +1193,31 @@ async fn drive(
                                     .map_err(|_| "Codex handshake acknowledgement failed.")?;
                                 flush(&mut broker, &mut supervisor).await?;
                                 notify(&status, &ctx, ProbeStatus::Ready);
+                                // Authoritative persistence lives only in
+                                // Codex; never scan or synthesize JSONL files.
+                                history.list(&mut broker, &project, false)?;
                             }
                             while let Some(event) = broker.take_event() {
-                                let translated = lifecycle.on_event(&mut broker, event)?;
+                                let translated = match history.handle_reply(
+                                    &mut broker, &event, &mut lifecycle, &project
+                                )? {
+                                    Some(projection) => projection,
+                                    None => lifecycle.on_event(&mut broker, event)?,
+                                };
+                                if let Some(ProbeEvent::ThreadReady {thread_id}) = &translated {
+                                    history.selected = Some(thread_id.clone());
+                                    if !history.known.iter().any(|e| e.id == *thread_id) {
+                                        let entry = ThreadEntry {
+                                            id: thread_id.clone(),
+                                            label: "New Codex thread".to_owned(),
+                                        };
+                                        history.known.insert(0, entry.clone());
+                                        enqueue(&events, &ctx, ProbeEvent::ThreadPage {
+                                            entries:vec![entry], append:true,
+                                            has_more:history.next_threads.is_some()
+                                        })?;
+                                    }
+                                }
                                 if let Some(event) = translated {
                                     enqueue(&events, &ctx, event)?;
                                 }
@@ -970,6 +1325,31 @@ impl EngineProbe {
             .map_err(|_| "Codex command queue is full or disconnected.")
     }
 
+    pub fn new_thread(&self) -> Result<(), &'static str> {
+        self.send_history_command(Command::NewThread)
+    }
+
+    pub fn select_thread(&self, id: String) -> Result<(), &'static str> {
+        self.send_history_command(Command::SelectThread(id))
+    }
+
+    pub fn load_more_threads(&self) -> Result<(), &'static str> {
+        self.send_history_command(Command::MoreThreads)
+    }
+
+    pub fn load_more_history(&self) -> Result<(), &'static str> {
+        self.send_history_command(Command::MoreHistory)
+    }
+
+    fn send_history_command(&self, command: Command) -> Result<(), &'static str> {
+        if self.status() != ProbeStatus::Ready {
+            return Err("Codex handshake is not ready.");
+        }
+        self.commands
+            .try_send(command)
+            .map_err(|_| "Codex history command queue is unavailable.")
+    }
+
     pub fn cancel(&self) -> Result<(), &'static str> {
         if self.status() != ProbeStatus::Ready {
             return Err("Codex handshake is not ready.");
@@ -1035,6 +1415,25 @@ mod tests {
         json!({"thread":{"id":"thread-a","cwd":cwd},"cwd":cwd,
             "sandbox":{"type":"readOnly","networkAccess":false},
             "approvalPolicy":"never"})
+    }
+
+    #[test]
+    fn lost_history_reply_expires_without_retry_or_turn_execution() {
+        let mut broker = ready();
+        let mut history = HistoryFlow::default();
+        history
+            .list(&mut broker, &std::env::current_dir().unwrap(), false)
+            .unwrap();
+        assert_eq!(history.timeout_error(Instant::now()), None);
+        history.pending.as_mut().unwrap().2 =
+            Instant::now() - HISTORY_TIMEOUT - Duration::from_secs(1);
+        assert_eq!(
+            history.timeout_error(Instant::now()),
+            Some("Codex history RPC timed out; owned process stopped.")
+        );
+        let rpc: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(rpc["method"], "thread/list");
+        assert!(broker.take_outbound().is_none());
     }
 
     #[test]
@@ -1775,5 +2174,537 @@ mod tests {
         assert!(
             matches!(&results[0].event, ProbeEvent::AssistantDelta { text, .. } if text == "hello world")
         );
+    }
+    #[test]
+    fn official_history_restart_resume_switch_and_page_do_not_start_tools() {
+        let project = std::env::current_dir().unwrap();
+        let cwd = project.to_str().unwrap();
+        let mut broker = ready();
+        let mut flow = HistoryFlow::default();
+        let mut lifecycle = TurnLifecycle::default();
+
+        // First launch: only an official read-only thread/list RPC.
+        flow.list(&mut broker, &project, false).unwrap();
+        let request: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(request["method"], "thread/list");
+        assert_eq!(request["params"]["cwd"], cwd);
+        assert_eq!(request["params"]["limit"], 24);
+        let event = reply(
+            &mut broker,
+            request["id"].as_u64().unwrap(),
+            json!({
+                "data":[
+                    {"id":"a","cwd":cwd,"preview":"First","ephemeral":false},
+                    {"id":"b","cwd":cwd,"preview":"Second","ephemeral":false}
+                ],
+                "nextCursor":null
+            }),
+        );
+        assert!(matches!(
+            flow.handle_reply(&mut broker, &event, &mut lifecycle, &project).unwrap(),
+            Some(Some(ProbeEvent::ThreadPage {entries, ..})) if entries.len() == 2
+        ));
+
+        // Exact-ID metadata read must precede resume, and resume MUST exclude
+        // full-history hydration. No automatic turn/start is allowed.
+        flow.select(&mut broker, "a".into()).unwrap();
+        let read: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(read["method"], "thread/read");
+        assert_eq!(read["params"]["includeTurns"], false);
+        let event = reply(
+            &mut broker,
+            read["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"a","cwd":cwd}}),
+        );
+        assert!(matches!(
+            flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
+            Ok(Some(None))
+        ));
+        let resume: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(resume["method"], "thread/resume");
+        assert_eq!(resume["params"]["excludeTurns"], true);
+        assert_eq!(resume["params"]["sandbox"], "read-only");
+        assert_eq!(resume["params"]["approvalPolicy"], "never");
+        let event = reply(
+            &mut broker,
+            resume["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"a","cwd":cwd},"cwd":cwd,"approvalPolicy":"never","sandbox":{"type":"readOnly","networkAccess":false}}),
+        );
+        assert!(matches!(
+            flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
+            Ok(Some(Some(ProbeEvent::ThreadSelected {
+                thread_id: Some(_)
+            })))
+        ));
+        assert_eq!(lifecycle.thread.as_deref(), Some("a"));
+        let turns: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(turns["method"], "thread/turns/list");
+        assert_eq!(turns["params"]["itemsView"], "full");
+        let event = reply(
+            &mut broker,
+            turns["id"].as_u64().unwrap(),
+            json!({"data":[
+            {"id":"t1","status":"interrupted","items":[
+                {"type":"userMessage","content":[{"type":"text","text":"original prompt"}]}
+            ]}
+        ],"nextCursor":"older"}),
+        );
+        assert!(matches!(
+            flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
+            Ok(Some(Some(ProbeEvent::HistoryPage { has_more: true, .. })))
+        ));
+        assert_eq!(broker.pending_count(), 0);
+        assert!(broker.take_outbound().is_none()); // no replay of interrupted turn
+
+        flow.turns(&mut broker, "a", true).unwrap();
+        let older: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(older["params"]["cursor"], "older");
+        let event = reply(
+            &mut broker,
+            older["id"].as_u64().unwrap(),
+            json!({"data":[],"nextCursor":null}),
+        );
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .unwrap();
+
+        // Switch: only known IDs from the verified current-project listing.
+        assert!(flow.select(&mut broker, "foreign".into()).is_err());
+        flow.select(&mut broker, "b".into()).unwrap();
+        let next: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(next["method"], "thread/read");
+        let event = reply(
+            &mut broker,
+            next["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"b","cwd":cwd}}),
+        );
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .unwrap();
+        let resumed: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        let event = reply(
+            &mut broker,
+            resumed["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"b","cwd":cwd},"cwd":cwd,"approvalPolicy":"never","sandbox":{"type":"readOnly","networkAccess":false}}),
+        );
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .unwrap();
+        assert_eq!(lifecycle.thread.as_deref(), Some("b"));
+
+        // Restart/new process creates a fresh broker+flow, rehydrating from
+        // official thread/list; it does not persist or execute another prompt.
+        let mut after_restart = HistoryFlow::default();
+        let mut fresh_broker = ready();
+        after_restart
+            .list(&mut fresh_broker, &project, false)
+            .unwrap();
+        let list: Value = serde_json::from_slice(&fresh_broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(list["method"], "thread/list");
+    }
+
+    #[test]
+    fn resumed_active_turn_blocks_duplicate_execution_until_exact_terminal() {
+        let project = std::env::current_dir().unwrap();
+        let cwd = project.to_str().unwrap();
+        let mut broker = ready();
+        let mut flow = HistoryFlow::default();
+        let mut lifecycle = TurnLifecycle::default();
+        flow.known.push(ThreadEntry {
+            id: "owned".into(),
+            label: "Trusted".into(),
+        });
+
+        flow.select(&mut broker, "owned".into()).unwrap();
+        let read: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        let event = reply(
+            &mut broker,
+            read["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"owned","cwd":cwd}}),
+        );
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .unwrap();
+        let resume: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        let event = reply(
+            &mut broker,
+            resume["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"owned","cwd":cwd},"cwd":cwd,
+                "approvalPolicy":"never",
+                "sandbox":{"type":"readOnly","networkAccess":false}}),
+        );
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .unwrap();
+
+        let turns: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(turns["method"], "thread/turns/list");
+        let event = reply(
+            &mut broker,
+            turns["id"].as_u64().unwrap(),
+            json!({"data":[{"id":"running-turn","status":"inProgress","items":[]}],
+                "nextCursor":null}),
+        );
+        assert!(matches!(
+            flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
+            Ok(Some(Some(ProbeEvent::HistoryPage {
+                active_turn: Some(_),
+                ..
+            })))
+        ));
+        assert!(lifecycle.busy);
+        assert_eq!(lifecycle.turn.as_deref(), Some("running-turn"));
+        assert!(lifecycle.resumed_turn_started.is_some());
+        assert_eq!(
+            lifecycle.submit(&mut broker, &project, "never replay".into()),
+            Err("Codex is already processing a turn.")
+        );
+        assert!(broker.take_outbound().is_none());
+
+        let unrelated = lifecycle
+            .on_event(
+                &mut broker,
+                Event::Notification {
+                    kind: NotificationKind::TurnCompleted,
+                    params: json!({"threadId":"owned",
+                        "turn":{"id":"other","status":"completed"}}),
+                },
+            )
+            .unwrap();
+        assert!(unrelated.is_none());
+        assert!(lifecycle.busy);
+        assert!(broker.take_outbound().is_none());
+
+        assert_eq!(
+            lifecycle
+                .on_event(
+                    &mut broker,
+                    Event::Notification {
+                        kind: NotificationKind::TurnCompleted,
+                        params: json!({"threadId":"owned",
+                            "turn":{"id":"running-turn","status":"completed"}}),
+                    },
+                )
+                .unwrap(),
+            Some(ProbeEvent::TurnCompleted {
+                thread_id: "owned".into(),
+                turn_id: "running-turn".into(),
+                status: "completed".into()
+            })
+        );
+        assert!(!lifecycle.busy);
+        assert!(lifecycle.resumed_turn_started.is_none());
+        lifecycle
+            .submit(&mut broker, &project, "new explicit prompt".into())
+            .unwrap();
+        let started: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(started["method"], "turn/start");
+        assert_eq!(started["params"]["threadId"], "owned");
+        assert_eq!(started["params"]["input"][0]["text"], "new explicit prompt");
+        assert!(broker.take_outbound().is_none());
+    }
+
+    // Model the real HistoryFlow -> Broker -> TurnLifecycle sequence. Every
+    // fixture consumes the first thread/turns/list outbound frame so any
+    // subsequently emitted turn/start is visible rather than hidden in a queue.
+    fn resume_waiting_for_first_turn_page() -> (Broker, HistoryFlow, TurnLifecycle, PathBuf, u64) {
+        let project = std::env::current_dir().unwrap();
+        let cwd = project.to_str().unwrap();
+        let mut broker = ready();
+        let mut flow = HistoryFlow::default();
+        let mut lifecycle = TurnLifecycle::default();
+        flow.known.push(ThreadEntry {
+            id: "owned".to_owned(),
+            label: "Trusted".to_owned(),
+        });
+        flow.select(&mut broker, "owned".to_owned()).unwrap();
+        let read: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        let event = reply(
+            &mut broker,
+            read["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"owned","cwd":cwd}}),
+        );
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .unwrap();
+        let resume: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        let event = reply(
+            &mut broker,
+            resume["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"owned","cwd":cwd},"cwd":cwd,
+                "approvalPolicy":"never",
+                "sandbox":{"type":"readOnly","networkAccess":false}}),
+        );
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .unwrap();
+        let turns: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(turns["method"], "thread/turns/list");
+        assert_eq!(turns["params"]["threadId"], "owned");
+        assert_eq!(
+            flow.pending.as_ref().unwrap().0,
+            turns["id"].as_u64().unwrap()
+        );
+        assert_eq!(lifecycle.thread.as_deref(), Some("owned"));
+        assert_eq!(lifecycle.resumed_unverified.as_deref(), Some("owned"));
+        assert!(!lifecycle.busy); // busy=false MUST NOT authorize submit.
+        assert!(broker.take_outbound().is_none());
+        (
+            broker,
+            flow,
+            lifecycle,
+            project,
+            turns["id"].as_u64().unwrap(),
+        )
+    }
+
+    fn assert_resume_submit_blocked(
+        broker: &mut Broker,
+        lifecycle: &mut TurnLifecycle,
+        project: &Path,
+    ) {
+        assert_eq!(
+            lifecycle.submit(broker, project, "do not duplicate".into()),
+            Err("Resumed Codex turn state is not verified; reconnect required.")
+        );
+        // The pending RPC has already been drained by the fixture. Zero
+        // outbound turn/start frames is the authoritative negative proof.
+        assert!(broker.take_outbound().is_none());
+    }
+
+    fn failed_first_page(
+        broker: &mut Broker,
+        flow: &mut HistoryFlow,
+        lifecycle: &mut TurnLifecycle,
+        project: &Path,
+        id: u64,
+        code: i64,
+    ) -> Event {
+        broker
+            .ingest_line(
+                json!({"id":id,"error":{"code":code,"message":"rejected"}})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+        let event = broker.take_event().unwrap();
+        assert_eq!(
+            flow.handle_reply(broker, &event, lifecycle, project),
+            Err("Codex resumed turn verification failed; owned process stopped.")
+        );
+        assert!(flow.pending.is_none());
+        assert_eq!(lifecycle.resumed_unverified.as_deref(), Some("owned"));
+        assert_resume_submit_blocked(broker, lifecycle, project);
+        event
+    }
+
+    #[test]
+    fn resume_first_page_json_rpc_error_never_emits_turn_start() {
+        let (mut broker, mut flow, mut lifecycle, project, id) =
+            resume_waiting_for_first_turn_page();
+        assert_resume_submit_blocked(&mut broker, &mut lifecycle, &project);
+        failed_first_page(&mut broker, &mut flow, &mut lifecycle, &project, id, -32000);
+    }
+
+    #[test]
+    fn resume_first_page_unsupported_capability_cannot_unlock_submit() {
+        let (mut broker, mut flow, mut lifecycle, project, id) =
+            resume_waiting_for_first_turn_page();
+        failed_first_page(&mut broker, &mut flow, &mut lifecycle, &project, id, -32601);
+    }
+
+    #[test]
+    fn resume_first_page_malformed_incomplete_or_foreign_fails_closed() {
+        let bad_pages = [
+            json!({"data":[{"id":"turn","items":[]}],"nextCursor":null}),
+            json!({"data":[{"id":"turn","status":"completed"}],"nextCursor":null}),
+            json!({"data":[{"id":"turn","status":"unrecognized","items":[]}],"nextCursor":null}),
+            json!({"threadId":"foreign","data":[],"nextCursor":null}),
+            json!({"data":[],"nextCursor":false}),
+            json!({"data":[{"id":"turn","status":"inProgress","items":[]}],
+                "nextCursor":"x".repeat(2049)}),
+        ];
+        for page in bad_pages {
+            let (mut broker, mut flow, mut lifecycle, project, id) =
+                resume_waiting_for_first_turn_page();
+            let event = reply(&mut broker, id, page);
+            assert!(flow
+                .handle_reply(&mut broker, &event, &mut lifecycle, &project)
+                .is_err());
+            assert_eq!(lifecycle.resumed_unverified.as_deref(), Some("owned"));
+            assert_resume_submit_blocked(&mut broker, &mut lifecycle, &project);
+        }
+    }
+
+    #[test]
+    fn resume_missing_first_page_retains_gate_until_thirty_second_shutdown() {
+        let (mut broker, mut flow, mut lifecycle, project, _) =
+            resume_waiting_for_first_turn_page();
+        assert_eq!(flow.timeout_error(Instant::now()), None);
+        flow.pending.as_mut().unwrap().2 =
+            Instant::now() - HISTORY_TIMEOUT - Duration::from_secs(1);
+        assert_eq!(
+            flow.timeout_error(Instant::now()),
+            Some("Codex history RPC timed out; owned process stopped.")
+        );
+        assert_resume_submit_blocked(&mut broker, &mut lifecycle, &project);
+    }
+
+    #[test]
+    fn stale_failed_resume_reply_cannot_reactivate_adopted_thread() {
+        let (mut broker, mut flow, mut lifecycle, project, id) =
+            resume_waiting_for_first_turn_page();
+        failed_first_page(&mut broker, &mut flow, &mut lifecycle, &project, id, -32601);
+        // A delayed SUCCESS for the same first page cannot revive a failed
+        // session after its pending request has been invalidated.
+        let late_success = Event::Reply {
+            id,
+            method: ClientMethod::ThreadTurnsList,
+            outcome: Ok(json!({"data":[],"nextCursor":null})),
+        };
+        assert!(matches!(
+            flow.handle_reply(&mut broker, &late_success, &mut lifecycle, &project),
+            Ok(None)
+        ));
+        assert_eq!(lifecycle.resumed_unverified.as_deref(), Some("owned"));
+        assert_resume_submit_blocked(&mut broker, &mut lifecycle, &project);
+    }
+
+    #[test]
+    fn resumed_active_first_page_stays_busy_without_duplicate_execution() {
+        let (mut broker, mut flow, mut lifecycle, project, id) =
+            resume_waiting_for_first_turn_page();
+        let event = reply(
+            &mut broker,
+            id,
+            json!({"data":[{"id":"running","status":"inProgress","items":[]}],
+                "nextCursor":null}),
+        );
+        assert!(matches!(
+            flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
+            Ok(Some(Some(ProbeEvent::HistoryPage {
+                active_turn: Some(_),
+                ..
+            })))
+        ));
+        assert!(lifecycle.resumed_unverified.is_none());
+        assert!(lifecycle.busy);
+        assert_eq!(lifecycle.turn.as_deref(), Some("running"));
+        assert!(lifecycle.resumed_turn_started.is_some());
+        assert_eq!(
+            lifecycle.submit(&mut broker, &project, "duplicate".into()),
+            Err("Codex is already processing a turn.")
+        );
+        assert!(broker.take_outbound().is_none());
+    }
+
+    #[test]
+    fn resumed_no_active_first_page_allows_new_explicit_prompt_only() {
+        let (mut broker, mut flow, mut lifecycle, project, id) =
+            resume_waiting_for_first_turn_page();
+        let event = reply(
+            &mut broker,
+            id,
+            json!({"data":[{"id":"previous","status":"completed","items":[]}],
+                "nextCursor":null}),
+        );
+        assert!(matches!(
+            flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
+            Ok(Some(Some(ProbeEvent::HistoryPage {
+                active_turn: None,
+                ..
+            })))
+        ));
+        assert!(lifecycle.resumed_unverified.is_none());
+        assert!(!lifecycle.busy);
+        assert!(broker.take_outbound().is_none()); // no automatic replay
+        lifecycle
+            .submit(&mut broker, &project, "explicit new prompt".into())
+            .unwrap();
+        let sent: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(sent["method"], "turn/start");
+        assert_eq!(sent["params"]["threadId"], "owned");
+        assert_eq!(sent["params"]["input"][0]["text"], "explicit new prompt");
+        assert!(broker.take_outbound().is_none());
+    }
+
+    #[test]
+    fn explicit_reconnect_uses_fresh_broker_without_prompt_replay() {
+        let (mut broker, mut flow, mut lifecycle, project, id) =
+            resume_waiting_for_first_turn_page();
+        failed_first_page(&mut broker, &mut flow, &mut lifecycle, &project, id, -32601);
+        // EngineProbe::start creates new worker-owned broker/flow/lifecycle;
+        // the failed session does not reuse its request IDs or prompt queue.
+        let mut new_broker = ready();
+        let mut new_flow = HistoryFlow::default();
+        let mut new_lifecycle = TurnLifecycle::default();
+        assert!(new_lifecycle.thread.is_none());
+        assert!(new_lifecycle.resumed_unverified.is_none());
+        new_flow.list(&mut new_broker, &project, false).unwrap();
+        let sent: Value = serde_json::from_slice(&new_broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(sent["method"], "thread/list");
+        assert!(new_broker.take_outbound().is_none());
+        let event = reply(
+            &mut new_broker,
+            sent["id"].as_u64().unwrap(),
+            json!({"data":[{"id":"owned","cwd":project.to_str().unwrap(),
+                "ephemeral":false}],"nextCursor":null}),
+        );
+        new_flow
+            .handle_reply(&mut new_broker, &event, &mut new_lifecycle, &project)
+            .unwrap();
+        assert!(new_broker.take_outbound().is_none());
+        assert!(!new_lifecycle.busy);
+    }
+
+    #[test]
+    fn resume_without_verified_sandbox_never_binds_a_thread() {
+        let project = std::env::current_dir().unwrap();
+        let cwd = project.to_str().unwrap();
+        let mut broker = ready();
+        let mut flow = HistoryFlow::default();
+        flow.known.push(ThreadEntry {
+            id: "owned".to_owned(),
+            label: "Known".to_owned(),
+        });
+        let mut lifecycle = TurnLifecycle::default();
+        flow.select(&mut broker, "owned".to_owned()).unwrap();
+        let read: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        let event = reply(
+            &mut broker,
+            read["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"owned","cwd":cwd}}),
+        );
+        flow.handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .unwrap();
+        let resume: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        let event = reply(
+            &mut broker,
+            resume["id"].as_u64().unwrap(),
+            json!({"thread":{"id":"owned","cwd":cwd},"cwd":cwd,
+                "approvalPolicy":"on-request","sandbox":{"type":"workspaceWrite","networkAccess":true}}),
+        );
+        assert!(flow
+            .handle_reply(&mut broker, &event, &mut lifecycle, &project)
+            .is_err());
+        assert!(lifecycle.thread.is_none());
+        assert!(broker.take_outbound().is_none());
+    }
+
+    #[test]
+    fn malformed_or_unsupported_official_history_fails_closed() {
+        let project = std::env::current_dir().unwrap();
+        let mut broker = ready();
+        let mut flow = HistoryFlow::default();
+        let mut lifecycle = TurnLifecycle::default();
+        flow.list(&mut broker, &project, false).unwrap();
+        let request: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        broker
+            .ingest_line(
+                json!({"id":request["id"],"error":{"code":-32601,"message":"Method not found"}})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+        let event = broker.take_event().unwrap();
+        assert!(matches!(
+            flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
+            Ok(Some(Some(ProbeEvent::HistoryCapabilityBlocked(_))))
+        ));
+        assert!(flow.known.is_empty());
+        assert!(broker.take_outbound().is_none());
     }
 }
