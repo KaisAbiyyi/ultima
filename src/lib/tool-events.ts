@@ -42,7 +42,7 @@ function commandText(value: unknown): string | null {
 /** No silent normalization of an ambiguous argv into a displayed shell command. */
 function commandMatches(a: unknown, b: unknown): boolean {
   const aText = commandText(a), bText = commandText(b);
-  return aText !== null && aText === bText;
+  return aText !== null && bText !== null && JSON.stringify(a) === JSON.stringify(b);
 }
 function safeRelativePath(path: string): boolean {
   return path.length > 0 && path.length <= MAX_PATH_CHARS &&

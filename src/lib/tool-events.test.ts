@@ -174,7 +174,9 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
     expect(canApprove(commandApproval('echo hello world'),array,'/project')).toBe(false);
     const argv = trackTool([], 'itemStarted', itemEvent('t','z','i','commandExecution',
       { command:['echo','safe'], cwd:'/project' }));
-    expect(canApprove(commandApproval('echo safe'),argv,'/project')).toBe(true);
+    expect(canApprove(commandApproval('echo safe'),argv,'/project')).toBe(false);
+    const matchingVector = { ...approval, request: { ...approval.request, command: ['echo','safe'] } };
+    expect(canApprove(matchingVector,argv,'/project')).toBe(true);
     const partial = trackTool(argv,'itemCompleted',itemEvent('t','z','i','commandExecution',
       { cwd:'/project' }));
     expect(canApprove(commandApproval('echo safe'),partial,'/project')).toBe(false);

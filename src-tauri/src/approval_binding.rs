@@ -293,6 +293,7 @@ impl EvidenceLedger {
                     return false;
                 };
                 actual_text == request_text
+                    && approval.request.get("command") == Some(actual)
                     && current.item.get("cwd").and_then(Value::as_str) == Some(cwd)
                     && reviewed.get("cwd").and_then(Value::as_str) == Some(cwd)
                     && Path::new(cwd).canonicalize().ok().as_ref() == Some(&root)
@@ -407,6 +408,17 @@ mod tests {
         assert!(!ledger.matches(&original, &preview_changed, &root));
         observe_cmd(&mut ledger, "echo evil", cwd);
         assert!(!ledger.matches(&original, &snapshot, &root));
+        ledger.observe(
+            NotificationKind::ItemStarted,
+            &json!({"threadId":"t","turnId":"u",
+                "item":{"id":"i","type":"commandExecution","command":["echo","safe"],"cwd":cwd}}),
+        );
+        let mut request_vector = original.clone();
+        request_vector.request["command"] = json!(["echo","safe"]);
+        let mut reviewed_vector = reviewed("echo safe", cwd);
+        reviewed_vector["commandDescriptor"] = json!(["echo","safe"]);
+        assert!(!ledger.matches(&original, &reviewed_vector, &root));
+        assert!(ledger.matches(&request_vector, &reviewed_vector, &root));
     }
     #[test]
     fn file_change_full_diff_unsafe_path_and_output_race_denied() {
@@ -429,8 +441,11 @@ mod tests {
         ledger.observe(NotificationKind::ItemStarted, &good);
         let preview = json!({"id":"i","threadId":"t","turnId":"u","kind":"fileChange",
             "state":"running","previewComplete":true,"truncated":false,
-            "paths":["safe.txt"],"diff":"safe.txt\n+ok"});
+            "cwd":"","paths":["safe.txt"],"diff":"safe.txt\n+ok"});
         assert!(ledger.matches(&file, &preview, &root));
+        let mut missing_cwd = preview.clone();
+        missing_cwd.as_object_mut().unwrap().remove("cwd");
+        assert!(!ledger.matches(&file, &missing_cwd, &root));
         let mut truncated = preview.clone();
         truncated["diff"] = json!("safe.txt\n+");
         assert!(!ledger.matches(&file, &truncated, &root));
