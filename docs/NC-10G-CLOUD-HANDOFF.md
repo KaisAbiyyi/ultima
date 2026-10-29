@@ -41,3 +41,9 @@ All integration-head test/CI outcomes must be recorded against the **new** exact
 6. Save sanitized timestamps, commands redacted from private file content, SHA-pinned logs, screenshots and terminal statuses. Report PASS / FAIL / NOT_RUN separately.
 
 **No merge** of Draft PR #26, #40, #41 or NC-10G before independent checker and downstream acceptance.
+
+## NC-12 native runtime selection adapter (additional candidate checkpoint)
+
+Native renderer `--runtime-store=<absolute existing NC-12 managed-codex store>` opts into **the same owned NC-12 runtime journal** used by the production Tauri host. The renderer never stages or activates a managed version; NC-12 `Manager::engine_config` verifies the requested binary and the existing shared supervisor owns the child. The system Codex path remains explicit `--codex-exe` and is prevalidated as the fallback. Default without `--runtime-store` remains System. A failed managed session can roll back only **after** confirmed supervisor tree stop and session gate teardown, and there is no automatic engine/prompt replay. This is code/CI qualification, NOT authenticated real runtime acceptance; the actual owner store and switching remain NOT_RUN. The NC-12 local store path must be supplied by the owner (never logged).
+
+After any future correction, update this section with final exact HEAD CI and independent review evidence. The earlier `NOT_VERIFIED` entry above represents the initial merge checkpoint, not the corrected source.

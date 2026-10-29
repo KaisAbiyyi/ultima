@@ -5,6 +5,7 @@ mod engine_probe;
 mod icons;
 mod latency;
 mod native_tools;
+mod native_runtime;
 mod session_history;
 mod theme;
 
@@ -197,6 +198,7 @@ struct RendererSpike {
     more_native_threads: bool,
     more_native_history: bool,
     engine_paths: Option<(PathBuf, PathBuf)>,
+    engine_runtime_store: Option<PathBuf>,
     active_turn: Option<(String, String)>,
     awaiting_turn_start: bool,
     live_error: Option<String>,
@@ -268,6 +270,7 @@ impl RendererSpike {
             more_native_threads: false,
             more_native_history: false,
             engine_paths: None,
+            engine_runtime_store: None,
             active_turn: None,
             awaiting_turn_start: false,
             live_error: None,
@@ -1040,7 +1043,8 @@ impl RendererSpike {
                         // Explicit user action: never replay a pending prompt,
                         // and the official thread list is reloaded on handshake.
                         let replacement = EngineProbe::start(
-                            exe.clone(), project.clone(), ui.ctx().clone(), self.coding_enabled
+                            exe.clone(), project.clone(), ui.ctx().clone(), self.coding_enabled,
+                            self.engine_runtime_store.clone(),
                         );
                         self.engine = Some(replacement);
                         // An old engine's consent/evidence can never authorize the replacement.
@@ -1743,6 +1747,19 @@ fn main() -> eframe::Result {
         eprintln!("Supply both --codex-exe=<absolute path> and --project=<absolute directory>.");
         std::process::exit(2);
     }
+    // Optional reference to the *existing* NC-12 host-owned managed store.
+    // Supplying it does not stage, download, or automatically activate a runtime.
+    let runtime_store = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--runtime-store=").map(PathBuf::from));
+    if runtime_store.as_ref().is_some_and(|p| !p.is_absolute()) {
+        eprintln!("--runtime-store requires the absolute existing NC-12 store path.");
+        std::process::exit(2);
+    }
+    if runtime_store.is_some() && (exe.is_none() || project.is_none()) {
+        eprintln!("--runtime-store requires --codex-exe and --project.");
+        std::process::exit(2);
+    }
     let coding_enabled = args.iter().any(|arg| arg == "--enable-native-coding");
     if coding_enabled && (exe.is_none() || project.is_none()) {
         eprintln!("Native coding requires explicit --codex-exe and --project paths.");
@@ -1766,7 +1783,9 @@ fn main() -> eframe::Result {
             theme::use_system_fonts(&cc.egui_ctx);
             theme::configure(&cc.egui_ctx);
             let engine = exe.clone().zip(project.clone()).map(|(exe, project)| {
-                EngineProbe::start(exe, project, cc.egui_ctx.clone(), coding_enabled)
+                EngineProbe::start(
+                    exe, project, cc.egui_ctx.clone(), coding_enabled, runtime_store.clone(),
+                )
             });
             let mut app = RendererSpike::with_latency(
                 history_rows,
@@ -1778,6 +1797,7 @@ fn main() -> eframe::Result {
             app.coding_enabled = coding_enabled;
             // Retain exact validated engine paths only for explicit reconnect.
             app.engine_paths = exe.clone().zip(project.clone());
+            app.engine_runtime_store = runtime_store.clone();
             Ok(Box::new(app))
         }),
     )

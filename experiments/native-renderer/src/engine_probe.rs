@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
-use ultima_app_server_supervisor::{EngineConfig, EngineSupervisor, OutputEvent};
+use ultima_app_server_supervisor::{EngineSupervisor, OutputEvent};
 use ultima_native_session::SessionGate;
 use ultima_protocol_bridge::{
     Approval, ApprovalDecision, Broker, ClientMethod, Event, Limits, NotificationKind, Phase, RpcId,
@@ -1198,6 +1198,7 @@ async fn flush(broker: &mut Broker, supervisor: &mut EngineSupervisor) -> Result
 
 async fn drive(
     paths: (PathBuf, PathBuf),
+    runtime_store: Option<PathBuf>,
     shutdown: oneshot::Receiver<()>,
     mut commands: mpsc::Receiver<Command>,
     emergency_stop: Arc<AtomicBool>,
@@ -1208,19 +1209,16 @@ async fn drive(
     let (ctx, coding_enabled) = ui_context;
     let (executable, project) = paths;
     let prepared = (|| {
-        if !executable.is_absolute() || !project.is_absolute() {
-            return Err("Codex executable and project require explicit absolute paths.");
-        }
-        let exe_root = executable
-            .parent()
-            .ok_or("Invalid Codex executable path.")?;
-        let config = EngineConfig::new(&executable, exe_root, &project, &project)
-            .map_err(|_| "Codex executable or project failed path validation.")?;
+        let selection = crate::native_runtime::resolve(
+            &executable,
+            &project,
+            runtime_store.as_deref(),
+        )?;
         let broker = Broker::new(Limits::default())
             .map_err(|_| "Codex protocol broker failed initialization.")?;
-        Ok::<_, &'static str>((config, broker))
+        Ok::<_, &'static str>((selection, broker))
     })();
-    let (config, mut broker) = match prepared {
+    let (selection, mut broker) = match prepared {
         Ok(v) => v,
         Err(error) => {
             if let Ok(mut queue) = events.lock() {
@@ -1230,7 +1228,7 @@ async fn drive(
             return;
         }
     };
-    let mut supervisor = EngineSupervisor::new(config);
+    let mut supervisor = EngineSupervisor::new(selection.config.clone());
     let gate = SessionGate::<u64>::default();
     if gate
         .start(1, || {
@@ -1240,8 +1238,16 @@ async fn drive(
         .await
         .is_err()
     {
+        // A failed managed spawn must not be silently retried. Roll back
+        // only if the supervisor confirms that no owned engine remains.
+        let reaped = supervisor.stop().await.is_ok();
+        let recovered = reaped && selection.rollback_after_confirmed_failure().is_ok();
         if let Ok(mut queue) = events.lock() {
-            queue.fatal("Codex process failed to start.");
+            queue.fatal(if recovered {
+                "Codex process failed to start; runtime fallback requires explicit reconnect."
+            } else {
+                "Codex process startup/rollback could not be verified."
+            });
         }
         notify(&status, &ctx, ProbeStatus::Failed);
         return;
@@ -1407,9 +1413,16 @@ async fn drive(
     } else {
         gate.finish_unexpected(1, clean && result.is_err()).await
     };
-    if result.is_err() || !clean || !finalized {
-        let error = result
-            .err()
+    // Never rollback while a failed or unconfirmed process may still own
+    // tool execution. NC-12 only updates its verified journal after teardown.
+    let rollback_error = if result.is_err() && clean && finalized {
+        selection.rollback_after_confirmed_failure().err()
+    } else {
+        None
+    };
+    if result.is_err() || !clean || !finalized || rollback_error.is_some() {
+        let error = rollback_error
+            .or_else(|| result.err())
             .unwrap_or("Codex process shutdown could not be verified.");
         if let Ok(mut queue) = events.lock() {
             queue.fatal(error);
@@ -1426,6 +1439,7 @@ impl EngineProbe {
         project: PathBuf,
         ctx: egui::Context,
         coding_enabled: bool,
+        runtime_store: Option<PathBuf>,
     ) -> Self {
         let (shutdown, receiver) = oneshot::channel();
         let (commands, inbox) = mpsc::channel(MAX_COMMANDS);
@@ -1443,6 +1457,7 @@ impl EngineProbe {
             {
                 Ok(runtime) => runtime.block_on(drive(
                     (executable, project),
+                    runtime_store,
                     receiver,
                     inbox,
                     thread_emergency_stop,
