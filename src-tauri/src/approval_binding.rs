@@ -26,7 +26,10 @@ pub struct EvidenceLedger {
 }
 
 fn ident<'a>(value: &'a Value, name: &str) -> Option<&'a str> {
-    value.get(name)?.as_str().filter(|s| !s.is_empty() && s.len() <= 256)
+    value
+        .get(name)?
+        .as_str()
+        .filter(|s| !s.is_empty() && s.len() <= 256)
 }
 
 fn command(value: &Value) -> Option<String> {
@@ -36,9 +39,8 @@ fn command(value: &Value) -> Option<String> {
         let args = value.as_array()?;
         if args.is_empty()
             || args.iter().any(|arg| {
-                !arg.as_str().is_some_and(|s| {
-                    !s.is_empty() && !s.chars().any(char::is_whitespace)
-                })
+                !arg.as_str()
+                    .is_some_and(|s| !s.is_empty() && !s.chars().any(char::is_whitespace))
             })
         {
             return None;
@@ -58,10 +60,19 @@ fn scope(request: &Value, kind: ApprovalKind, project: &Path) -> bool {
     if map.keys().any(|k| {
         !matches!(
             k.as_str(),
-            "threadId" | "turnId" | "itemId" | "startedAtMs" | "command"
-                | "cwd" | "grantRoot" | "availableDecisions" | "reason"
-                | "additionalPermissions" | "networkApprovalContext"
-                | "proposedExecpolicyAmendment" | "proposedNetworkPolicyAmendments"
+            "threadId"
+                | "turnId"
+                | "itemId"
+                | "startedAtMs"
+                | "command"
+                | "cwd"
+                | "grantRoot"
+                | "availableDecisions"
+                | "reason"
+                | "additionalPermissions"
+                | "networkApprovalContext"
+                | "proposedExecpolicyAmendment"
+                | "proposedNetworkPolicyAmendments"
         )
     }) {
         return false;
@@ -87,9 +98,9 @@ fn scope(request: &Value, kind: ApprovalKind, project: &Path) -> bool {
             return false;
         };
         if !list.iter().any(|v| v.as_str() == Some("accept"))
-            || list.iter().any(|v| {
-                !matches!(v.as_str(), Some("accept" | "decline" | "cancel"))
-            })
+            || list
+                .iter()
+                .any(|v| !matches!(v.as_str(), Some("accept" | "decline" | "cancel")))
         {
             return false;
         }
@@ -98,8 +109,7 @@ fn scope(request: &Value, kind: ApprovalKind, project: &Path) -> bool {
         ApprovalKind::Command => {
             request.get("grantRoot").is_none()
                 && request.get("command").and_then(command).is_some()
-                && request.get("cwd").and_then(Value::as_str)
-                    == project.to_str()
+                && request.get("cwd").and_then(Value::as_str) == project.to_str()
         }
         ApprovalKind::FileChange => {
             request.get("command").is_none()
@@ -118,7 +128,9 @@ fn safe_path(path: &str, project: &Path) -> bool {
         || path.chars().any(char::is_control)
         || path.starts_with('/')
         || path.ends_with('/')
-        || path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
         || !Path::new(path)
             .components()
             .all(|part| matches!(part, Component::Normal(_)))
@@ -147,9 +159,10 @@ fn full_diff(item: &Value, project: &Path) -> Option<(Vec<String>, String)> {
         || ["truncated", "isTruncated", "partial", "hasMore"]
             .iter()
             .any(|k| item.get(*k).and_then(Value::as_bool) == Some(true))
-        || ["totalChanges", "changeCount"]
-            .iter()
-            .any(|k| item.get(*k).is_some_and(|v| v.as_u64() != Some(changes.len() as u64)))
+        || ["totalChanges", "changeCount"].iter().any(|k| {
+            item.get(*k)
+                .is_some_and(|v| v.as_u64() != Some(changes.len() as u64))
+        })
     {
         return None;
     }
@@ -167,7 +180,12 @@ fn full_diff(item: &Value, project: &Path) -> Option<(Vec<String>, String)> {
         {
             return None;
         }
-        let segment = format!("{}{}\n{}", if full.is_empty() { "" } else { "\n\n" }, path, diff);
+        let segment = format!(
+            "{}{}\n{}",
+            if full.is_empty() { "" } else { "\n\n" },
+            path,
+            diff
+        );
         if segment.len() > MAX_DIFF.saturating_sub(full.len()) {
             return None;
         }
@@ -219,9 +237,8 @@ impl EvidenceLedger {
             state,
             changed_output: oversized,
         };
-        self.items.retain(|old| {
-            old.thread != thread || old.turn != turn || old.id != id
-        });
+        self.items
+            .retain(|old| old.thread != thread || old.turn != turn || old.id != id);
         self.items.push(entry);
         if self.items.len() > 16 {
             self.items.remove(0);
@@ -244,10 +261,12 @@ impl EvidenceLedger {
             || reviewed.get("state").and_then(Value::as_str) != Some(current.state)
             || reviewed.get("previewComplete").and_then(Value::as_bool) != Some(true)
             || reviewed.get("truncated").and_then(Value::as_bool) != Some(false)
-            || approval.request.get("threadId").and_then(Value::as_str) != Some(current.thread.as_str())
+            || approval.request.get("threadId").and_then(Value::as_str)
+                != Some(current.thread.as_str())
             || approval.request.get("turnId").and_then(Value::as_str) != Some(current.turn.as_str())
             || approval.request.get("itemId").and_then(Value::as_str) != Some(current.id.as_str())
-            || approval.request.get("startedAtMs").and_then(Value::as_u64) != Some(approval.started_at_ms)
+            || approval.request.get("startedAtMs").and_then(Value::as_u64)
+                != Some(approval.started_at_ms)
         {
             return false;
         }
@@ -280,8 +299,10 @@ impl EvidenceLedger {
                     && reviewed.get("command").and_then(Value::as_str) == Some(actual_text.as_str())
                     && reviewed.get("commandDescriptor") == Some(actual)
                     && current.item.get("aggregatedOutput").is_none_or(|v| {
-                        v.as_str().is_some_and(|s| s.len() <= MAX_OUTPUT
-                            && reviewed.get("output").and_then(Value::as_str) == Some(s))
+                        v.as_str().is_some_and(|s| {
+                            s.len() <= MAX_OUTPUT
+                                && reviewed.get("output").and_then(Value::as_str) == Some(s)
+                        })
                     })
                     && (current.item.get("aggregatedOutput").is_some()
                         || reviewed.get("output").and_then(Value::as_str) == Some(""))
@@ -292,9 +313,17 @@ impl EvidenceLedger {
                 {
                     return false;
                 }
-                let item_cwd = current.item.get("cwd").and_then(Value::as_str).unwrap_or("");
-                if (!item_cwd.is_empty() && (item_cwd != project.to_str().unwrap_or("")
-                    || Path::new(item_cwd).canonicalize().ok() != project.canonicalize().ok()))
+                if current.item.get("cwd").is_some_and(|v| !v.is_string()) {
+                    return false;
+                }
+                let item_cwd = current
+                    .item
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if (!item_cwd.is_empty()
+                    && (item_cwd != project.to_str().unwrap_or("")
+                        || Path::new(item_cwd).canonicalize().ok() != project.canonicalize().ok()))
                     || reviewed.get("cwd").and_then(Value::as_str) != Some(item_cwd)
                 {
                     return false;
@@ -303,10 +332,16 @@ impl EvidenceLedger {
                     return false;
                 };
                 reviewed.get("diff").and_then(Value::as_str) == Some(diff.as_str())
-                    && reviewed.get("paths").and_then(Value::as_array).is_some_and(|array| {
-                        array.len() == paths.len()
-                            && array.iter().zip(paths.iter()).all(|(v, p)| v.as_str() == Some(p))
-                    })
+                    && reviewed
+                        .get("paths")
+                        .and_then(Value::as_array)
+                        .is_some_and(|array| {
+                            array.len() == paths.len()
+                                && array
+                                    .iter()
+                                    .zip(paths.iter())
+                                    .all(|(v, p)| v.as_str() == Some(p))
+                        })
             }
         }
     }
@@ -316,7 +351,7 @@ impl EvidenceLedger {
 mod tests {
     use super::*;
     use serde_json::json;
-    use ultima_protocol_bridge::{RpcId, ApprovalKind, Approval};
+    use ultima_protocol_bridge::{Approval, ApprovalKind, RpcId};
     fn project() -> std::path::PathBuf {
         std::env::current_dir().unwrap()
     }
@@ -334,10 +369,13 @@ mod tests {
         }
     }
     fn observe_cmd(ledger: &mut EvidenceLedger, cmd: &str, cwd: &str) {
-        ledger.observe(NotificationKind::ItemStarted, &json!({
-            "threadId":"t","turnId":"u",
-            "item":{"id":"i","type":"commandExecution","command":cmd,"cwd":cwd}
-        }));
+        ledger.observe(
+            NotificationKind::ItemStarted,
+            &json!({
+                "threadId":"t","turnId":"u",
+                "item":{"id":"i","type":"commandExecution","command":cmd,"cwd":cwd}
+            }),
+        );
     }
     fn reviewed(cmd: &str, cwd: &str) -> Value {
         json!({"id":"i","threadId":"t","turnId":"u","kind":"command",
@@ -359,7 +397,7 @@ mod tests {
         elevated.request["additionalPermissions"] = json!({"network":true});
         assert!(!ledger.matches(&elevated, &snapshot, &root));
         elevated = original.clone();
-        elevated.request["availableDecisions"] = json!(["accept","acceptForSession"]);
+        elevated.request["availableDecisions"] = json!(["accept", "acceptForSession"]);
         assert!(!ledger.matches(&elevated, &snapshot, &root));
         elevated = original.clone();
         elevated.request["permissionScope"] = json!("workspace");
@@ -378,8 +416,10 @@ mod tests {
         observe_cmd(&mut ledger, "echo safe", cwd);
         let original = req("echo safe", cwd);
         let snapshot = reviewed("echo safe", cwd);
-        ledger.observe(NotificationKind::CommandOutputDelta,
-            &json!({"threadId":"t","turnId":"u","itemId":"i","delta":"changed"}));
+        ledger.observe(
+            NotificationKind::CommandOutputDelta,
+            &json!({"threadId":"t","turnId":"u","itemId":"i","delta":"changed"}),
+        );
         assert!(!ledger.matches(&original, &snapshot, &root));
         let mut file = original.clone();
         file.kind = ApprovalKind::FileChange;

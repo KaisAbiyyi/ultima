@@ -1,10 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-mod runtime;
 mod approval_binding;
+mod runtime;
 
+use approval_binding::EvidenceLedger;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use approval_binding::EvidenceLedger;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -447,7 +447,12 @@ async fn ultima_approval(
     };
     handle
         .tx
-        .try_send(Action::Decision(approval, decision, reviewed.unwrap_or(Value::Null), tx))
+        .try_send(Action::Decision(
+            approval,
+            decision,
+            reviewed.unwrap_or(Value::Null),
+            tx,
+        ))
         .map_err(|_| safe_error("Engine decision queue unavailable"))?;
     rx.await
         .map_err(|_| safe_error("Engine decision dropped"))?

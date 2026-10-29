@@ -35,7 +35,7 @@ const ESCALATION_FIELDS = [
 function commandText(value: unknown): string | null {
   if (typeof value === 'string') return value.trim() && value.length <= MAX_COMMAND_CHARS ? value : null;
   if (!Array.isArray(value) || !value.length || !value.every(v =>
-    typeof v === 'string' && v.length > 0 && !/\\s/.test(v))) return null;
+    typeof v === 'string' && v.length > 0 && !/\s/.test(v))) return null;
   const joined = value.join(' ');
   return joined.length <= MAX_COMMAND_CHARS ? joined : null;
 }
@@ -46,7 +46,7 @@ function commandMatches(a: unknown, b: unknown): boolean {
 }
 function safeRelativePath(path: string): boolean {
   return path.length > 0 && path.length <= MAX_PATH_CHARS &&
-    !/[\\\\:%\\x00-\\x1f]/.test(path) && !path.startsWith('/') && !path.endsWith('/') &&
+    !/[\\:%\x00-\x1f]/.test(path) && !path.startsWith('/') && !path.endsWith('/') &&
     path.split('/').every(part => part.length > 0 && part !== '.' && part !== '..');
 }
 function permissionScope(request: Record<string, unknown>, kind: ApprovalRequest['kind'], project: string): boolean {
