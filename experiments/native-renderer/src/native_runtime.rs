@@ -16,6 +16,36 @@ pub(crate) fn resolve(
     project: &Path,
     store: Option<&Path>,
 ) -> Result<Selection, &'static str> {
+    // The store is anchored in Tauri's app_data_dir() + managed-codex.
+    // A CLI path is merely a locator, never a trust root of its own.
+    let trusted = if store.is_some() {
+        Some(production_host_store()?)
+    } else {
+        None
+    };
+    resolve_against_host(system_exe, project, store, trusted.as_deref())
+}
+
+#[cfg(windows)]
+fn production_host_store() -> Result<std::path::PathBuf, &'static str> {
+    let roaming = std::env::var_os("APPDATA")
+        .ok_or("Production host app-data directory unavailable.")?;
+    Ok(std::path::PathBuf::from(roaming)
+        .join("com.kaisabiyyi.ultima")
+        .join("managed-codex"))
+}
+
+#[cfg(not(windows))]
+fn production_host_store() -> Result<std::path::PathBuf, &'static str> {
+    Err("Managed Codex attachment is Windows-host only.")
+}
+
+fn resolve_against_host(
+    system_exe: &Path,
+    project: &Path,
+    store: Option<&Path>,
+    trusted: Option<&Path>,
+) -> Result<Selection, &'static str> {
     if !system_exe.is_absolute() || !project.is_absolute() {
         return Err("Codex executable and project require explicit absolute paths.");
     }
@@ -36,10 +66,23 @@ pub(crate) fn resolve(
     if !store.is_absolute() {
         return Err("NC-12 managed store must be an absolute trusted path.");
     }
-    // Reuse the shared existing NC-12 owned store. Never stage or activate
-    // an executable from this renderer; verified activation is host-owned.
-    let manager = Manager::open(store, Approval::official().ok().into_iter().collect())
-        .map_err(|_| "NC-12 runtime store failed ownership verification.")?;
+    let trusted = trusted.ok_or("Trusted production host store is unavailable.")?;
+    // Reject a missing, redirected or foreign path without creating a store.
+    // Both the supplied locator and trusted host root must be real directories,
+    // not filesystem symlinks/reparse-point aliases.
+    for path in [store, trusted] {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|_| "NC-12 host store does not already exist.")?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err("NC-12 host store is redirected or not a directory.");
+        }
+    }
+    if std::fs::canonicalize(store).ok() != std::fs::canonicalize(trusted).ok() {
+        return Err("NC-12 store is not the configured production host store.");
+    }
+    // No native updater, store creation or ownership marker generation.
+    let manager = Manager::open_existing(store, Approval::official().ok().into_iter().collect())
+        .map_err(|_| "Existing NC-12 host store failed ownership verification.")?;
     let selected = manager.selected();
     let config = manager
         .engine_config(system_exe, system_root, project, project)
@@ -84,15 +127,11 @@ mod tests {
     }
 
     #[test]
-    fn nc12_system_default_never_creates_separate_runtime_selection() {
+    fn nc12_absent_and_foreign_store_are_denied_without_mutation() {
         use std::fs;
         use std::time::{SystemTime, UNIX_EPOCH};
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("ultima-nc10g-{}-{nonce}", std::process::id()));
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("ultima-nc10g-{}-{nonce}", std::process::id()));
         fs::create_dir(&root).unwrap();
         let executable = root.join(if cfg!(windows) { "codex.exe" } else { "codex" });
         fs::write(&executable, b"synthetic only: never executed").unwrap();
@@ -101,15 +140,27 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
         }
-        let store = root.join("managed-codex");
-        let selection = resolve(&executable, &root, Some(&store)).unwrap();
-        assert!(selection.manager.is_some());
-        assert_eq!(selection.selected, Choice::System);
-        selection.rollback_after_confirmed_failure().unwrap();
-        assert_eq!(
-            selection.manager.as_ref().unwrap().selected(),
-            Choice::System
-        );
-        fs::remove_dir_all(&root).unwrap();
+        let trusted = root.join("production-app-data").join("managed-codex");
+        let foreign = root.join("foreign").join("managed-codex");
+        assert!(resolve_against_host(&executable, &root, Some(&trusted), Some(&trusted)).is_err());
+        assert!(!trusted.exists());
+        fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+        Manager::open(&foreign, vec![]).unwrap();
+        assert!(resolve_against_host(&executable, &root, Some(&foreign), Some(&trusted)).is_err());
+        assert!(!trusted.exists());
+        fs::create_dir_all(trusted.parent().unwrap()).unwrap();
+        Manager::open(&trusted, vec![]).unwrap();
+        let choice = resolve_against_host(&executable, &root, Some(&trusted), Some(&trusted)).unwrap();
+        assert_eq!(choice.selected, Choice::System);
+        choice.rollback_after_confirmed_failure().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nc12_system_default_does_not_need_host_store() {
+        // Absence of opt-in must never access or create any NC-12 journal.
+        assert!(resolve_against_host(
+            Path::new("codex.exe"), Path::new("project"), None, None
+        ).is_err());
     }
 }

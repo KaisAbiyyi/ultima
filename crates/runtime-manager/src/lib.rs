@@ -238,6 +238,45 @@ impl Manager {
             approvals: allowed,
         })
     }
+    /// Read-only attachment to a store initialized by the production host.
+    /// Unlike open(), a missing root, marker or layout is never adopted or repaired.
+    /// Callers must additionally bind the root to their trusted host location.
+    pub fn open_existing(root: &Path, approvals: Vec<Approval>) -> Result<Self, Error> {
+        if !root.is_absolute() {
+            return Err(Error::Invalid("existing store path"));
+        }
+        let meta = fs::symlink_metadata(root)?;
+        if !meta.is_dir() || meta.file_type().is_symlink() {
+            return Err(Error::Invalid("existing store root"));
+        }
+        let root = fs::canonicalize(root)?;
+        let marker = root.join(MARKER);
+        let marker_meta = fs::symlink_metadata(&marker)?;
+        if !marker_meta.is_file() || marker_meta.file_type().is_symlink()
+            || marker_meta.len() != b"ultima-managed-v1\n".len() as u64
+            || fs::read(&marker)? != b"ultima-managed-v1\n"
+        {
+            return Err(Error::Invalid("existing store marker"));
+        }
+        for name in ["versions", "journal"] {
+            let meta = fs::symlink_metadata(root.join(name))?;
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                return Err(Error::Invalid("existing store layout"));
+            }
+        }
+        let mut allowed = BTreeMap::new();
+        for a in approvals {
+            let verified = Approval::new(&a.version, &a.release_url, &a.sha256)?;
+            if allowed.insert(verified.version.clone(), verified).is_some() {
+                return Err(Error::Invalid("dup"));
+            }
+        }
+        // Validate the existing journal before returning an attachable manager.
+        let manager = Self { root, approvals: allowed };
+        manager.history()?;
+        Ok(manager)
+    }
+
     fn lock(&self) -> Result<Lock, Error> {
         let path = self.root.join(".update-lock");
         match OpenOptions::new().create_new(true).write(true).open(&path) {
