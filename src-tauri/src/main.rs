@@ -1,8 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod runtime;
+mod approval_binding;
 
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use approval_binding::EvidenceLedger;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -40,6 +42,7 @@ enum Action {
     Decision(
         Approval,
         ApprovalDecision,
+        Value, // reviewed tool snapshot from the webview; never authoritative by itself
         oneshot::Sender<Result<(), String>>,
     ),
     Stop,
@@ -159,11 +162,13 @@ async fn drive(
     session: u64,
     mut supervisor: EngineSupervisor,
     mut broker: Broker,
+    project: PathBuf,
     mut inbox: mpsc::Receiver<Action>,
     closed: watch::Sender<Option<bool>>,
     updates: Arc<Mutex<()>>,
     managed_version: Option<String>,
 ) {
+    let mut evidence = EvidenceLedger::default();
     let result: Result<(), String> = async {
         broker.begin_initialize().map_err(|_| safe_error("Handshake initialization failed"))?;
         flush(&mut broker, &mut supervisor).await?;
@@ -190,9 +195,17 @@ async fn drive(
                             }
                             let _ = reply.send(answer);
                         }
-                        Some(Action::Decision(approval, decision, reply)) => {
-                            let answer = broker.decide_exact_approval(&approval, decision, decision == ApprovalDecision::Accept)
-                                .map_err(|_| safe_error("Approval stale, invalid or already resolved"));
+                        Some(Action::Decision(approval, decision, reviewed, reply)) => {
+                            // The host's own bounded tool ledger must match the exact
+                            // snapshot reviewed by Svelte, not merely its approval ID.
+                            let answer = if decision == ApprovalDecision::Accept
+                                && !evidence.matches(&approval, &reviewed, &project)
+                            {
+                                Err(safe_error("Approval evidence or scope mismatch"))
+                            } else {
+                                broker.decide_exact_approval(&approval, decision, decision == ApprovalDecision::Accept)
+                                    .map_err(|_| safe_error("Approval stale, invalid or already resolved"))
+                            };
                             if answer.is_ok() {
                                 if let Err(reason) = flush(&mut broker, &mut supervisor).await {
                                     let _ = reply.send(Err(reason.clone()));
@@ -229,6 +242,12 @@ async fn drive(
                                             "startedAtMs":approval.started_at_ms,
                                             "request":approval.request,
                                         }}));
+                                    }
+                                    Event::Notification { kind, params } => {
+                                        evidence.observe(kind, &params);
+                                        if let Some(value) = broker_event(Event::Notification { kind, params }) {
+                                            emit(&app, session, value);
+                                        }
                                     }
                                     other => {
                                         if let Some(value) = broker_event(other) { emit(&app, session, value); }
@@ -372,6 +391,7 @@ async fn ultima_connect(
         session,
         supervisor,
         broker,
+        cwd.to_path_buf(),
         receiver,
         shutdown_tx,
         state.updates.clone(),
@@ -409,6 +429,7 @@ async fn ultima_approval(
     session: u64,
     request: Value,
     decision: String,
+    reviewed: Option<Value>,
 ) -> Result<(), String> {
     if decision != "accept" && decision != "decline" {
         return Err(safe_error("Unsupported decision"));
@@ -426,7 +447,7 @@ async fn ultima_approval(
     };
     handle
         .tx
-        .try_send(Action::Decision(approval, decision, tx))
+        .try_send(Action::Decision(approval, decision, reviewed.unwrap_or(Value::Null), tx))
         .map_err(|_| safe_error("Engine decision queue unavailable"))?;
     rx.await
         .map_err(|_| safe_error("Engine decision dropped"))?

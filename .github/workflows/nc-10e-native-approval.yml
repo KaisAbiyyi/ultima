@@ -4,6 +4,12 @@ on:
     paths:
       - 'experiments/native-renderer/**'
       - 'crates/protocol-bridge/**'
+      # Cross-renderer approval binding is part of NC-10E acceptance.
+      - 'src/lib/tool-events.ts'
+      - 'src/lib/tool-events.test.ts'
+      - 'src/Desktop.svelte'
+      - 'src-tauri/src/main.rs'
+      - 'src-tauri/src/approval_binding.rs'
       - '.github/workflows/nc-10e-native-approval.yml'
   workflow_dispatch:
 permissions:
