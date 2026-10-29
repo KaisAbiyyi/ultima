@@ -51,9 +51,7 @@ fn production_host_store() -> Result<std::path::PathBuf, &'static str> {
         unsafe { CoTaskMemFree(raw.cast()) };
         return Err("Production host app-data path exceeds safe bounds.");
     }
-    let roaming = std::ffi::OsString::from_wide(unsafe {
-        std::slice::from_raw_parts(raw, len)
-    });
+    let roaming = std::ffi::OsString::from_wide(unsafe { std::slice::from_raw_parts(raw, len) });
     unsafe { CoTaskMemFree(raw.cast()) };
     Ok(std::path::PathBuf::from(roaming)
         .join("com.kaisabiyyi.ultima")
@@ -208,9 +206,8 @@ mod tests {
     fn nc12_symlink_alias_to_host_store_is_denied() {
         use std::fs;
         use std::os::unix::fs::{symlink, PermissionsExt};
-        let temp = std::env::temp_dir().join(format!(
-            "ultima-nc10g-symlink-{}", std::process::id()
-        ));
+        let temp =
+            std::env::temp_dir().join(format!("ultima-nc10g-symlink-{}", std::process::id()));
         let _ = fs::remove_dir_all(&temp);
         fs::create_dir(&temp).unwrap();
         let exe = temp.join("codex");
@@ -226,9 +223,25 @@ mod tests {
 
     #[test]
     fn nc12_system_default_does_not_need_host_store() {
-        // Absence of opt-in must never access or create any NC-12 journal.
-        assert!(
-            resolve_against_host(Path::new("codex.exe"), Path::new("project"), None, None).is_err()
-        );
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("ultima-system-{}-{nonce}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let exe = root.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        fs::write(&exe, b"synthetic only").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&exe, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let selection = resolve_against_host(&exe, &root, None, None).unwrap();
+        assert!(!selection.is_managed());
+        assert!(selection.manager.is_none());
+        assert!(!root.join("managed-codex").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }
