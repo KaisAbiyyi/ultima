@@ -146,6 +146,13 @@ pub fn active_turn_in_page(value: &Value) -> Result<Option<String>, &'static str
             .and_then(Value::as_str)
             .ok_or("Codex turn status was missing.");
         let status = status?;
+        if !matches!(
+            status,
+            "inProgress" | "in_progress" | "running" | "completed"
+                | "interrupted" | "failed" | "cancelled"
+        ) {
+            return Err("Codex returned an unknown historical turn state.");
+        }
         if matches!(status, "inProgress" | "in_progress" | "running") {
             let id = bounded_id(turn.get("id")).ok_or("Codex active-turn identity was invalid.")?;
             if active.is_some() {
@@ -295,6 +302,7 @@ mod tests {
         ]}))
         .is_err());
         assert!(active_turn_in_page(&json!({"data":[{"id":"a"}]})).is_err());
+        assert!(active_turn_in_page(&json!({"data":[{"id":"a","status":"unknown"}]})).is_err());
     }
 
     #[test]
