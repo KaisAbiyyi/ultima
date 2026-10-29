@@ -616,8 +616,13 @@ mod policy_tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("owned");
         let mut manager = Manager::open(&root, vec![]).unwrap();
-        let file = tmp.path().join("untrusted-fixture.bin");
+        let file = tmp.path().join(if cfg!(windows) { "codex.exe" } else { "codex" });
         fs::write(&file, b"synthetic test binary").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let hash = hash_file(&file).unwrap();
         // Private test fixture: production cannot construct ApprovedArtifact
         // except the exact reviewed upstream platform pin.
