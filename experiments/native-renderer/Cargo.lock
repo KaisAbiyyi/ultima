@@ -2670,6 +2670,7 @@ dependencies = [
  "ultima-native-session",
  "ultima-protocol-bridge",
  "ultima-runtime-manager",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

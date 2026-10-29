@@ -29,8 +29,32 @@ pub(crate) fn resolve(
 
 #[cfg(windows)]
 fn production_host_store() -> Result<std::path::PathBuf, &'static str> {
-    let roaming =
-        std::env::var_os("APPDATA").ok_or("Production host app-data directory unavailable.")?;
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_RoamingAppData, SHGetKnownFolderPath};
+
+    // Read the OS-known folder instead of a caller-controlled APPDATA env var.
+    // Tauri app_data_dir is RoamingAppData / the configured app identifier.
+    let mut raw: *mut u16 = std::ptr::null_mut();
+    let status = unsafe {
+        SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, std::ptr::null_mut(), &mut raw)
+    };
+    if status != 0 || raw.is_null() {
+        unsafe { CoTaskMemFree(raw.cast()) };
+        return Err("Production host app-data directory unavailable.");
+    }
+    let mut len = 0usize;
+    while len < 32768 && unsafe { *raw.add(len) } != 0 {
+        len += 1;
+    }
+    if len == 32768 {
+        unsafe { CoTaskMemFree(raw.cast()) };
+        return Err("Production host app-data path exceeds safe bounds.");
+    }
+    let roaming = std::ffi::OsString::from_wide(unsafe {
+        std::slice::from_raw_parts(raw, len)
+    });
+    unsafe { CoTaskMemFree(raw.cast()) };
     Ok(std::path::PathBuf::from(roaming)
         .join("com.kaisabiyyi.ultima")
         .join("managed-codex"))
@@ -171,6 +195,27 @@ mod tests {
         assert_eq!(choice.selected, Choice::System);
         choice.rollback_after_confirmed_failure().unwrap();
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nc12_symlink_alias_to_host_store_is_denied() {
+        use std::fs;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let temp = std::env::temp_dir().join(format!(
+            "ultima-nc10g-symlink-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir(&temp).unwrap();
+        let exe = temp.join("codex");
+        fs::write(&exe, b"synthetic test binary").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o700)).unwrap();
+        let trusted = temp.join("managed-codex");
+        Manager::open(&trusted, vec![]).unwrap();
+        let alias = temp.join("alias");
+        symlink(&trusted, &alias).unwrap();
+        assert!(resolve_against_host(&exe, &temp, Some(&alias), Some(&trusted)).is_err());
+        fs::remove_dir_all(temp).unwrap();
     }
 
     #[test]
