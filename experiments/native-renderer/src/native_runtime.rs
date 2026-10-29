@@ -125,6 +125,12 @@ fn resolve_against_host(
 }
 
 impl Selection {
+    pub(crate) fn retain_lock_after_uncertain_cleanup(&mut self) {
+        if let Some(lease) = self.lease.take() {
+            lease.retain_lock_after_uncertain_cleanup();
+        }
+    }
+
     pub(crate) fn is_managed(&self) -> bool {
         matches!(self.selected, Choice::Managed(_))
     }

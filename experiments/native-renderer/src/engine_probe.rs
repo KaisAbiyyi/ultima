@@ -1214,7 +1214,7 @@ async fn drive(
             .map_err(|_| "Codex protocol broker failed initialization.")?;
         Ok::<_, &'static str>((selection, broker))
     })();
-    let (selection, mut broker) = match prepared {
+    let (mut selection, mut broker) = match prepared {
         Ok(v) => v,
         Err(error) => {
             if let Ok(mut queue) = events.lock() {
@@ -1237,6 +1237,9 @@ async fn drive(
         // A failed managed spawn must not be silently retried. Roll back
         // only if the supervisor confirms that no owned engine remains.
         let reaped = supervisor.stop().await.is_ok();
+        if !reaped {
+            selection.retain_lock_after_uncertain_cleanup();
+        }
         let recovered = reaped
             && selection.is_managed()
             && selection.rollback_after_confirmed_failure().is_ok();
@@ -1411,6 +1414,9 @@ async fn drive(
     } else {
         gate.finish_unexpected(1, clean && result.is_err()).await
     };
+    if !clean || !finalized {
+        selection.retain_lock_after_uncertain_cleanup();
+    }
     // Protocol/history/transport/user Stop and ordinary session failures are
     // not proof that the selected managed executable is defective. Never
     // mutate the shared host journal for these unrelated failures.

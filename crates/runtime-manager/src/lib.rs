@@ -178,6 +178,16 @@ pub struct LaunchSnapshot {
     _guard: Lock,
 }
 
+impl LaunchSnapshot {
+    /// On uncertain process-tree cleanup, leave the existing NC-12 lock in
+    /// place. A trusted host must confirm process death before manual recovery.
+    /// Releasing the lock would allow another host activation while a child
+    /// might still be executing the previous selected runtime.
+    pub fn retain_lock_after_uncertain_cleanup(self) {
+        std::mem::forget(self._guard);
+    }
+}
+
 struct Lock(PathBuf);
 impl Drop for Lock {
     fn drop(&mut self) {
@@ -836,6 +846,19 @@ mod policy_tests {
         assert!(manager.rollback_launch(&snapshot).is_err());
         assert_eq!(manager.history().unwrap().len(), before);
         assert_eq!(manager.selected(), Choice::System);
+    }
+
+    #[test]
+    fn unconfirmed_cleanup_retains_exclusive_journal_lock() {
+        let (tmp, manager, file, _) = fixture();
+        let lease = manager
+            .launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path())
+            .unwrap();
+        lease.retain_lock_after_uncertain_cleanup();
+        assert!(matches!(manager.activate_system(), Err(Error::Locked)));
+        // Test-only trusted recovery after synthetic child is known dead.
+        fs::remove_file(manager.root.join(".update-lock")).unwrap();
+        assert!(manager.activate_system().is_ok());
     }
 
     #[test]
