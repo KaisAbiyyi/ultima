@@ -1197,8 +1197,7 @@ async fn flush(broker: &mut Broker, supervisor: &mut EngineSupervisor) -> Result
 }
 
 async fn drive(
-    paths: (PathBuf, PathBuf),
-    runtime_store: Option<PathBuf>,
+    paths: (PathBuf, PathBuf, Option<PathBuf>),
     shutdown: oneshot::Receiver<()>,
     mut commands: mpsc::Receiver<Command>,
     emergency_stop: Arc<AtomicBool>,
@@ -1207,7 +1206,7 @@ async fn drive(
     ui_context: (egui::Context, bool),
 ) {
     let (ctx, coding_enabled) = ui_context;
-    let (executable, project) = paths;
+    let (executable, project, runtime_store) = paths;
     let prepared = (|| {
         let selection =
             crate::native_runtime::resolve(&executable, &project, runtime_store.as_deref())?;
@@ -1453,8 +1452,7 @@ impl EngineProbe {
                 .build()
             {
                 Ok(runtime) => runtime.block_on(drive(
-                    (executable, project),
-                    runtime_store,
+                    (executable, project, runtime_store),
                     receiver,
                     inbox,
                     thread_emergency_stop,
