@@ -992,8 +992,8 @@ impl HistoryFlow {
                 if self.selected.as_deref() != Some(thread.as_str()) {
                     return Err("Codex turns page changed selected thread identity.");
                 }
-                let first_resume_page = !prepend
-                    && lifecycle.resumed_unverified.as_deref() == Some(thread.as_str());
+                let first_resume_page =
+                    !prepend && lifecycle.resumed_unverified.as_deref() == Some(thread.as_str());
                 if !prepend && !first_resume_page {
                     return Err("Codex turns page lacked a matching resume verification gate.");
                 }
@@ -2399,12 +2399,10 @@ mod tests {
         assert!(broker.take_outbound().is_none());
     }
 
-
     // Model the real HistoryFlow -> Broker -> TurnLifecycle sequence. Every
     // fixture consumes the first thread/turns/list outbound frame so any
     // subsequently emitted turn/start is visible rather than hidden in a queue.
-    fn resume_waiting_for_first_turn_page(
-    ) -> (Broker, HistoryFlow, TurnLifecycle, PathBuf, u64) {
+    fn resume_waiting_for_first_turn_page() -> (Broker, HistoryFlow, TurnLifecycle, PathBuf, u64) {
         let project = std::env::current_dir().unwrap();
         let cwd = project.to_str().unwrap();
         let mut broker = ready();
@@ -2436,12 +2434,21 @@ mod tests {
         let turns: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
         assert_eq!(turns["method"], "thread/turns/list");
         assert_eq!(turns["params"]["threadId"], "owned");
-        assert_eq!(flow.pending.as_ref().unwrap().0, turns["id"].as_u64().unwrap());
+        assert_eq!(
+            flow.pending.as_ref().unwrap().0,
+            turns["id"].as_u64().unwrap()
+        );
         assert_eq!(lifecycle.thread.as_deref(), Some("owned"));
         assert_eq!(lifecycle.resumed_unverified.as_deref(), Some("owned"));
         assert!(!lifecycle.busy); // busy=false MUST NOT authorize submit.
         assert!(broker.take_outbound().is_none());
-        (broker, flow, lifecycle, project, turns["id"].as_u64().unwrap())
+        (
+            broker,
+            flow,
+            lifecycle,
+            project,
+            turns["id"].as_u64().unwrap(),
+        )
     }
 
     fn assert_resume_submit_blocked(
@@ -2469,7 +2476,8 @@ mod tests {
         broker
             .ingest_line(
                 json!({"id":id,"error":{"code":code,"message":"rejected"}})
-                    .to_string().as_bytes(),
+                    .to_string()
+                    .as_bytes(),
             )
             .unwrap();
         let event = broker.take_event().unwrap();
@@ -2488,18 +2496,14 @@ mod tests {
         let (mut broker, mut flow, mut lifecycle, project, id) =
             resume_waiting_for_first_turn_page();
         assert_resume_submit_blocked(&mut broker, &mut lifecycle, &project);
-        failed_first_page(
-            &mut broker, &mut flow, &mut lifecycle, &project, id, -32000,
-        );
+        failed_first_page(&mut broker, &mut flow, &mut lifecycle, &project, id, -32000);
     }
 
     #[test]
     fn resume_first_page_unsupported_capability_cannot_unlock_submit() {
         let (mut broker, mut flow, mut lifecycle, project, id) =
             resume_waiting_for_first_turn_page();
-        failed_first_page(
-            &mut broker, &mut flow, &mut lifecycle, &project, id, -32601,
-        );
+        failed_first_page(&mut broker, &mut flow, &mut lifecycle, &project, id, -32601);
     }
 
     #[test]
@@ -2517,7 +2521,9 @@ mod tests {
             let (mut broker, mut flow, mut lifecycle, project, id) =
                 resume_waiting_for_first_turn_page();
             let event = reply(&mut broker, id, page);
-            assert!(flow.handle_reply(&mut broker, &event, &mut lifecycle, &project).is_err());
+            assert!(flow
+                .handle_reply(&mut broker, &event, &mut lifecycle, &project)
+                .is_err());
             assert_eq!(lifecycle.resumed_unverified.as_deref(), Some("owned"));
             assert_resume_submit_blocked(&mut broker, &mut lifecycle, &project);
         }
@@ -2541,9 +2547,7 @@ mod tests {
     fn stale_failed_resume_reply_cannot_reactivate_adopted_thread() {
         let (mut broker, mut flow, mut lifecycle, project, id) =
             resume_waiting_for_first_turn_page();
-        let stale = failed_first_page(
-            &mut broker, &mut flow, &mut lifecycle, &project, id, -32601,
-        );
+        let stale = failed_first_page(&mut broker, &mut flow, &mut lifecycle, &project, id, -32601);
         // Handler has no pending ID and ignores a duplicate/delayed reply.
         assert!(matches!(
             flow.handle_reply(&mut broker, &stale, &mut lifecycle, &project),
@@ -2566,7 +2570,8 @@ mod tests {
         assert!(matches!(
             flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
             Ok(Some(Some(ProbeEvent::HistoryPage {
-                active_turn: Some(_), ..
+                active_turn: Some(_),
+                ..
             })))
         ));
         assert!(lifecycle.resumed_unverified.is_none());
@@ -2593,13 +2598,16 @@ mod tests {
         assert!(matches!(
             flow.handle_reply(&mut broker, &event, &mut lifecycle, &project),
             Ok(Some(Some(ProbeEvent::HistoryPage {
-                active_turn: None, ..
+                active_turn: None,
+                ..
             })))
         ));
         assert!(lifecycle.resumed_unverified.is_none());
         assert!(!lifecycle.busy);
         assert!(broker.take_outbound().is_none()); // no automatic replay
-        lifecycle.submit(&mut broker, &project, "explicit new prompt".into()).unwrap();
+        lifecycle
+            .submit(&mut broker, &project, "explicit new prompt".into())
+            .unwrap();
         let sent: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
         assert_eq!(sent["method"], "turn/start");
         assert_eq!(sent["params"]["threadId"], "owned");
@@ -2611,9 +2619,7 @@ mod tests {
     fn explicit_reconnect_uses_fresh_broker_without_prompt_replay() {
         let (mut broker, mut flow, mut lifecycle, project, id) =
             resume_waiting_for_first_turn_page();
-        failed_first_page(
-            &mut broker, &mut flow, &mut lifecycle, &project, id, -32601,
-        );
+        failed_first_page(&mut broker, &mut flow, &mut lifecycle, &project, id, -32601);
         // EngineProbe::start creates new worker-owned broker/flow/lifecycle;
         // the failed session does not reuse its request IDs or prompt queue.
         let mut new_broker = ready();
@@ -2631,7 +2637,8 @@ mod tests {
             json!({"data":[{"id":"owned","cwd":project.to_str().unwrap(),
                 "ephemeral":false}],"nextCursor":null}),
         );
-        new_flow.handle_reply(&mut new_broker, &event, &mut new_lifecycle, &project)
+        new_flow
+            .handle_reply(&mut new_broker, &event, &mut new_lifecycle, &project)
             .unwrap();
         assert!(new_broker.take_outbound().is_none());
         assert!(!new_lifecycle.busy);
