@@ -148,8 +148,13 @@ pub fn active_turn_in_page(value: &Value) -> Result<Option<String>, &'static str
         let status = status?;
         if !matches!(
             status,
-            "inProgress" | "in_progress" | "running" | "completed"
-                | "interrupted" | "failed" | "cancelled"
+            "inProgress"
+                | "in_progress"
+                | "running"
+                | "completed"
+                | "interrupted"
+                | "failed"
+                | "cancelled"
         ) {
             return Err("Codex returned an unknown historical turn state.");
         }
