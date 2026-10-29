@@ -91,10 +91,18 @@ fn resolve_against_host(
         return Err("NC-12 managed store must be an absolute trusted path.");
     }
     let trusted = trusted.ok_or("Trusted production host store is unavailable.")?;
+    // Require the exact OS-derived host locator. Do not permit path aliases
+    // whose final canonical target happens to match the production store.
+    if store != trusted {
+        return Err("NC-12 runtime store locator differs from production host config.");
+    }
     // Reject a missing, redirected or foreign path without creating a store.
     // Both the supplied locator and trusted host root must be real directories,
     // not filesystem symlinks/reparse-point aliases.
-    for path in [store, trusted] {
+    let host_parent = trusted
+        .parent()
+        .ok_or("Production host store parent is missing.")?;
+    for path in [store, host_parent] {
         let metadata = std::fs::symlink_metadata(path)
             .map_err(|_| "NC-12 host store does not already exist.")?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
@@ -229,7 +237,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("ultima-system-{}-{nonce}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("ultima-system-{}-{nonce}", std::process::id()));
         fs::create_dir(&root).unwrap();
         let exe = root.join(if cfg!(windows) { "codex.exe" } else { "codex" });
         fs::write(&exe, b"synthetic only").unwrap();
