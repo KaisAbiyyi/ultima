@@ -1,5 +1,5 @@
 /** NC-07 thin Tauri bridge: all permission/process policy lives in Rust. */
-import type { ApprovalRequest } from './tool-events';
+import type { ApprovalRequest, ToolItem } from './tool-events';
 export type EngineEvent = { session: number } & (
   | { type: 'status'; state: 'connecting' | 'ready' | 'error' | 'disconnected'; message?: string }
   | { type: 'reply'; id: number; method: string; ok: boolean; result: unknown }
@@ -18,7 +18,7 @@ export type ManagedRuntimeStatus = {
 export interface EngineBridge {
   connect(executable: string, project: string): Promise<number>;
   call(method: 'model/list' | 'thread/start' | 'thread/resume' | 'turn/start' | 'turn/interrupt', params: Record<string, unknown>): Promise<number>;
-  approval(session: number, request: ApprovalRequest, decision: 'accept' | 'decline'): Promise<void>;
+  approval(session: number, request: ApprovalRequest, decision: 'accept' | 'decline', reviewed: ToolItem | null): Promise<void>;
   disconnect(): Promise<void>;
   runtimeStatus(): Promise<ManagedRuntimeStatus>;
   runtimeStage(source: string): Promise<void>;
@@ -38,7 +38,7 @@ export async function nativeBridge(): Promise<EngineBridge> {
   return {
     connect: (executable, project) => invoke<number>('ultima_connect', { executable, project }),
     call: (method, params) => invoke<number>('ultima_call', { method, params }),
-    approval: (session, request, decision) => invoke<void>('ultima_approval', { session, request, decision }),
+    approval: (session, request, decision, reviewed) => invoke<void>('ultima_approval', { session, request, decision, reviewed }),
     disconnect: () => invoke<void>('ultima_disconnect'),
     runtimeStatus: () => invoke<ManagedRuntimeStatus>('ultima_runtime_status'),
     runtimeStage: (source) => invoke<void>('ultima_runtime_stage', { source }),

@@ -9,17 +9,58 @@ export const MAX_PATH_CHARS = 512;
 export type ApprovalRequest = {
   id: string | number; kind: 'command' | 'fileChange';
   threadId: string; turnId: string; itemId: string; startedAtMs: number;
+  /** Complete immutable App Server params; never synthesize a descriptor in the UI. */
+  request: Record<string, unknown>;
 };
 export type ToolItem = {
   id: string; threadId: string; turnId: string;
   kind: 'command' | 'fileChange' | 'other'; state: string;
-  command: string; output: string; diff: string; paths: string[];
+  command: string; commandDescriptor: string | string[] | null; cwd: string;
+  output: string; diff: string; paths: string[];
   truncated: boolean;
   /** True only when a complete, untruncated server snapshot was validated. */
   previewComplete: boolean;
 };
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+const REQUEST_FIELDS = new Set([
+  'threadId', 'turnId', 'itemId', 'startedAtMs', 'command', 'cwd', 'grantRoot',
+  'availableDecisions', 'reason'
+]);
+const ESCALATION_FIELDS = [
+  'additionalPermissions', 'networkApprovalContext', 'proposedExecpolicyAmendment',
+  'proposedNetworkPolicyAmendments'
+];
+function commandText(value: unknown): string | null {
+  if (typeof value === 'string') return value.trim() && value.length <= MAX_COMMAND_CHARS ? value : null;
+  if (!Array.isArray(value) || !value.length || !value.every(v =>
+    typeof v === 'string' && v.length > 0 && !/\s/.test(v))) return null;
+  const joined = value.join(' ');
+  return joined.length <= MAX_COMMAND_CHARS ? joined : null;
+}
+/** No silent normalization of an ambiguous argv into a displayed shell command. */
+function commandMatches(a: unknown, b: unknown): boolean {
+  const aText = commandText(a), bText = commandText(b);
+  return aText !== null && bText !== null && JSON.stringify(a) === JSON.stringify(b);
+}
+function safeRelativePath(path: string): boolean {
+  return path.length > 0 && path.length <= MAX_PATH_CHARS &&
+    !/[\\:%\x00-\x1f]/.test(path) && !path.startsWith('/') && !path.endsWith('/') &&
+    path.split('/').every(part => part.length > 0 && part !== '.' && part !== '..');
+}
+function permissionScope(request: Record<string, unknown>, kind: ApprovalRequest['kind'], project: string): boolean {
+  if (!project || Object.keys(request).some(k => !REQUEST_FIELDS.has(k) && !ESCALATION_FIELDS.includes(k))) return false;
+  if (ESCALATION_FIELDS.some(key => request[key] !== undefined && request[key] !== null)) return false;
+  const decisions = request.availableDecisions;
+  if (decisions !== undefined &&
+    (!Array.isArray(decisions) || !decisions.length || !decisions.includes('accept') ||
+      !decisions.every(v => v === 'accept' || v === 'decline' || v === 'cancel'))) return false;
+  if (request.reason !== undefined && (typeof request.reason !== 'string' || request.reason.length > 4096)) return false;
+  if (kind === 'command') return request.grantRoot === undefined &&
+    typeof request.cwd === 'string' && request.cwd === project && commandText(request.command) !== null;
+  return request.command === undefined && request.cwd === undefined &&
+    (request.grantRoot === undefined || request.grantRoot === project);
 }
 function bounded(value: unknown, max: number): string {
   return typeof value === 'string' ? value.slice(0, max) : '';
@@ -34,11 +75,19 @@ export function parseApproval(raw: unknown): ApprovalRequest | null {
     typeof v.id === 'number' && Number.isSafeInteger(v.id) && v.id >= 0)) return null;
   if (!identity(v.threadId) || !identity(v.turnId) || !identity(v.itemId)) return null;
   if (!Number.isSafeInteger(v.startedAtMs) || (v.startedAtMs as number) < 0) return null;
-  return v as ApprovalRequest;
+  const request = record(v.request);
+  if (!request || !Object.keys(request).length ||
+    new TextEncoder().encode(JSON.stringify(request)).length > 8192 ||
+    request.threadId !== v.threadId || request.turnId !== v.turnId ||
+    request.itemId !== v.itemId || request.startedAtMs !== v.startedAtMs) return null;
+  return { id: v.id as string | number, kind: v.kind as ApprovalRequest['kind'],
+    threadId: v.threadId, turnId: v.turnId, itemId: v.itemId,
+    startedAtMs: v.startedAtMs as number, request: structuredClone(request) };
 }
 export function sameApproval(a: ApprovalRequest, b: ApprovalRequest): boolean {
   return a.id === b.id && a.kind === b.kind && a.threadId === b.threadId &&
-    a.turnId === b.turnId && a.itemId === b.itemId && a.startedAtMs === b.startedAtMs;
+    a.turnId === b.turnId && a.itemId === b.itemId && a.startedAtMs === b.startedAtMs &&
+    JSON.stringify(a.request) === JSON.stringify(b.request);
 }
 /** JSON array is unambiguous even if a provider ID contains a separator. */
 export function toolIdentity(item: Pick<ToolItem, 'threadId' | 'turnId' | 'id'>): string {
@@ -114,16 +163,17 @@ export function trackTool(items: ToolItem[], type: 'itemStarted' | 'itemComplete
   const tool: ToolItem = {
     id, threadId: p.threadId, turnId: p.turnId,
     kind: 'other', state: type === 'itemCompleted' ? 'complete' : 'running',
-    command: '', output: existing?.output ?? '', diff: '', paths: [],
-    truncated: false, previewComplete: false
+    command: '', commandDescriptor: null, cwd: '', output: existing?.output ?? '', diff: '', paths: [],
+    truncated: existing?.truncated ?? false, previewComplete: false
   };
+  tool.cwd = typeof item?.cwd === 'string' && item.cwd.length <= MAX_PATH_CHARS ? item.cwd : '';
   if (item?.type === 'commandExecution') {
     tool.kind = 'command';
-    const command = typeof item.command === 'string' ? item.command :
-      Array.isArray(item.command) && item.command.every(x => typeof x === 'string') ? item.command.join(' ') : '';
-    tool.command = bounded(command, MAX_COMMAND_CHARS);
-    tool.truncated = command.length > MAX_COMMAND_CHARS;
-    tool.previewComplete = command.trim().length > 0 && !tool.truncated;
+    const command = commandText(item.command);
+    tool.commandDescriptor = command === null ? null : structuredClone(item.command) as string | string[];
+    tool.command = command ?? '';
+    tool.truncated ||= command === null;
+    tool.previewComplete = command !== null && tool.cwd.length > 0 && !tool.truncated;
     if (typeof item.aggregatedOutput === 'string') {
       tool.output = bounded(item.aggregatedOutput, MAX_TOOL_OUTPUT_CHARS);
       tool.truncated ||= item.aggregatedOutput.length > MAX_TOOL_OUTPUT_CHARS;
@@ -133,22 +183,27 @@ export function trackTool(items: ToolItem[], type: 'itemStarted' | 'itemComplete
     const preview = filePreview(item.changes, item);
     tool.paths = preview.paths;
     tool.diff = preview.diff;
-    tool.truncated = preview.truncated;
-    tool.previewComplete = preview.complete;
+    tool.truncated ||= preview.truncated;
+    tool.previewComplete = preview.complete && !tool.truncated;
   }
   return [...items.filter(t => toolIdentity(t) !== key), tool].slice(-MAX_TOOL_ITEMS);
 }
 /** A reviewed tool is never a grant for another selected thread or active turn. */
 export function canApproveInActiveTurn(
-  request: ApprovalRequest, items: ToolItem[], activeThread: string, activeTurn: string
+  request: ApprovalRequest, items: ToolItem[], activeThread: string, activeTurn: string, project: string
 ): boolean {
-  return request.threadId === activeThread && request.turnId === activeTurn && canApprove(request, items);
+  return request.threadId === activeThread && request.turnId === activeTurn && canApprove(request, items, project);
 }
-export function canApprove(request: ApprovalRequest, items: ToolItem[]): boolean {
+export function canApprove(request: ApprovalRequest, items: ToolItem[], project: string): boolean {
   const item = items.find(v => matchesApprovalEvidence(request, v));
-  return !!item && item.previewComplete && !item.truncated && (
-    request.kind === 'command' && item.kind === 'command' && !!item.command ||
-    request.kind === 'fileChange' && item.kind === 'fileChange' &&
-      item.paths.length > 0 && !!item.diff
-  );
+  if (!item || !item.previewComplete || item.truncated ||
+      !permissionScope(request.request, request.kind, project) ||
+      request.request.threadId !== request.threadId || request.request.turnId !== request.turnId ||
+      request.request.itemId !== request.itemId || request.request.startedAtMs !== request.startedAtMs) return false;
+  if (request.kind === 'command') {
+    return item.kind === 'command' && commandMatches(request.request.command, item.commandDescriptor) &&
+      item.cwd === request.request.cwd && item.cwd === project && item.command.length > 0;
+  }
+  return item.kind === 'fileChange' && item.paths.length > 0 && item.diff.length > 0 &&
+    (!item.cwd || item.cwd === project) && item.paths.every(safeRelativePath);
 }

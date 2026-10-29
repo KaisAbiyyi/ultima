@@ -29,6 +29,7 @@
   let toolItems: ToolItem[] = [];
   let approvals: ApprovalRequest[] = [];
   let reviewedApproval = false;
+  let reviewedEvidence: ToolItem | null = null;
   let approvalBusy = false;
   let expandedDiffId = '';
   let expandedOutputId = '';
@@ -101,7 +102,8 @@
   $: currentTool = currentApproval ? toolItems.find(t => matchesApprovalEvidence(currentApproval, t)) : undefined;
   $: currentApprovalKey = currentApproval ? approvalToolIdentity(currentApproval) : '';
   $: canAccept = !!currentApproval &&
-    canApproveInActiveTurn(currentApproval, toolItems, activeThread, activeTurn) &&
+    canApproveInActiveTurn(currentApproval, toolItems, activeThread, activeTurn, activeProject) &&
+    !!currentTool && !!reviewedEvidence && JSON.stringify(currentTool) === JSON.stringify(reviewedEvidence) &&
     (currentApproval.kind !== 'fileChange' || expandedDiffId === currentApprovalKey) &&
     reviewedApproval && !approvalBusy && status === 'ready';
 
@@ -183,7 +185,7 @@
     earlyReplies.clear();
     approvals = [];
     toolItems = [];
-    reviewedApproval = false;
+    reviewedApproval = false; reviewedEvidence = null;
     expandedDiffId = '';
     expandedOutputId = '';
     activeTurn = '';
@@ -254,7 +256,7 @@
     earlyReplies.clear();
     approvals = [];
     toolItems = [];
-    reviewedApproval = false;
+    reviewedApproval = false; reviewedEvidence = null;
     expandedDiffId = '';
     errorMessage = '';
     status = 'connecting';
@@ -319,27 +321,35 @@
     await request('turn/start', { threadId: activeThread, input: [{ type: 'text', text }], ...(model ? { model } : {}) }, 'turn');
     await tick(); scrollLatest();
   }
+  function markReviewed(checked: boolean) {
+    reviewedApproval = checked;
+    reviewedEvidence = checked && currentTool && currentApproval &&
+      canApprove(currentApproval, toolItems, activeProject) ? structuredClone(currentTool) : null;
+  }
   async function decideApproval(decision: 'accept' | 'decline') {
     const current = approvals[0];
     const session = fence.session;
     if (!bridge || !current || session === null || approvalBusy) return;
-    if (decision === 'accept' && !canAccept) return;
+    if (decision === 'accept' && (!canAccept || !reviewedEvidence || !currentTool ||
+      JSON.stringify(reviewedEvidence) !== JSON.stringify(currentTool))) return;
+    const reviewed = decision === 'accept' ? structuredClone(reviewedEvidence) : null;
     // Remove BEFORE IPC: if an ACK is lost, never offer a dangerous duplicate retry.
     approvalBusy = true;
     approvals = approvals.slice(1);
-    reviewedApproval = false;
+    reviewedApproval = false; reviewedEvidence = null;
     expandedDiffId = '';
     try {
-      await bridge.approval(session, current, decision);
+      await bridge.approval(session, current, decision, reviewed);
     } catch {
-      errorMessage = 'The permission decision could not be confirmed. Do not retry; disconnect the engine before continuing.';
+      errorMessage = 'The permission decision could not be confirmed. The engine must shut down before continuing.';
+      void disconnect();
     } finally {
       approvalBusy = false;
     }
   }
   function denyWithoutPrompt(request: ApprovalRequest, session: number) {
     // Unexpected thread or bounded queue overflow must fail closed.
-    void bridge?.approval(session, request, 'decline').catch(() => {
+    void bridge?.approval(session, request, 'decline', null).catch(() => {
       errorMessage = 'Unable to safely decline tool permission. Engine shutdown requested.';
       void disconnect();
     });
@@ -352,7 +362,7 @@
       if (event.state === 'disconnected' || event.state === 'error') {
         busy = false; activeTurn = '';
         discardStream();
-        approvals = []; toolItems = []; reviewedApproval = false;
+        approvals = []; toolItems = []; reviewedApproval = false; reviewedEvidence = null;
         if (event.state === 'disconnected') {
           fence.beginDisconnect();
           pending.clear();
@@ -374,6 +384,11 @@
         denyWithoutPrompt(request, event.session);
         return;
       }
+      if (approvals.some(a => a.id === request.id && !sameApproval(a, request))) {
+        errorMessage = 'Conflicting approval descriptor for the same request ID. Engine shutdown requested.';
+        void disconnect();
+        return;
+      }
       if (!approvals.some(a => sameApproval(a, request))) approvals = [...approvals, request];
       return;
     }
@@ -383,7 +398,7 @@
         const previous = approvals[0];
         approvals = approvals.filter(a => a.id !== id);
         if (previous && previous.id === id) {
-          reviewedApproval = false;
+          reviewedApproval = false; reviewedEvidence = null;
           expandedDiffId = '';
         }
       }
@@ -411,7 +426,7 @@
       const itemId = typeof item === 'object' && item && 'id' in item ? item.id : event.params.itemId;
       if (currentApproval && event.params.threadId === currentApproval.threadId &&
           event.params.turnId === currentApproval.turnId && itemId === currentApproval.itemId) {
-        reviewedApproval = false;
+        reviewedApproval = false; reviewedEvidence = null;
         expandedDiffId = '';
       }
       toolItems = trackTool(toolItems, event.type, event.params);
@@ -477,7 +492,7 @@
       activeTurn = '';
       // A completed turn must not leave an actionable stale approval card.
       for (const approval of approvals) denyWithoutPrompt(approval, event.session);
-      approvals = []; reviewedApproval = false;
+      approvals = []; reviewedApproval = false; reviewedEvidence = null;
       return;
     }
     if (event.type === 'delta') {
@@ -506,7 +521,7 @@
     followTail = true;
     toolItems = [];
     approvals = [];
-    reviewedApproval = false;
+    reviewedApproval = false; reviewedEvidence = null;
     draft = '';
     navOpen = false;
     await tick(); composerEl?.focus();
@@ -522,7 +537,7 @@
     followTail = true;
     toolItems = [];
     approvals = [];
-    reviewedApproval = false;
+    reviewedApproval = false; reviewedEvidence = null;
     if (navOpen) closeNavigation();
     if (status !== 'ready') {
       errorMessage = 'Connect to this project, then resume the selected thread.';
@@ -704,9 +719,20 @@
         <section class="nc07-approval" aria-labelledby="nc09-approval-heading" role="dialog" aria-modal="false" data-testid="nc07-approval">
           <p class="eyebrow">PERMISSION REQUIRED · ONE REQUEST ONLY</p>
           <h2 id="nc09-approval-heading">{currentApproval.kind === 'command' ? 'Execute a command?' : 'Apply file changes?'}</h2>
-          <p>Review the exact command or change preview. Permission defaults to decline; this does not grant future requests.</p>
+          <p>Review the complete authoritative server request and the matching tool evidence. Permission defaults to decline; no future requests are granted.</p>
+          <p><strong>Scope:</strong> one request only · <strong>Project:</strong> {activeProject}</p>
+          <p><strong>Server request descriptor (immutable):</strong></p>
+          <pre class="nc07-evidence" data-testid="nc10e-request">{JSON.stringify(currentApproval.request, null, 2)}</pre>
+          {#if !canApprove(currentApproval, toolItems, activeProject)}
+            <p class="nc07-warning">Server request, project, permission scope or displayed evidence disagrees. Allow once is unavailable.</p>
+          {/if}
           {#if currentTool && currentApproval.kind === 'command' && currentTool.kind === 'command'}
+            <p><strong>Actual command:</strong></p>
             <pre class="nc07-evidence">{currentTool.command}</pre>
+            {#if Array.isArray(currentTool.commandDescriptor)}
+              <pre class="nc07-evidence">{JSON.stringify(currentTool.commandDescriptor)}</pre>
+            {/if}
+            <p><strong>Actual cwd:</strong> {currentTool.cwd}</p>
           {:else if currentTool && currentApproval.kind === 'fileChange' && currentTool.kind === 'fileChange'}
             <p>{currentTool.paths.join(', ') || 'Paths not available'}</p>
             <button class="secondary-action" aria-expanded={expandedDiffId === currentApprovalKey} onclick={() => expandedDiffId = expandedDiffId === currentApprovalKey ? '' : currentApprovalKey}>Review file diff</button>
@@ -715,7 +741,7 @@
             <p class="nc07-warning">The App Server has not provided a verifiable command or diff preview. Accept is unavailable.</p>
           {/if}
           {#if currentTool?.truncated}<p class="nc07-warning">Preview was truncated. Decline this request unless the full action can be reviewed.</p>{/if}
-          <label class="nc07-review"><input type="checkbox" bind:checked={reviewedApproval} disabled={!canApprove(currentApproval, toolItems) || (currentApproval.kind === 'fileChange' && expandedDiffId !== currentApprovalKey)} /> I reviewed this specific action</label>
+          <label class="nc07-review"><input type="checkbox" checked={reviewedApproval} onchange={(event) => markReviewed(event.currentTarget.checked)} disabled={!canApprove(currentApproval, toolItems, activeProject) || (currentApproval.kind === 'fileChange' && expandedDiffId !== currentApprovalKey)} /> I reviewed this request, permission scope and matching evidence</label>
           <div class="nc07-actions">
             <button class="secondary-action" disabled={approvalBusy} onclick={() => void decideApproval('decline')}>Decline</button>
             <button class="secondary-action" disabled={!canAccept} onclick={() => void decideApproval('accept')}>Allow once</button>

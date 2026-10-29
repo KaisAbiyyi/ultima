@@ -316,3 +316,29 @@ fn nc07_upstream_resolved_invalidates_original_request() {
         Err(BridgeError::UnknownApproval)
     );
 }
+
+#[test]
+fn descriptor_is_exactly_bound_and_same_id_mutation_is_rejected() {
+    let mut broker = make_ready();
+    broker
+        .ingest_line(
+            br#"{"id":"cmd","method":"item/commandExecution/requestApproval",
+        "params":{"threadId":"t","turnId":"u","itemId":"i",
+            "startedAtMs":1,"command":"echo safe","cwd":"/project",
+            "availableDecisions":["accept","decline"]}}"#,
+        )
+        .unwrap();
+    let Event::Approval(original) = broker.take_event().unwrap() else {
+        panic!("missing server approval");
+    };
+    assert_eq!(original.request["command"], "echo safe");
+    let mut tampered = original.clone();
+    tampered.request["command"] = serde_json::json!("echo evil");
+    assert_eq!(
+        broker.decide_exact_approval(&tampered, ApprovalDecision::Accept, true),
+        Err(BridgeError::UnknownApproval)
+    );
+    assert_eq!(broker.approval_count(), 1);
+    broker.decline_approval(&original.id).unwrap();
+    assert_eq!(broker.approval_count(), 0);
+}
