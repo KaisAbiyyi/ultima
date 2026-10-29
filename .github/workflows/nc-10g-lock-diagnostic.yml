@@ -1,0 +1,24 @@
+name: NC-10G one-shot native lock diagnostics
+
+on:
+  push:
+    branches: [work/nc-10g-native-integration-20261029]
+    paths: [.github/workflows/nc-10g-lock-diagnostic.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve native lock using Cargo, preserve upstream locked versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update --manifest-path experiments/native-renderer/Cargo.toml --workspace
+          echo 'NC10G_LOCK_DIFF_BEGIN'
+          git diff --no-ext-diff -- experiments/native-renderer/Cargo.lock
+          echo 'NC10G_LOCK_DIFF_END'
