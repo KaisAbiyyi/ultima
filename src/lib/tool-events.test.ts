@@ -7,7 +7,9 @@ import {
 
 const identity = { threadId: 't', turnId: 'z', itemId: 'i', startedAtMs: 1 };
 const approval: ApprovalRequest = { id: 'a', kind: 'command', ...identity,
-  request: { ...identity, command: 'cargo test', cwd: '/project', availableDecisions: ['accept', 'decline'] } };
+  request: { ...identity, kind:'command', environmentId:null,
+    commandActions:[{ type:'unknown', command:'cargo test' }],
+    command: 'cargo test', cwd: '/project', availableDecisions: ['accept', 'decline'] } };
 const fileApproval: ApprovalRequest = { id: 'a', kind: 'fileChange', ...identity, request: { ...identity } };
 const commandApproval = (command: string): ApprovalRequest =>
   ({ ...approval, request: { ...approval.request, command } });
@@ -208,6 +210,15 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
     expect(canApprove({ ...approval, request:{ ...approval.request, proposedExecpolicyAmendment:null } }, tools, '/project')).toBe(true);
     expect(canApprove({ ...approval, request:{ ...approval.request, reason:null } }, tools, '/project')).toBe(true);
     expect(canApprove(approval, tools, '/project')).toBe(true);
+    expect(canApprove({ ...approval, request:{ ...approval.request, commandActions:[
+      { type:'read', command:'cat file', name:'file', path:'file' },
+      { type:'listFiles', command:'ls', path:null },
+      { type:'search', command:'grep', query:'needle', path:null }
+    ] } }, tools, '/project')).toBe(true);
+    expect(canApprove({ ...approval, request:{ ...approval.request, kind:'writeStdin' } }, tools, '/project')).toBe(false);
+    expect(canApprove({ ...approval, request:{ ...approval.request, environmentId:'remote' } }, tools, '/project')).toBe(false);
+    expect(canApprove({ ...approval, request:{ ...approval.request, approvalId:'callback-1' } }, tools, '/project')).toBe(false);
+    expect(canApprove({ ...approval, request:{ ...approval.request, commandActions:[{ type:'read', command:'cat', name:'file' }] } }, tools, '/project')).toBe(false);
     expect(sameApproval(parsed!, { ...parsed!, request:{ ...parsed!.request, proposedExecpolicyAmendment:['cargo','build'] } })).toBe(false);
   });
 

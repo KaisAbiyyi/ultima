@@ -16,6 +16,7 @@ const MAX_EXEC_POLICY_AMENDMENT_ITEM_BYTES: usize = 512;
 const MAX_EXEC_POLICY_AMENDMENT_BYTES: usize = 4 * 1024;
 const MAX_AVAILABLE_DECISIONS: usize = 8;
 const MAX_NETWORK_POLICY_HOST_BYTES: usize = 512;
+const MAX_COMMAND_ACTIONS: usize = 32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolEvidence {
@@ -67,6 +68,85 @@ fn valid_exec_policy_amendment(value: &Value) -> bool {
 
 /// Validate advertised protocol choices, but only expose/dispatch the one-shot
 /// "accept" decision. Persistent choices are metadata, never implicit grants.
+fn optional_action_string(
+    action: &serde_json::Map<String, Value>,
+    key: &str,
+    limit: usize,
+) -> bool {
+    match action.get(key) {
+        None | Some(Value::Null) => true,
+        Some(Value::String(value)) => value.len() <= limit,
+        _ => false,
+    }
+}
+
+fn valid_command_action(value: &Value) -> bool {
+    let Some(action) = value.as_object() else {
+        return false;
+    };
+    let Some(kind) = action.get("type").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(command) = action.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    if command.len() > MAX_COMMAND {
+        return false;
+    }
+    match kind {
+        "read" => {
+            action
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.len() <= MAX_PATH)
+                && action
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| path.len() <= MAX_PATH)
+        }
+        "listFiles" => optional_action_string(action, "path", MAX_PATH),
+        "search" => {
+            optional_action_string(action, "path", MAX_PATH)
+                && optional_action_string(action, "query", MAX_PATH)
+        }
+        "unknown" => true,
+        _ => false,
+    }
+}
+
+fn valid_command_actions(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(actions)) => {
+            actions.len() <= MAX_COMMAND_ACTIONS && actions.iter().all(valid_command_action)
+        }
+        _ => false,
+    }
+}
+
+fn valid_command_metadata(request: &Value, kind: ApprovalKind) -> bool {
+    match kind {
+        ApprovalKind::Command => {
+            request
+                .get("kind")
+                .is_none_or(|value| value.as_str() == Some("command"))
+                && request
+                    .get("environmentId")
+                    .is_none_or(Value::is_null)
+                && request.get("approvalId").is_none_or(Value::is_null)
+                && valid_command_actions(request.get("commandActions"))
+        }
+        ApprovalKind::FileChange => [
+            "kind",
+            "environmentId",
+            "approvalId",
+            "commandActions",
+        ]
+        .iter()
+        .all(|key| request.get(*key).is_none()),
+    }
+}
+
 fn valid_available_decision(value: &Value) -> bool {
     match value.as_str() {
         Some("accept" | "acceptForSession" | "decline" | "cancel") => true,
@@ -82,25 +162,20 @@ fn valid_available_decision(value: &Value) -> bool {
                 let Some(payload) = payload.as_object() else {
                     return false;
                 };
-                payload.len() == 1
-                    && payload
-                        .get("execpolicy_amendment")
-                        .is_some_and(valid_exec_policy_amendment)
+                payload
+                    .get("execpolicy_amendment")
+                    .is_some_and(valid_exec_policy_amendment)
             } else if let Some(payload) = choice.get("applyNetworkPolicyAmendment") {
                 let Some(payload) = payload.as_object() else {
                     return false;
                 };
-                if payload.len() != 1 {
-                    return false;
-                }
                 let Some(amendment) = payload
                     .get("network_policy_amendment")
                     .and_then(Value::as_object)
                 else {
                     return false;
                 };
-                amendment.len() == 2
-                    && amendment
+                amendment
                         .get("host")
                         .and_then(Value::as_str)
                         .is_some_and(|host| host.len() <= MAX_NETWORK_POLICY_HOST_BYTES)
@@ -401,6 +476,7 @@ impl ToolLedger {
                 .is_ok_and(|serialized| serialized.len() <= MAX_APPROVAL_DESCRIPTOR_BYTES)
             || !proposal_valid
             || !reason_valid
+            || !valid_command_metadata(req, approval.kind)
             || !one_shot_accept_offered(req)
             || [
                 "additionalPermissions",
@@ -674,6 +750,8 @@ mod tests {
         let mut valid = approval();
         valid.request = json!({
             "threadId":"t","turnId":"u","itemId":"i","startedAtMs":1,
+            "kind":"command","environmentId":null,"approvalId":null,
+            "commandActions":[{"type":"unknown","command":"echo safe"}],
             "command":"echo safe","cwd":cwd,"reason":null,
             "proposedExecpolicyAmendment":["echo","safe"],
             "availableDecisions":[
@@ -756,6 +834,35 @@ mod tests {
         malformed_decisions.request["availableDecisions"] = json!(["accept", 7]);
         assert!(!ToolLedger::request_matches_review(
             &malformed_decisions,
+            &project(),
+            &reviewed
+        ));
+
+        let mut wrong_kind = valid.clone();
+        wrong_kind.request["kind"] = json!("writeStdin");
+        assert!(!ToolLedger::request_matches_review(
+            &wrong_kind,
+            &project(),
+            &reviewed
+        ));
+        let mut foreign_environment = valid.clone();
+        foreign_environment.request["environmentId"] = json!("remote");
+        assert!(!ToolLedger::request_matches_review(
+            &foreign_environment,
+            &project(),
+            &reviewed
+        ));
+        let mut callback_scoped = valid.clone();
+        callback_scoped.request["approvalId"] = json!("callback-1");
+        assert!(!ToolLedger::request_matches_review(
+            &callback_scoped,
+            &project(),
+            &reviewed
+        ));
+        let mut malformed_actions = valid.clone();
+        malformed_actions.request["commandActions"] = json!([{"type":"read","command":"cat","name":"file"}]);
+        assert!(!ToolLedger::request_matches_review(
+            &malformed_actions,
             &project(),
             &reviewed
         ));

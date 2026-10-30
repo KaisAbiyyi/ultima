@@ -15,6 +15,7 @@ const MAX_EXEC_POLICY_AMENDMENT_ITEM_BYTES: usize = 512;
 const MAX_EXEC_POLICY_AMENDMENT_BYTES: usize = 4 * 1024;
 const MAX_AVAILABLE_DECISIONS: usize = 8;
 const MAX_NETWORK_POLICY_HOST_BYTES: usize = 512;
+const MAX_COMMAND_ACTIONS: usize = 32;
 
 #[derive(Clone)]
 struct Observed {
@@ -79,6 +80,62 @@ fn valid_exec_policy_amendment(value: &Value) -> bool {
     })
 }
 
+fn optional_action_string(
+    action: &serde_json::Map<String, Value>,
+    key: &str,
+    limit: usize,
+) -> bool {
+    match action.get(key) {
+        None | Some(Value::Null) => true,
+        Some(Value::String(value)) => value.len() <= limit,
+        _ => false,
+    }
+}
+
+fn valid_command_action(value: &Value) -> bool {
+    let Some(action) = value.as_object() else {
+        return false;
+    };
+    let Some(kind) = action.get("type").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(command) = action.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    if command.len() > MAX_COMMAND {
+        return false;
+    }
+    match kind {
+        "read" => {
+            action
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.len() <= MAX_PATH)
+                && action
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| path.len() <= MAX_PATH)
+        }
+        "listFiles" => optional_action_string(action, "path", MAX_PATH),
+        "search" => {
+            optional_action_string(action, "path", MAX_PATH)
+                && optional_action_string(action, "query", MAX_PATH)
+        }
+        "unknown" => true,
+        _ => false,
+    }
+}
+
+fn valid_command_actions(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(actions)) => {
+            actions.len() <= MAX_COMMAND_ACTIONS && actions.iter().all(valid_command_action)
+        }
+        _ => false,
+    }
+}
+
 fn valid_available_decision(value: &Value) -> bool {
     match value.as_str() {
         Some("accept" | "acceptForSession" | "decline" | "cancel") => true,
@@ -94,25 +151,20 @@ fn valid_available_decision(value: &Value) -> bool {
                 let Some(payload) = payload.as_object() else {
                     return false;
                 };
-                payload.len() == 1
-                    && payload
-                        .get("execpolicy_amendment")
-                        .is_some_and(valid_exec_policy_amendment)
+                payload
+                    .get("execpolicy_amendment")
+                    .is_some_and(valid_exec_policy_amendment)
             } else if let Some(payload) = choice.get("applyNetworkPolicyAmendment") {
                 let Some(payload) = payload.as_object() else {
                     return false;
                 };
-                if payload.len() != 1 {
-                    return false;
-                }
                 let Some(amendment) = payload
                     .get("network_policy_amendment")
                     .and_then(Value::as_object)
                 else {
                     return false;
                 };
-                amendment.len() == 2
-                    && amendment
+                amendment
                         .get("host")
                         .and_then(Value::as_str)
                         .is_some_and(|host| host.len() <= MAX_NETWORK_POLICY_HOST_BYTES)
@@ -152,6 +204,10 @@ fn scope(request: &Value, kind: ApprovalKind, project: &Path) -> bool {
                 | "turnId"
                 | "itemId"
                 | "startedAtMs"
+                | "kind"
+                | "environmentId"
+                | "approvalId"
+                | "commandActions"
                 | "command"
                 | "cwd"
                 | "grantRoot"
@@ -188,20 +244,28 @@ fn scope(request: &Value, kind: ApprovalKind, project: &Path) -> bool {
     if !one_shot_accept_offered(request) {
         return false;
     }
-    if let Some(reason) = request.get("reason").filter(|value| !value.is_null()) {
-        if !reason.as_str().is_some_and(|s| s.len() <= MAX_COMMAND) {
+    if kind == ApprovalKind::Command {
+        if request
+            .get("kind")
+            .is_some_and(|value| value.as_str() != Some("command"))
+            || request
+                .get("environmentId")
+                .is_some_and(|value| !value.is_null())
+            || request
+                .get("approvalId")
+                .is_some_and(|value| !value.is_null())
+            || !valid_command_actions(request.get("commandActions"))
+        {
             return false;
         }
+    } else if ["kind", "environmentId", "approvalId", "commandActions"]
+        .iter()
+        .any(|key| request.get(*key).is_some())
+    {
+        return false;
     }
-    if let Some(decisions) = request.get("availableDecisions") {
-        let Some(list) = decisions.as_array() else {
-            return false;
-        };
-        if !list.iter().any(|v| v.as_str() == Some("accept"))
-            || list
-                .iter()
-                .any(|v| !matches!(v.as_str(), Some("accept" | "decline" | "cancel")))
-        {
+    if let Some(reason) = request.get("reason").filter(|value| !value.is_null()) {
+        if !reason.as_str().is_some_and(|s| s.len() <= MAX_COMMAND) {
             return false;
         }
     }
@@ -465,8 +529,9 @@ mod tests {
             item_id: "i".into(),
             started_at_ms: 1,
             request: json!({"threadId":"t","turnId":"u","itemId":"i",
-                "startedAtMs":1,"command":cmd,"cwd":cwd,
-                "availableDecisions":["accept","decline"]}),
+                "startedAtMs":1,"kind":"command","environmentId":null,"approvalId":null,
+                "commandActions":[{"type":"unknown","command":cmd}],
+                "command":cmd,"cwd":cwd,"availableDecisions":["accept","decline"]}),
         }
     }
     fn observe_cmd(ledger: &mut EvidenceLedger, cmd: &str, cwd: &str) {
@@ -584,6 +649,19 @@ mod tests {
         null_proposal.request["proposedExecpolicyAmendment"] = Value::Null;
         null_proposal.request["reason"] = Value::Null;
         assert!(ledger.matches(&null_proposal, &snapshot, &root));
+
+        let mut wrong_kind = proposal.clone();
+        wrong_kind.request["kind"] = json!("writeStdin");
+        assert!(!ledger.matches(&wrong_kind, &snapshot, &root));
+        let mut foreign_environment = proposal.clone();
+        foreign_environment.request["environmentId"] = json!("remote");
+        assert!(!ledger.matches(&foreign_environment, &snapshot, &root));
+        let mut callback_scoped = proposal.clone();
+        callback_scoped.request["approvalId"] = json!("callback-1");
+        assert!(!ledger.matches(&callback_scoped, &snapshot, &root));
+        let mut malformed_actions = proposal.clone();
+        malformed_actions.request["commandActions"] = json!([{"type":"read","command":"cat","name":"file"}]);
+        assert!(!ledger.matches(&malformed_actions, &snapshot, &root));
 
         let mut malformed = vec![json!("echo"), json!({"command":"echo"}), json!([1])];
         malformed.push(json!(

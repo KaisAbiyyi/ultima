@@ -11,6 +11,7 @@ const MAX_EXEC_POLICY_AMENDMENT_ITEM_BYTES = 512;
 const MAX_EXEC_POLICY_AMENDMENT_BYTES = 4 * 1024;
 const MAX_AVAILABLE_DECISIONS = 8;
 const MAX_NETWORK_POLICY_HOST_BYTES = 512;
+const MAX_COMMAND_ACTIONS = 32;
 
 export type ApprovalRequest = {
   id: string | number; kind: 'command' | 'fileChange';
@@ -31,8 +32,8 @@ function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 const REQUEST_FIELDS = new Set([
-  'threadId', 'turnId', 'itemId', 'startedAtMs', 'command', 'cwd', 'grantRoot',
-  'availableDecisions', 'reason'
+  'threadId', 'turnId', 'itemId', 'startedAtMs', 'kind', 'environmentId', 'approvalId',
+  'commandActions', 'command', 'cwd', 'grantRoot', 'availableDecisions', 'reason'
 ]);
 const ESCALATION_FIELDS = [
   'additionalPermissions', 'networkApprovalContext', 'proposedNetworkPolicyAmendments'
@@ -59,6 +60,37 @@ function validExecPolicyAmendment(value: unknown): boolean {
 }
 
 /** Validate protocol choices, but never surface or dispatch persistent choices. */
+function validCommandAction(value: unknown): boolean {
+  const action = record(value);
+  if (!action || typeof action.type !== 'string' || typeof action.command !== 'string' ||
+      new TextEncoder().encode(action.command).length > MAX_COMMAND_CHARS) return false;
+  const optionalText = (key: string, limit: number): boolean => {
+    const field = action[key];
+    return field === undefined || field === null ||
+      (typeof field === 'string' && new TextEncoder().encode(field).length <= limit);
+  };
+  switch (action.type) {
+    case 'read':
+      return typeof action.name === 'string' &&
+        new TextEncoder().encode(action.name).length <= MAX_PATH_CHARS &&
+        typeof action.path === 'string' &&
+        new TextEncoder().encode(action.path).length <= MAX_PATH_CHARS;
+    case 'listFiles':
+      return optionalText('path', MAX_PATH_CHARS);
+    case 'search':
+      return optionalText('path', MAX_PATH_CHARS) && optionalText('query', MAX_PATH_CHARS);
+    case 'unknown':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function validCommandActions(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  return Array.isArray(value) && value.length <= MAX_COMMAND_ACTIONS && value.every(validCommandAction);
+}
+
 function validAvailableDecision(value: unknown): boolean {
   if (typeof value === 'string') {
     return ['accept', 'acceptForSession', 'decline', 'cancel'].includes(value);
@@ -67,12 +99,12 @@ function validAvailableDecision(value: unknown): boolean {
   if (!choice || Object.keys(choice).length !== 1) return false;
   const exec = record(choice.acceptWithExecpolicyAmendment);
   if (exec) {
-    return Object.keys(exec).length === 1 && validExecPolicyAmendment(exec.execpolicy_amendment);
+    return validExecPolicyAmendment(exec.execpolicy_amendment);
   }
   const network = record(choice.applyNetworkPolicyAmendment);
   if (!network || Object.keys(network).length !== 1) return false;
   const amendment = record(network.network_policy_amendment);
-  return !!amendment && Object.keys(amendment).length === 2 &&
+  return !!amendment &&
     typeof amendment.host === 'string' &&
     new TextEncoder().encode(amendment.host).length <= MAX_NETWORK_POLICY_HOST_BYTES &&
     (amendment.action === 'allow' || amendment.action === 'deny');
@@ -103,6 +135,14 @@ function permissionScope(request: Record<string, unknown>, kind: ApprovalRequest
   if (proposal !== undefined && proposal !== null &&
       (kind !== 'command' || !validExecPolicyAmendment(proposal))) return false;
   if (!oneShotAcceptOffered(request)) return false;
+  if (kind === 'command') {
+    if ((request.kind !== undefined && request.kind !== 'command') ||
+        (request.environmentId !== undefined && request.environmentId !== null) ||
+        (request.approvalId !== undefined && request.approvalId !== null) ||
+        !validCommandActions(request.commandActions)) return false;
+  } else if (['kind', 'environmentId', 'approvalId', 'commandActions'].some(key => request[key] !== undefined)) {
+    return false;
+  }
   if (request.reason !== undefined && request.reason !== null &&
       (typeof request.reason !== 'string' || request.reason.length > 4096)) return false;
   if (kind === 'command') return request.grantRoot === undefined &&

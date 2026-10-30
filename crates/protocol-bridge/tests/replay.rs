@@ -348,6 +348,8 @@ fn one_shot_accept_with_execpolicy_proposal_emits_only_accept_and_does_not_persi
     let mut broker = make_ready();
     let first_params = json!({
         "threadId":"t","turnId":"u","itemId":"i1","startedAtMs":7,
+        "kind":"command","environmentId":null,"approvalId":null,
+        "commandActions":[{"type":"unknown","command":"echo safe"}],
         "command":"echo safe","cwd":"/project",
         "proposedExecpolicyAmendment":["echo","safe"],
         "availableDecisions":[
@@ -386,6 +388,8 @@ fn one_shot_accept_with_execpolicy_proposal_emits_only_accept_and_does_not_persi
         "method":"item/commandExecution/requestApproval",
         "params":{
             "threadId":"t","turnId":"u","itemId":"i2","startedAtMs":8,
+            "kind":"command","environmentId":null,
+            "commandActions":[{"type":"unknown","command":"echo safe"}],
             "command":"echo safe","cwd":"/project",
             "proposedExecpolicyAmendment":["echo","safe"],
             "availableDecisions":["accept","acceptForSession"]
