@@ -572,7 +572,6 @@ mod tests {
         assert!(!ledger.matches(&elevated, &snapshot, &root));
         elevated.request["availableDecisions"] = json!(["accept", 7]);
         assert!(!ledger.matches(&elevated, &snapshot, &root));
-        elevated = original.clone();
         for key in [
             "permissionScope",
             "unexpectedField",
