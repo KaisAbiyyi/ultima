@@ -348,7 +348,7 @@ fn one_shot_accept_with_execpolicy_proposal_emits_only_accept_and_does_not_persi
     let mut broker = make_ready();
     let first_params = json!({
         "threadId":"t","turnId":"u","itemId":"i1","startedAtMs":7,
-        "kind":"command","environmentId":null,"approvalId":null,
+        "kind":"command","environmentId":"local","approvalId":null,
         "commandActions":[{"type":"unknown","command":"echo safe"}],
         "command":"echo safe","cwd":"/project",
         "proposedExecpolicyAmendment":["echo","safe"],
@@ -388,7 +388,7 @@ fn one_shot_accept_with_execpolicy_proposal_emits_only_accept_and_does_not_persi
         "method":"item/commandExecution/requestApproval",
         "params":{
             "threadId":"t","turnId":"u","itemId":"i2","startedAtMs":8,
-            "kind":"command","environmentId":null,
+            "kind":"command","environmentId":"local",
             "commandActions":[{"type":"unknown","command":"echo safe"}],
             "command":"echo safe","cwd":"/project",
             "proposedExecpolicyAmendment":["echo","safe"],
@@ -466,15 +466,94 @@ fn supported_local_environment_contract_uses_shared_adversarial_cases() {
     .unwrap();
     assert_eq!(
         LocalCommandEnvironment::parse(None),
-        Some(LocalCommandEnvironment::LegacyAbsent)
+        LocalCommandEnvironment::Absent
+    );
+    assert_eq!(
+        LocalCommandEnvironment::parse(Some(&Value::Null)),
+        LocalCommandEnvironment::Null
+    );
+    assert_eq!(
+        LocalCommandEnvironment::parse(Some(&json!("local"))),
+        LocalCommandEnvironment::Local
+    );
+    assert_eq!(
+        LocalCommandEnvironment::parse(Some(&json!("remote"))),
+        LocalCommandEnvironment::Unsupported
     );
     for case in cases.as_array().unwrap() {
         assert_eq!(
-            LocalCommandEnvironment::parse(Some(&case["value"])).is_some(),
+            LocalCommandEnvironment::parse(if case["present"] == false {
+                None
+            } else {
+                Some(&case["value"])
+            })
+            .allows_approval(),
             case["supported"].as_bool().unwrap(),
             "{}",
             case["value"]
         );
     }
-    assert!(LocalCommandEnvironment::parse(Some(&json!("x".repeat(8193)))).is_none());
+    assert!(!LocalCommandEnvironment::parse(Some(&json!("x".repeat(8193)))).allows_approval());
+}
+
+#[test]
+fn original_unsupported_environment_is_inspectable_and_decline_only_at_broker() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nc10g-local-approval.json"
+    ))
+    .unwrap();
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nc10g-environments.json"
+    ))
+    .unwrap();
+    for case in cases.as_array().unwrap() {
+        let mut request = fixture.clone();
+        if case["present"] == false {
+            request["params"]
+                .as_object_mut()
+                .unwrap()
+                .remove("environmentId");
+        } else {
+            request["params"]["environmentId"] = case["value"].clone();
+        }
+        let mut broker = make_ready();
+        broker
+            .ingest_line(&serde_json::to_vec(&request).unwrap())
+            .unwrap();
+        let Event::Approval(original) = broker.take_event().unwrap() else {
+            panic!("inspection");
+        };
+        assert_eq!(original.request, request["params"]);
+        if case["supported"] == true {
+            broker
+                .decide_exact_approval(&original, ApprovalDecision::Accept, true)
+                .unwrap();
+            let wire: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+            assert_eq!(
+                wire,
+                json!({"id":"local-once","result":{"decision":"accept"}})
+            );
+        } else {
+            assert!(
+                broker
+                    .decide_exact_approval(&original, ApprovalDecision::Accept, true)
+                    .is_err(),
+                "{}",
+                case["name"]
+            );
+            // The direct reply API must not bypass the same authoritative check.
+            assert!(broker
+                .reply_approval(&original.id, ApprovalDecision::Accept, true)
+                .is_err());
+            assert!(broker.take_outbound().is_none());
+            assert_eq!(broker.approval(&original.id), Some(&original));
+            broker.decline_approval(&original.id).unwrap();
+            let wire: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+            assert_eq!(
+                wire,
+                json!({"id":"local-once","result":{"decision":"decline"}})
+            );
+        }
+        assert_eq!(broker.approval_count(), 0);
+    }
 }

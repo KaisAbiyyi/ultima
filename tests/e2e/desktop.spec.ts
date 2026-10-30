@@ -63,7 +63,7 @@ async function approvalPreview(page: import('@playwright/test').Page) {
 import { readFileSync } from 'node:fs';
 const localFixture = JSON.parse(readFileSync(new URL('../fixtures/nc10g-local-approval.json', import.meta.url), 'utf8'));
 const localRequest = { id:localFixture.id, ...localFixture.params, request:localFixture.params };
-async function emitApproval(page: import('@playwright/test').Page, request = localRequest) {
+async function emitApproval(page: import('@playwright/test').Page, request: unknown = localRequest) {
   await page.evaluate(request => {
     const emit = (window as any).__emitApproval;
     emit({type:'itemStarted',params:{threadId:'t',turnId:'u',item:{id:'i',type:'commandExecution',command:'echo safe',cwd:'/project'}}});
@@ -88,14 +88,38 @@ test('NC-10G local environment review sends one-shot accept with the complete de
   await expect(allow).toHaveCount(0);
 });
 
-test('NC-10G environment replacement after review shuts down without dispatching accept', async ({ page }) => {
-  await approvalPreview(page);
-  await emitApproval(page);
-  await page.getByRole('checkbox', { name:'I reviewed this request, permission scope and matching evidence' }).check();
-  await expect(page.getByRole('button', { name:'Allow once' })).toBeEnabled();
-  await page.evaluate(request => (window as any).__emitApproval({type:'approvalPending', request}),
-    { ...localRequest, request:{ ...localRequest.request, environmentId:'remote' } });
-  await expect(page.getByRole('alert')).toContainText('Conflicting approval descriptor');
-  await expect(page.getByRole('button', { name:'Allow once' })).toHaveCount(0);
-  expect(await page.evaluate(() => (window as any).__approvalCalls)).toEqual([]);
-});
+for (const identity of ['remote','null','missing']) {
+  test(`NC-10G ${identity} replacement after review shuts down without dispatching accept`, async ({ page }) => {
+    await approvalPreview(page);
+    await emitApproval(page);
+    await page.getByRole('checkbox', { name:'I reviewed this request, permission scope and matching evidence' }).check();
+    await expect(page.getByRole('button', { name:'Allow once' })).toBeEnabled();
+    const request: Record<string,unknown> = structuredClone(localFixture.params);
+    if (identity === 'missing') delete request.environmentId;
+    else request.environmentId = identity === 'null' ? null : identity;
+    await page.evaluate(request => (window as any).__emitApproval({type:'approvalPending', request}),
+      { ...localRequest, request });
+    await expect(page.getByRole('alert')).toContainText('Conflicting approval descriptor');
+    await expect(page.getByRole('button', { name:'Allow once' })).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).__approvalCalls)).toEqual([]);
+  });
+}
+
+for (const identity of ['remote','custom','null','missing']) {
+  test(`NC-10G original ${identity} identity remains inspectable and decline-only`, async ({ page }) => {
+    await approvalPreview(page);
+    const request: Record<string,unknown> = structuredClone(localFixture.params);
+    if (identity === 'missing') delete request.environmentId;
+    else request.environmentId = identity === 'null' ? null : identity;
+    await emitApproval(page,{ ...localRequest,request });
+    await expect(page.getByTestId('nc10e-request')).toBeVisible();
+    await expect(page.getByTestId('nc07-approval')).toContainText('Execution environment is unsupported or unidentified.');
+    await expect(page.getByRole('button', { name:'Allow once' })).toBeDisabled();
+    await expect(page.getByRole('checkbox', { name:'I reviewed this request, permission scope and matching evidence' })).toBeDisabled();
+    await expect(page.getByRole('button', { name:'Decline', exact:true })).toBeEnabled();
+    await page.getByRole('button', { name:'Decline', exact:true }).click();
+    const [,sent,decision] = await page.evaluate(() => (window as any).__approvalCalls[0]);
+    expect(sent.request).toEqual(request);
+    expect(decision).toBe('decline');
+  });
+}

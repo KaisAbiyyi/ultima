@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'tests/fixtures/nc10g-*.json'
+      - 'tests/approval-parity/**'
       - 'experiments/native-renderer/**'
       - 'crates/protocol-bridge/**'
       # Cross-renderer approval binding is part of NC-10E acceptance.
@@ -36,3 +37,37 @@ jobs:
       - run: cargo fmt --manifest-path experiments/native-renderer/Cargo.toml -- --check
       - run: cargo test --locked --manifest-path experiments/native-renderer/Cargo.toml
       - run: cargo clippy --locked --manifest-path experiments/native-renderer/Cargo.toml --all-targets -- -D warnings
+  cross-renderer-parity:
+    name: Explicit local authorization parity / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.1'
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+      - run: cargo fmt --manifest-path tests/approval-parity/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/approval-parity/Cargo.toml --all-targets -- -D warnings
+      - name: Run actual native and host validators through the broker
+        shell: bash
+        run: cargo run --locked --manifest-path tests/approval-parity/Cargo.toml > approval-parity.json
+      - name: Compare Svelte against the actual Rust decisions
+        shell: bash
+        env:
+          NC10G_PARITY_RECEIPT: approval-parity.json
+        run: npx vitest run --config tests/approval-parity/vitest.config.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nc10g-explicit-local-parity-${{ matrix.os }}
+          path: approval-parity.json
+          retention-days: 14

@@ -9,23 +9,27 @@ use std::collections::{BTreeMap, VecDeque};
 pub const PINNED_APP_SERVER: &str = "0.164.0";
 pub const MAX_JSONL_BYTES: usize = 1024 * 1024;
 
-/// Supported command environments for this local-only client. This is a scope
-/// check, never permission or a replacement for exact pending-descriptor equality.
-/// Keep absent/null/local distinct in the original descriptor; never rewrite it.
+/// Diagnostic classification of a command's original environment field.
+/// Only explicit Local is eligible for command approval. Classification never
+/// rewrites the descriptor or replaces exact pending-request/user-consent checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalCommandEnvironment {
-    LegacyAbsent,
-    LegacyNull,
+    Absent,
+    Null,
     Local,
+    Unsupported,
 }
 impl LocalCommandEnvironment {
-    pub fn parse(value: Option<&Value>) -> Option<Self> {
+    pub fn parse(value: Option<&Value>) -> Self {
         match value {
-            None => Some(Self::LegacyAbsent),
-            Some(Value::Null) => Some(Self::LegacyNull),
-            Some(Value::String(id)) if id == "local" => Some(Self::Local),
-            _ => None,
+            None => Self::Absent,
+            Some(Value::Null) => Self::Null,
+            Some(Value::String(id)) if id == "local" => Self::Local,
+            _ => Self::Unsupported,
         }
+    }
+    pub fn allows_approval(self) -> bool {
+        self == Self::Local
     }
 }
 
@@ -42,6 +46,7 @@ pub enum BridgeError {
     IdExhausted,
     UnknownApproval,
     ExplicitApprovalRequired,
+    UnsupportedCommandEnvironment,
 }
 impl std::fmt::Display for BridgeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -517,11 +522,18 @@ impl Broker {
         decision: ApprovalDecision,
         explicit_user_approval: bool,
     ) -> Result<()> {
-        if !self.approvals.contains_key(id) {
-            return Err(BridgeError::UnknownApproval);
-        }
+        let approval = self.approvals.get(id).ok_or(BridgeError::UnknownApproval)?;
         if decision == ApprovalDecision::Accept && !explicit_user_approval {
             return Err(BridgeError::ExplicitApprovalRequired);
+        }
+        // Check the authoritative pending descriptor even for callers of the
+        // direct reply API. Unsupported identities stay inspectable/declinable.
+        if decision == ApprovalDecision::Accept
+            && approval.kind == ApprovalKind::Command
+            && !LocalCommandEnvironment::parse(approval.request.get("environmentId"))
+                .allows_approval()
+        {
+            return Err(BridgeError::UnsupportedCommandEnvironment);
         }
         self.queue(
             None,

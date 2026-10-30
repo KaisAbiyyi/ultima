@@ -12,5 +12,10 @@ was not accessed. Rust tests substitute only cwd to the host test context.
 `nc10g-environments.json` is a synthetic adversarial scope matrix, shared by
 native Rust, Tauri Rust, the protocol bridge and Vitest. The Cyrillic character
 in `locаl` is intentional. Remote execution remains unsupported in this client.
-Absent legacy identity is tested separately because JSON cannot encode an
-absent value. Full descriptor equality must still distinguish absent/null/local.
+Missing identity is represented by `present: false`; the `value` key is absent.
+Only explicit `local` is eligible. Null/missing and every other case are decline-only.
+Full descriptor equality must still distinguish absent/null/local.
+
+`tests/approval-parity` runs the actual native and Tauri validators with each
+original descriptor through the broker, then compares their wire decisions to
+Svelte in Vitest. The NC-10E parity jobs require this combined test on both OSes.

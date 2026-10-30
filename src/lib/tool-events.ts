@@ -131,8 +131,8 @@ function safeRelativePath(path: string): boolean {
     path.split('/').every(part => part.length > 0 && part !== '.' && part !== '..');
 }
 /** Local-only scope check. Preserve the raw descriptor for exact equality. */
-function supportedCommandEnvironment(value: unknown): boolean {
-  return value === undefined || value === null || value === 'local';
+export function supportedCommandEnvironment(value: unknown): boolean {
+  return value === 'local';
 }
 function permissionScope(request: Record<string, unknown>, kind: ApprovalRequest['kind'], project: string): boolean {
   if (!project || Object.keys(request).some(k => !REQUEST_FIELDS.has(k))) return false;

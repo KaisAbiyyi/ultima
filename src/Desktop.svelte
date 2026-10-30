@@ -9,7 +9,7 @@
   import { FrameDeltas } from './lib/frame-deltas';
   import { NativePerformance } from './lib/native-performance';
   import { readerPage, rowPreview, ROW_PREVIEW_CHARS } from './lib/message-paging';
-  import { approvalToolIdentity, canApprove, canApproveInActiveTurn, matchesApprovalEvidence, parseApproval, sameApproval, toolIdentity, trackTool, type ApprovalRequest, type ToolItem } from './lib/tool-events';
+  import { supportedCommandEnvironment, approvalToolIdentity, canApprove, canApproveInActiveTurn, matchesApprovalEvidence, parseApproval, sameApproval, toolIdentity, trackTool, type ApprovalRequest, type ToolItem } from './lib/tool-events';
   import { addThread, appendDelta, appendProject, cappedMessages, restoreProjects, restoreThreads, restoreThreadMessages, saveMetadata, MAX_TEXT_BYTES, type Project, type Thread } from './lib/desktop-state';
 
   const ROW_HEIGHT = 88;
@@ -726,6 +726,9 @@
           <p><strong>Scope:</strong> one request only · <strong>Project:</strong> {activeProject}</p>
           <p><strong>Server request descriptor (immutable):</strong></p>
           <pre class="nc07-evidence" data-testid="nc10e-request">{JSON.stringify(currentApproval.request, null, 2)}</pre>
+          {#if currentApproval.kind === 'command' && !supportedCommandEnvironment(currentApproval.request.environmentId)}
+            <p class="nc07-warning">Execution environment is unsupported or unidentified. You can inspect or decline this request.</p>
+          {/if}
           {#if !canApprove(currentApproval, toolItems, activeProject)}
             <p class="nc07-warning">Server request, project, permission scope or displayed evidence disagrees. Allow once is unavailable.</p>
           {/if}

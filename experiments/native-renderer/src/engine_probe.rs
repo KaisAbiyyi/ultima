@@ -2470,7 +2470,7 @@ mod tests {
             .ingest_line(
                 json!({"id":"request-a","method":"item/commandExecution/requestApproval",
             "params":{"threadId":"thread-a","turnId":"turn-a","itemId":"item-a",
-                "startedAtMs":1,"command":"echo reviewed","cwd":project.to_str().unwrap()}})
+                "startedAtMs":1,"environmentId":"local","command":"echo reviewed","cwd":project.to_str().unwrap()}})
                 .to_string()
                 .as_bytes(),
             )

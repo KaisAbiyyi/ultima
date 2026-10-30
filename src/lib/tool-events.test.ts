@@ -9,7 +9,7 @@ import {
 
 const identity = { threadId: 't', turnId: 'z', itemId: 'i', startedAtMs: 1 };
 const approval: ApprovalRequest = { id: 'a', kind: 'command', ...identity,
-  request: { ...identity, kind:'command', environmentId:null,
+  request: { ...identity, kind:'command', environmentId:'local',
     commandActions:[{ type:'unknown', command:'cargo test' }],
     command: 'cargo test', cwd: '/project', availableDecisions: ['accept', 'decline'] } };
 const fileApproval: ApprovalRequest = { id: 'a', kind: 'fileChange', ...identity, request: { ...identity } };
@@ -32,14 +32,15 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
     expect(parsed).not.toBeNull();
     expect(parsed.request).toEqual(localFixture.params);
     expect(canApprove(parsed, tools, '/project')).toBe(true);
-    for (const { value, supported } of environments) {
+    for (const { name, present, value, supported } of environments) {
       const candidate = { ...parsed, request:{ ...parsed.request, environmentId:value } };
-      expect(canApprove(candidate, tools, '/project'), JSON.stringify(value)).toBe(supported);
+      if (!present) delete candidate.request.environmentId;
+      expect(canApprove(candidate, tools, '/project'), name).toBe(supported);
       if (value !== 'local') expect(sameApproval(parsed, candidate)).toBe(false);
     }
     const absent = structuredClone(parsed);
     delete absent.request.environmentId;
-    expect(canApprove(absent, tools, '/project')).toBe(true);
+    expect(canApprove(absent, tools, '/project')).toBe(false);
     expect(sameApproval(parsed, absent)).toBe(false);
     const oversized = { ...parsed, request:{ ...parsed.request, environmentId:'x'.repeat(8193) } };
     expect(parseApproval(oversized)).toBeNull();

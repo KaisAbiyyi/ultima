@@ -151,7 +151,7 @@ fn valid_command_metadata(request: &Value, kind: ApprovalKind) -> bool {
             request
                 .get("kind")
                 .is_none_or(|value| value.as_str() == Some("command"))
-                && LocalCommandEnvironment::parse(request.get("environmentId")).is_some()
+                && LocalCommandEnvironment::parse(request.get("environmentId")).allows_approval()
                 && request.get("approvalId").is_none_or(Value::is_null)
                 && valid_command_actions(request.get("commandActions"))
         }
@@ -628,7 +628,15 @@ mod tests {
         assert!(ledger.offer(a.clone(), &project()));
         for case in cases.as_array().unwrap() {
             let mut changed = a.clone();
-            changed.request["environmentId"] = case["value"].clone();
+            if case["present"] == false {
+                changed
+                    .request
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("environmentId");
+            } else {
+                changed.request["environmentId"] = case["value"].clone();
+            }
             assert_eq!(
                 ToolLedger::request_matches_review(&changed, &project(), &snapshot),
                 case["supported"].as_bool().unwrap(),
@@ -661,7 +669,7 @@ mod tests {
             .unwrap();
         let mut a = approval();
         a.request = json!({"threadId":"t","turnId":"u","itemId":"i",
-            "command":"echo DIFFERENT","cwd":cwd,"startedAtMs":1});
+            "command":"echo DIFFERENT","cwd":cwd,"startedAtMs":1,"environmentId":"local"});
         assert!(ledger.offer(a.clone(), &project()));
         assert!(!ledger.consume_reviewed(&a, &project(), &snapshot));
         assert_eq!(ledger.pending().len(), 1);
@@ -698,7 +706,7 @@ mod tests {
         let mut candidate = approval();
         candidate.request = json!({
             "threadId":"t","turnId":"u","itemId":"i","startedAtMs":1,
-            "kind":"command","environmentId":null,"approvalId":null,
+            "kind":"command","environmentId":"local","approvalId":null,
             "commandActions":[{"type":"unknown","command":"echo safe"}],
             "command":"echo safe","cwd":cwd,"availableDecisions":["accept"]
         });
@@ -847,7 +855,7 @@ mod tests {
         let mut valid = approval();
         valid.request = json!({
             "threadId":"t","turnId":"u","itemId":"i","startedAtMs":1,
-            "kind":"command","environmentId":null,"approvalId":null,
+            "kind":"command","environmentId":"local","approvalId":null,
             "commandActions":[{"type":"unknown","command":"echo safe"}],
             "command":"echo safe","cwd":cwd,"reason":null,
             "proposedExecpolicyAmendment":["echo","safe"],

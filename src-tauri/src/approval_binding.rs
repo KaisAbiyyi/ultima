@@ -251,7 +251,7 @@ fn scope(request: &Value, kind: ApprovalKind, project: &Path) -> bool {
         if request
             .get("kind")
             .is_some_and(|value| value.as_str() != Some("command"))
-            || LocalCommandEnvironment::parse(request.get("environmentId")).is_none()
+            || !LocalCommandEnvironment::parse(request.get("environmentId")).allows_approval()
             || request
                 .get("approvalId")
                 .is_some_and(|value| !value.is_null())
@@ -530,7 +530,7 @@ mod tests {
             item_id: "i".into(),
             started_at_ms: 1,
             request: json!({"threadId":"t","turnId":"u","itemId":"i",
-                "startedAtMs":1,"kind":"command","environmentId":null,"approvalId":null,
+                "startedAtMs":1,"kind":"command","environmentId":"local","approvalId":null,
                 "commandActions":[{"type":"unknown","command":cmd}],
                 "command":cmd,"cwd":cwd,"availableDecisions":["accept","decline"]}),
         }
@@ -569,7 +569,15 @@ mod tests {
         assert!(ledger.matches(&a, &snapshot, &root));
         for case in cases.as_array().unwrap() {
             let mut changed = a.clone();
-            changed.request["environmentId"] = case["value"].clone();
+            if case["present"] == false {
+                changed
+                    .request
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("environmentId");
+            } else {
+                changed.request["environmentId"] = case["value"].clone();
+            }
             assert_eq!(
                 ledger.matches(&changed, &snapshot, &root),
                 case["supported"].as_bool().unwrap(),

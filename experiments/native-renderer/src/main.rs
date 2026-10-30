@@ -25,7 +25,7 @@ use std::time::Instant;
 use theme::{
     body, mono, small, BORDER, CANVAS, GREEN, HOVER, MUTED, RAISED, SECONDARY, SURFACE, TEXT,
 };
-use ultima_protocol_bridge::{Approval, ApprovalKind, RpcId};
+use ultima_protocol_bridge::{Approval, ApprovalKind, LocalCommandEnvironment, RpcId};
 
 const MAX_HISTORY_ROWS: usize = 10_000;
 const MAX_DRAFT_CHARS: usize = 8 * 1024;
@@ -652,6 +652,19 @@ impl RendererSpike {
         }
     }
 
+    fn unsupported_command_environment(request: &Approval) -> bool {
+        request.kind == ApprovalKind::Command
+            && !LocalCommandEnvironment::parse(request.request.get("environmentId"))
+                .allows_approval()
+    }
+
+    fn approval_can_allow(&self, request: &Approval, evidence: Option<&ToolEvidence>) -> bool {
+        self.approval_dispatching.is_none()
+            && !Self::unsupported_command_environment(request)
+            && self.reviewed_approval.as_ref() == Some(request)
+            && evidence.is_some_and(|item| item.complete && !item.truncated)
+    }
+
     fn decide_current(&mut self, accept: bool) {
         let Some(request) = self.pending_approvals.first().cloned() else {
             return;
@@ -660,7 +673,6 @@ impl RendererSpike {
         if self.approval_dispatching.is_some() {
             return;
         }
-        let reviewed = self.reviewed_approval.as_ref() == Some(&request);
         let snapshot = self
             .tool_rows
             .iter()
@@ -672,7 +684,14 @@ impl RendererSpike {
                     && item.kind == request.kind
             })
             .cloned();
-        if accept && (!reviewed || snapshot.is_none()) {
+        if accept && Self::unsupported_command_environment(&request) {
+            self.live_error = Some(
+                "Execution environment is unsupported or unidentified. Allow once is unavailable."
+                    .to_owned(),
+            );
+            return;
+        }
+        if accept && !self.approval_can_allow(&request, snapshot.as_ref()) {
             self.live_error = Some("Review the exact action before allowing it.".to_owned());
             return;
         }
@@ -743,6 +762,9 @@ impl RendererSpike {
                 } else {
                     ui.label(small("Unreviewed request. Never approved automatically."));
                 }
+                if Self::unsupported_command_environment(&request) {
+                    ui.label(small("Execution environment is unsupported or unidentified. Allow once is unavailable; inspect or decline this request."));
+                }
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(self.approval_dispatching.is_none(), egui::Button::new("Decline"))
@@ -752,11 +774,7 @@ impl RendererSpike {
                     }
                     if ui
                         .add_enabled(
-                            self.approval_dispatching.is_none()
-                                && self.reviewed_approval.as_ref() == Some(&request)
-                                && evidence
-                                    .as_ref()
-                                    .is_some_and(|item| item.complete && !item.truncated),
+                            self.approval_can_allow(&request, evidence.as_ref()),
                             egui::Button::new("Allow once"),
                         )
                         .clicked()
@@ -2022,6 +2040,97 @@ mod tests {
     }
 
     #[test]
+    fn native_approval_card_requires_explicit_local_and_keeps_decline_enabled() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/nc10g-local-approval.json"
+        ))
+        .unwrap();
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/nc10g-environments.json"
+        ))
+        .unwrap();
+        for case in cases.as_array().unwrap() {
+            let mut request = Approval {
+                id: RpcId::String("local-once".into()),
+                kind: ApprovalKind::Command,
+                thread_id: "t".into(),
+                turn_id: "u".into(),
+                item_id: "i".into(),
+                started_at_ms: 1,
+                request: fixture["params"].clone(),
+            };
+            if case["present"] == false {
+                request
+                    .request
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("environmentId");
+            } else {
+                request.request["environmentId"] = case["value"].clone();
+            }
+            let mut app = RendererSpike::new(0, false, None, None);
+            app.reviewed_approval = Some(request.clone());
+            app.pending_approvals.push(request);
+            app.tool_rows.push(ToolEvidence {
+                thread: "t".into(),
+                turn: "u".into(),
+                id: "i".into(),
+                kind: ApprovalKind::Command,
+                state: "running".into(),
+                command: "echo safe".into(),
+                cwd: "/project".into(),
+                output: String::new(),
+                diff: String::new(),
+                paths: vec![],
+                complete: true,
+                truncated: false,
+            });
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 2000.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.approval_card(ui));
+                },
+            );
+            let nodes = output.platform_output.accesskit_update.unwrap().nodes;
+            let allow = nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some("Allow once"))
+                .unwrap();
+            let decline = nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some("Decline"))
+                .unwrap();
+            assert_eq!(
+                !allow.1.is_disabled(),
+                case["supported"].as_bool().unwrap(),
+                "{}",
+                case["name"]
+            );
+            assert!(!decline.1.is_disabled());
+            if case["supported"] == false {
+                assert!(nodes.iter().any(|(_, n)| n
+                    .value()
+                    .is_some_and(|s| s.contains("unsupported or unidentified"))));
+                app.decide_current(true);
+                assert!(app.approval_dispatching.is_none());
+                assert!(app
+                    .live_error
+                    .as_deref()
+                    .is_some_and(|s| s.contains("unsupported or unidentified")));
+                assert_eq!(app.pending_approvals.len(), 1);
+            }
+        }
+    }
+
+    #[test]
     fn native_review_does_not_follow_a_changed_environment_with_the_same_rpc_id() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/nc10g-local-approval.json"
@@ -2056,10 +2165,14 @@ mod tests {
             let mut changed = original.clone();
             changed.request["environmentId"] = env;
             app.pending_approvals = vec![changed];
+            assert_ne!(
+                app.reviewed_approval.as_ref(),
+                app.pending_approvals.first()
+            );
             app.decide_current(true);
             assert_eq!(
                 app.live_error.as_deref(),
-                Some("Review the exact action before allowing it.")
+                Some("Execution environment is unsupported or unidentified. Allow once is unavailable.")
             );
             assert!(app.approval_dispatching.is_none());
         }

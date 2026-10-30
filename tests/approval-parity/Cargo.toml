@@ -1,0 +1,9 @@
+[package]
+name = "ultima-approval-parity"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde_json = "1"
+ultima-protocol-bridge = { path = "../../crates/protocol-bridge" }
