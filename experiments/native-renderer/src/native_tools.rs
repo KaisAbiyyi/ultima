@@ -1,7 +1,9 @@
 //! NC-10E: bounded, typed, untrusted Codex tool evidence. Evidence is never authority.
 use serde_json::Value;
 use std::path::{Component, Path};
-use ultima_protocol_bridge::{Approval, ApprovalKind, NotificationKind, RpcId};
+use ultima_protocol_bridge::{
+    Approval, ApprovalKind, LocalCommandEnvironment, NotificationKind, RpcId,
+};
 
 pub const MAX_ITEMS: usize = 16;
 const MAX_COMMAND: usize = 4 * 1024;
@@ -149,7 +151,7 @@ fn valid_command_metadata(request: &Value, kind: ApprovalKind) -> bool {
             request
                 .get("kind")
                 .is_none_or(|value| value.as_str() == Some("command"))
-                && request.get("environmentId").is_none_or(Value::is_null)
+                && LocalCommandEnvironment::parse(request.get("environmentId")).is_some()
                 && request.get("approvalId").is_none_or(Value::is_null)
                 && valid_command_actions(request.get("commandActions"))
         }
@@ -599,6 +601,54 @@ mod tests {
             started_at_ms: 1,
             request: json!({}),
         }
+    }
+    #[test]
+    fn local_environment_fixture_is_bound_to_the_complete_pending_descriptor() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/nc10g-local-approval.json"
+        ))
+        .unwrap();
+        let cases: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/nc10g-environments.json"
+        ))
+        .unwrap();
+        let mut a = approval();
+        a.request = fixture["params"].clone();
+        let cwd = project().to_str().unwrap().to_owned();
+        a.request["cwd"] = json!(cwd);
+        let mut ledger = ToolLedger::default();
+        let snapshot = ledger
+            .capture(
+                NotificationKind::ItemStarted,
+                &json!({"threadId":"t","turnId":"u","item":{"id":"i",
+                "type":"commandExecution","command":"echo safe","cwd":cwd}}),
+                &project(),
+            )
+            .unwrap();
+        assert!(ledger.offer(a.clone(), &project()));
+        for case in cases.as_array().unwrap() {
+            let mut changed = a.clone();
+            changed.request["environmentId"] = case["value"].clone();
+            assert_eq!(
+                ToolLedger::request_matches_review(&changed, &project(), &snapshot),
+                case["supported"].as_bool().unwrap(),
+                "{}",
+                case["value"]
+            );
+            if changed != a {
+                assert!(!ledger.consume_reviewed(&changed, &project(), &snapshot));
+                assert_eq!(ledger.pending().len(), 1);
+            }
+        }
+        let mut absent = a.clone();
+        absent
+            .request
+            .as_object_mut()
+            .unwrap()
+            .remove("environmentId");
+        assert!(!ledger.consume_reviewed(&absent, &project(), &snapshot));
+        assert!(ledger.consume_reviewed(&a, &project(), &snapshot));
+        assert!(!ledger.consume_reviewed(&a, &project(), &snapshot));
     }
     #[test]
     fn adversarial_same_item_different_command_and_cwd_is_denied() {

@@ -2,6 +2,7 @@ name: NC-10E native approvals and tool evidence (synthetic)
 on:
   pull_request:
     paths:
+      - 'tests/fixtures/nc10g-*.json'
       - 'experiments/native-renderer/**'
       - 'crates/protocol-bridge/**'
       # Cross-renderer approval binding is part of NC-10E acceptance.

@@ -1,0 +1,17 @@
+[
+  { "value": null, "supported": true },
+  { "value": "local", "supported": true },
+  { "value": "remote", "supported": false },
+  { "value": "devbox", "supported": false },
+  { "value": "", "supported": false },
+  { "value": " local", "supported": false },
+  { "value": "local ", "supported": false },
+  { "value": "LOCAL", "supported": false },
+  { "value": "local/other", "supported": false },
+  { "value": "local\u0000", "supported": false },
+  { "value": "locаl", "supported": false },
+  { "value": true, "supported": false },
+  { "value": 1, "supported": false },
+  { "value": ["local"], "supported": false },
+  { "value": { "id": "local" }, "supported": false }
+]

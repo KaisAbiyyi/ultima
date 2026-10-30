@@ -1,3 +1,5 @@
+import localFixture from '../../tests/fixtures/nc10g-local-approval.json';
+import environments from '../../tests/fixtures/nc10g-environments.json';
 import { describe, it, expect } from 'vitest';
 import {
   approvalToolIdentity, parseApproval, canApprove, canApproveInActiveTurn, matchesApprovalEvidence, sameApproval,
@@ -22,6 +24,28 @@ const fileEvent = (changes: unknown, data: Record<string, unknown> = {}, threadI
   itemEvent(threadId, turnId, id, 'fileChange', { changes, ...data });
 
 describe('NC-07 bounded tool evidence and explicit approvals', () => {
+  it('allows the official local request shape with a bounded proposal and preserves its descriptor', () => {
+    const original = { id: localFixture.id, ...localFixture.params, request: localFixture.params };
+    const parsed = parseApproval(original)!;
+    const tools = trackTool([], 'itemStarted', itemEvent('t','u','i','commandExecution',
+      { command:'echo safe', cwd:'/project' }));
+    expect(parsed).not.toBeNull();
+    expect(parsed.request).toEqual(localFixture.params);
+    expect(canApprove(parsed, tools, '/project')).toBe(true);
+    for (const { value, supported } of environments) {
+      const candidate = { ...parsed, request:{ ...parsed.request, environmentId:value } };
+      expect(canApprove(candidate, tools, '/project'), JSON.stringify(value)).toBe(supported);
+      if (value !== 'local') expect(sameApproval(parsed, candidate)).toBe(false);
+    }
+    const absent = structuredClone(parsed);
+    delete absent.request.environmentId;
+    expect(canApprove(absent, tools, '/project')).toBe(true);
+    expect(sameApproval(parsed, absent)).toBe(false);
+    const oversized = { ...parsed, request:{ ...parsed.request, environmentId:'x'.repeat(8193) } };
+    expect(parseApproval(oversized)).toBeNull();
+    expect(canApprove(oversized, tools, '/project')).toBe(false);
+  });
+
   it('rejects malformed or forged approval identity', () => {
     expect(parseApproval(approval)).toEqual(approval);
     expect(parseApproval({ ...approval, itemId: '' })).toBeNull();
@@ -206,6 +230,9 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
     }
     const files = trackTool([], 'itemStarted', fileEvent([change('src/safe.txt','+hello')]));
     expect(canApprove(fileApproval,files,'/project')).toBe(true);
+    for (const environmentId of [null, 'local']) {
+      expect(canApprove({ ...fileApproval, request:{ ...fileApproval.request, environmentId } },files,'/project')).toBe(false);
+    }
     expect(canApprove({ ...fileApproval, request:{ ...fileApproval.request, grantRoot:'/foreign' } },files,'/project')).toBe(false);
   });
 

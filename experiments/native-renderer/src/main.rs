@@ -189,7 +189,7 @@ struct RendererSpike {
     live_rows: Vec<ChatRow>,
     tool_rows: Vec<ToolEvidence>,
     pending_approvals: Vec<Approval>,
-    reviewed_approval: Option<RpcId>,
+    reviewed_approval: Option<Approval>,
     approval_dispatching: Option<RpcId>,
     coding_enabled: bool,
     native_history: Vec<ChatRow>,
@@ -660,7 +660,7 @@ impl RendererSpike {
         if self.approval_dispatching.is_some() {
             return;
         }
-        let reviewed = self.reviewed_approval.as_ref() == Some(&request.id);
+        let reviewed = self.reviewed_approval.as_ref() == Some(&request);
         let snapshot = self
             .tool_rows
             .iter()
@@ -727,9 +727,9 @@ impl RendererSpike {
                         .as_ref()
                         .is_some_and(|item| item.complete && !item.truncated)
                 {
-                    self.reviewed_approval = Some(request.id.clone());
+                    self.reviewed_approval = Some(request.clone());
                 }
-                if self.reviewed_approval.as_ref() == Some(&request.id) {
+                if self.reviewed_approval.as_ref() == Some(&request) {
                     ScrollArea::both().max_height(175.0).show(ui, |ui| {
                         ui.label(
                             RichText::new(format!(
@@ -753,7 +753,7 @@ impl RendererSpike {
                     if ui
                         .add_enabled(
                             self.approval_dispatching.is_none()
-                                && self.reviewed_approval.as_ref() == Some(&request.id)
+                                && self.reviewed_approval.as_ref() == Some(&request)
                                 && evidence
                                     .as_ref()
                                     .is_some_and(|item| item.complete && !item.truncated),
@@ -2019,6 +2019,50 @@ mod tests {
         assert_eq!(app.pending_approvals, vec![request.clone()]);
         app.apply_probe_event(ProbeEvent::ApprovalResolved(request.id));
         assert!(app.pending_approvals.is_empty());
+    }
+
+    #[test]
+    fn native_review_does_not_follow_a_changed_environment_with_the_same_rpc_id() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/nc10g-local-approval.json"
+        ))
+        .unwrap();
+        let original = Approval {
+            id: RpcId::String("local-once".into()),
+            kind: ApprovalKind::Command,
+            thread_id: "t".into(),
+            turn_id: "u".into(),
+            item_id: "i".into(),
+            started_at_ms: 1,
+            request: fixture["params"].clone(),
+        };
+        let mut app = RendererSpike::new(0, false, None, None);
+        app.reviewed_approval = Some(original.clone());
+        app.tool_rows.push(ToolEvidence {
+            thread: "t".into(),
+            turn: "u".into(),
+            id: "i".into(),
+            kind: ApprovalKind::Command,
+            state: "running".into(),
+            command: "echo safe".into(),
+            cwd: "/project".into(),
+            output: String::new(),
+            diff: String::new(),
+            paths: vec![],
+            complete: true,
+            truncated: false,
+        });
+        for env in [serde_json::json!("remote"), serde_json::Value::Null] {
+            let mut changed = original.clone();
+            changed.request["environmentId"] = env;
+            app.pending_approvals = vec![changed];
+            app.decide_current(true);
+            assert_eq!(
+                app.live_error.as_deref(),
+                Some("Review the exact action before allowing it.")
+            );
+            assert!(app.approval_dispatching.is_none());
+        }
     }
 
     #[test]

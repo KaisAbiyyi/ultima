@@ -130,6 +130,10 @@ function safeRelativePath(path: string): boolean {
     !/[\\:%\x00-\x1f]/.test(path) && !path.startsWith('/') && !path.endsWith('/') &&
     path.split('/').every(part => part.length > 0 && part !== '.' && part !== '..');
 }
+/** Local-only scope check. Preserve the raw descriptor for exact equality. */
+function supportedCommandEnvironment(value: unknown): boolean {
+  return value === undefined || value === null || value === 'local';
+}
 function permissionScope(request: Record<string, unknown>, kind: ApprovalRequest['kind'], project: string): boolean {
   if (!project || Object.keys(request).some(k => !REQUEST_FIELDS.has(k))) return false;
   if (ESCALATION_FIELDS.some(key => request[key] !== undefined && request[key] !== null)) return false;
@@ -139,7 +143,7 @@ function permissionScope(request: Record<string, unknown>, kind: ApprovalRequest
   if (!oneShotAcceptOffered(request)) return false;
   if (kind === 'command') {
     if ((request.kind !== undefined && request.kind !== 'command') ||
-        (request.environmentId !== undefined && request.environmentId !== null) ||
+        !supportedCommandEnvironment(request.environmentId) ||
         (request.approvalId !== undefined && request.approvalId !== null) ||
         !validCommandActions(request.commandActions)) return false;
   } else if (['kind', 'environmentId', 'approvalId', 'commandActions'].some(key => request[key] !== undefined)) {

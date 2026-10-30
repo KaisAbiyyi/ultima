@@ -9,6 +9,26 @@ use std::collections::{BTreeMap, VecDeque};
 pub const PINNED_APP_SERVER: &str = "0.164.0";
 pub const MAX_JSONL_BYTES: usize = 1024 * 1024;
 
+/// Supported command environments for this local-only client. This is a scope
+/// check, never permission or a replacement for exact pending-descriptor equality.
+/// Keep absent/null/local distinct in the original descriptor; never rewrite it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalCommandEnvironment {
+    LegacyAbsent,
+    LegacyNull,
+    Local,
+}
+impl LocalCommandEnvironment {
+    pub fn parse(value: Option<&Value>) -> Option<Self> {
+        match value {
+            None => Some(Self::LegacyAbsent),
+            Some(Value::Null) => Some(Self::LegacyNull),
+            Some(Value::String(id)) if id == "local" => Some(Self::Local),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeError {
     InvalidState,
@@ -559,7 +579,7 @@ impl Broker {
                     };
                     let started = p.and_then(|v| v.get("startedAtMs")).and_then(Value::as_u64);
                     if p.and_then(|v| v.get("approvalId"))
-                        .is_some_and(|v| !v.is_null() && !v.as_str().is_some_and(|s| !s.is_empty()))
+                        .is_some_and(|v| !v.is_null() && v.as_str().is_none_or(str::is_empty))
                         || ["threadId", "turnId", "itemId"]
                             .iter()
                             .any(|name| field(name).is_none_or(|s| s.len() > 256))

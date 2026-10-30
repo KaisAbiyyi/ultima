@@ -2500,6 +2500,96 @@ mod tests {
     }
 
     #[test]
+    fn official_local_fixture_dispatches_accept_once_and_denies_environment_substitution() {
+        let project = std::env::current_dir().unwrap();
+        let mut fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/nc10g-local-approval.json"
+        ))
+        .unwrap();
+        fixture["params"]["cwd"] = json!(project.to_str().unwrap());
+        let mut broker = ready();
+        let mut lifecycle = TurnLifecycle {
+            thread: Some("t".into()),
+            turn: Some("u".into()),
+            project: Some(project.clone()),
+            busy: true,
+            coding_enabled: true,
+            ..Default::default()
+        };
+        let Some(ProbeEvent::ToolSnapshot(reviewed)) = lifecycle.on_event(&mut broker,
+            Event::Notification { kind: NotificationKind::ItemStarted,
+                params: json!({"threadId":"t","turnId":"u","item":{"id":"i",
+                    "type":"commandExecution","command":"echo safe","cwd":project.to_str().unwrap()}})
+            }).unwrap() else { panic!("tool"); };
+        broker
+            .ingest_line(&serde_json::to_vec(&fixture).unwrap())
+            .unwrap();
+        let event = broker.take_event().unwrap();
+        let Some(ProbeEvent::ApprovalPending(approval)) =
+            lifecycle.on_event(&mut broker, event).unwrap()
+        else {
+            panic!("approval");
+        };
+        for env in [
+            json!("remote"),
+            Value::Null,
+            json!(""),
+            json!(true),
+            json!("x".repeat(8193)),
+        ] {
+            let mut changed = approval.clone();
+            changed.request["environmentId"] = env;
+            assert!(lifecycle
+                .decide(&mut broker, &changed, true, Some(&reviewed))
+                .is_err());
+            assert!(broker.take_outbound().is_none());
+        }
+        for (field, value) in [
+            ("threadId", json!("foreign")),
+            ("turnId", json!("foreign")),
+            ("itemId", json!("foreign")),
+            ("startedAtMs", json!(2)),
+            ("unexpectedField", json!(true)),
+            ("additionalPermissions", json!({"network":true})),
+            ("proposedExecpolicyAmendment", json!([1])),
+            ("availableDecisions", json!(["acceptForSession"])),
+        ] {
+            let mut changed = approval.clone();
+            changed.request[field] = value;
+            assert!(lifecycle
+                .decide(&mut broker, &changed, true, Some(&reviewed))
+                .is_err());
+            assert!(broker.take_outbound().is_none());
+        }
+        assert!(lifecycle
+            .decide(&mut broker, &approval, true, Some(&reviewed))
+            .is_ok());
+        let wire: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(
+            wire,
+            json!({"id":"local-once","result":{"decision":"accept"}})
+        );
+        assert!(lifecycle
+            .decide(&mut broker, &approval, true, Some(&reviewed))
+            .is_err());
+        assert!(broker.take_outbound().is_none());
+        // A new lifecycle/session has neither pending consent nor evidence.
+        let mut new_broker = ready();
+        let mut new_lifecycle = TurnLifecycle {
+            thread: Some("t".into()),
+            turn: Some("u".into()),
+            project: Some(project),
+            busy: true,
+            coding_enabled: true,
+            ..Default::default()
+        };
+        assert!(new_lifecycle
+            .decide(&mut new_broker, &approval, true, Some(&reviewed))
+            .is_err());
+        assert!(new_broker.take_outbound().is_none());
+    }
+
+    #[test]
     fn resolved_request_cannot_be_approved_after_provider_revoke() {
         let project = std::env::current_dir().unwrap();
         let mut broker = ready();

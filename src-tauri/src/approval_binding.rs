@@ -2,7 +2,7 @@
 use serde_json::Value;
 use std::path::{Component, Path};
 
-use ultima_protocol_bridge::{Approval, ApprovalKind, NotificationKind};
+use ultima_protocol_bridge::{Approval, ApprovalKind, LocalCommandEnvironment, NotificationKind};
 
 const MAX_COMMAND: usize = 4096;
 const MAX_OUTPUT: usize = 32 * 1024;
@@ -251,9 +251,7 @@ fn scope(request: &Value, kind: ApprovalKind, project: &Path) -> bool {
         if request
             .get("kind")
             .is_some_and(|value| value.as_str() != Some("command"))
-            || request
-                .get("environmentId")
-                .is_some_and(|value| !value.is_null())
+            || LocalCommandEnvironment::parse(request.get("environmentId")).is_none()
             || request
                 .get("approvalId")
                 .is_some_and(|value| !value.is_null())
@@ -552,6 +550,89 @@ mod tests {
             "output":"","state":"running","previewComplete":true,"truncated":false})
     }
     #[test]
+    fn official_local_environment_fixture_and_unsupported_identifiers() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/nc10g-local-approval.json"
+        ))
+        .unwrap();
+        let cases: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/nc10g-environments.json"))
+                .unwrap();
+        let root = project();
+        let cwd = root.to_str().unwrap();
+        let mut a = req("echo safe", cwd);
+        a.request = fixture["params"].clone();
+        a.request["cwd"] = json!(cwd);
+        let mut ledger = EvidenceLedger::default();
+        observe_cmd(&mut ledger, "echo safe", cwd);
+        let snapshot = reviewed("echo safe", cwd);
+        assert!(ledger.matches(&a, &snapshot, &root));
+        for case in cases.as_array().unwrap() {
+            let mut changed = a.clone();
+            changed.request["environmentId"] = case["value"].clone();
+            assert_eq!(
+                ledger.matches(&changed, &snapshot, &root),
+                case["supported"].as_bool().unwrap(),
+                "{}",
+                case["value"]
+            );
+        }
+        // No identity can compensate for missing evidence or a foreign project.
+        assert!(!ledger.matches(&a, &Value::Null, &root));
+        assert!(!ledger.matches(&a, &snapshot, root.parent().unwrap()));
+    }
+    #[test]
+    fn host_evidence_cannot_replace_broker_environment_binding() {
+        use ultima_protocol_bridge::{ApprovalDecision, Broker, Event, Limits};
+        let root = project();
+        let cwd = root.to_str().unwrap();
+        let mut fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/nc10g-local-approval.json"
+        ))
+        .unwrap();
+        fixture["params"]["cwd"] = json!(cwd);
+        let mut broker = Broker::new(Limits::default()).unwrap();
+        broker.begin_initialize().unwrap();
+        broker.take_outbound().unwrap();
+        broker.ingest_line(br#"{"id":0,"result":{"userAgent":"fixture","platformFamily":"windows","platformOs":"windows"}}"#).unwrap();
+        broker.acknowledge_initialized().unwrap();
+        broker.take_outbound().unwrap();
+        broker.take_event().unwrap();
+        broker
+            .ingest_line(&serde_json::to_vec(&fixture).unwrap())
+            .unwrap();
+        let Event::Approval(original) = broker.take_event().unwrap() else {
+            panic!("approval");
+        };
+        let mut ledger = EvidenceLedger::default();
+        observe_cmd(&mut ledger, "echo safe", cwd);
+        let snapshot = reviewed("echo safe", cwd);
+        for env in [json!("remote"), Value::Null] {
+            let mut changed = original.clone();
+            changed.request["environmentId"] = env;
+            // Same command/cwd evidence is insufficient, including for legacy local.
+            let dispatched = ledger.matches(&changed, &snapshot, &root)
+                && broker
+                    .decide_exact_approval(&changed, ApprovalDecision::Accept, true)
+                    .is_ok();
+            assert!(!dispatched);
+            assert!(broker.take_outbound().is_none());
+        }
+        assert!(ledger.matches(&original, &snapshot, &root));
+        broker
+            .decide_exact_approval(&original, ApprovalDecision::Accept, true)
+            .unwrap();
+        let wire: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+        assert_eq!(
+            wire,
+            json!({"id":"local-once","result":{"decision":"accept"}})
+        );
+        assert!(broker
+            .decide_exact_approval(&original, ApprovalDecision::Accept, true)
+            .is_err());
+    }
+
+    #[test]
     fn cross_renderer_command_scope_and_mutations_fail_closed() {
         let root = project();
         let cwd = root.to_str().unwrap();
@@ -623,6 +704,11 @@ mod tests {
             "state":"running","previewComplete":true,"truncated":false,
             "cwd":"","paths":["safe.txt"],"diff":"safe.txt\n+ok"});
         assert!(ledger.matches(&file, &preview, &root));
+        for env in [Value::Null, json!("local")] {
+            let mut changed = file.clone();
+            changed.request["environmentId"] = env;
+            assert!(!ledger.matches(&changed, &preview, &root));
+        }
         let mut missing_cwd = preview.clone();
         missing_cwd.as_object_mut().unwrap().remove("cwd");
         assert!(!ledger.matches(&file, &missing_cwd, &root));

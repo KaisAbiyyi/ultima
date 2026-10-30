@@ -30,6 +30,7 @@
   let approvals: ApprovalRequest[] = [];
   let reviewedApproval = false;
   let reviewedEvidence: ToolItem | null = null;
+  let reviewedDescriptor: ApprovalRequest | null = null;
   let approvalBusy = false;
   let expandedDiffId = '';
   let expandedOutputId = '';
@@ -103,6 +104,7 @@
   $: currentApprovalKey = currentApproval ? approvalToolIdentity(currentApproval) : '';
   $: canAccept = !!currentApproval &&
     canApproveInActiveTurn(currentApproval, toolItems, activeThread, activeTurn, activeProject) &&
+    !!reviewedDescriptor && sameApproval(currentApproval, reviewedDescriptor) &&
     !!currentTool && !!reviewedEvidence && JSON.stringify(currentTool) === JSON.stringify(reviewedEvidence) &&
     (currentApproval.kind !== 'fileChange' || expandedDiffId === currentApprovalKey) &&
     reviewedApproval && !approvalBusy && status === 'ready';
@@ -185,7 +187,7 @@
     earlyReplies.clear();
     approvals = [];
     toolItems = [];
-    reviewedApproval = false; reviewedEvidence = null;
+    reviewedApproval = false; reviewedEvidence = null; reviewedDescriptor = null;
     expandedDiffId = '';
     expandedOutputId = '';
     activeTurn = '';
@@ -256,7 +258,7 @@
     earlyReplies.clear();
     approvals = [];
     toolItems = [];
-    reviewedApproval = false; reviewedEvidence = null;
+    reviewedApproval = false; reviewedEvidence = null; reviewedDescriptor = null;
     expandedDiffId = '';
     errorMessage = '';
     status = 'connecting';
@@ -323,6 +325,7 @@
   }
   function markReviewed(checked: boolean) {
     reviewedApproval = checked;
+    reviewedDescriptor = checked && currentApproval ? structuredClone(currentApproval) : null;
     reviewedEvidence = checked && currentTool && currentApproval &&
       canApprove(currentApproval, toolItems, activeProject) ? structuredClone(currentTool) : null;
   }
@@ -336,7 +339,7 @@
     // Remove BEFORE IPC: if an ACK is lost, never offer a dangerous duplicate retry.
     approvalBusy = true;
     approvals = approvals.slice(1);
-    reviewedApproval = false; reviewedEvidence = null;
+    reviewedApproval = false; reviewedEvidence = null; reviewedDescriptor = null;
     expandedDiffId = '';
     try {
       await bridge.approval(session, current, decision, reviewed);
@@ -362,7 +365,7 @@
       if (event.state === 'disconnected' || event.state === 'error') {
         busy = false; activeTurn = '';
         discardStream();
-        approvals = []; toolItems = []; reviewedApproval = false; reviewedEvidence = null;
+        approvals = []; toolItems = []; reviewedApproval = false; reviewedEvidence = null; reviewedDescriptor = null;
         if (event.state === 'disconnected') {
           fence.beginDisconnect();
           pending.clear();
@@ -398,7 +401,7 @@
         const previous = approvals[0];
         approvals = approvals.filter(a => a.id !== id);
         if (previous && previous.id === id) {
-          reviewedApproval = false; reviewedEvidence = null;
+          reviewedApproval = false; reviewedEvidence = null; reviewedDescriptor = null;
           expandedDiffId = '';
         }
       }
@@ -426,7 +429,7 @@
       const itemId = typeof item === 'object' && item && 'id' in item ? item.id : event.params.itemId;
       if (currentApproval && event.params.threadId === currentApproval.threadId &&
           event.params.turnId === currentApproval.turnId && itemId === currentApproval.itemId) {
-        reviewedApproval = false; reviewedEvidence = null;
+        reviewedApproval = false; reviewedEvidence = null; reviewedDescriptor = null;
         expandedDiffId = '';
       }
       toolItems = trackTool(toolItems, event.type, event.params);
@@ -492,7 +495,7 @@
       activeTurn = '';
       // A completed turn must not leave an actionable stale approval card.
       for (const approval of approvals) denyWithoutPrompt(approval, event.session);
-      approvals = []; reviewedApproval = false; reviewedEvidence = null;
+      approvals = []; reviewedApproval = false; reviewedEvidence = null; reviewedDescriptor = null;
       return;
     }
     if (event.type === 'delta') {
@@ -521,7 +524,7 @@
     followTail = true;
     toolItems = [];
     approvals = [];
-    reviewedApproval = false; reviewedEvidence = null;
+    reviewedApproval = false; reviewedEvidence = null; reviewedDescriptor = null;
     draft = '';
     navOpen = false;
     await tick(); composerEl?.focus();
@@ -537,7 +540,7 @@
     followTail = true;
     toolItems = [];
     approvals = [];
-    reviewedApproval = false; reviewedEvidence = null;
+    reviewedApproval = false; reviewedEvidence = null; reviewedDescriptor = null;
     if (navOpen) closeNavigation();
     if (status !== 'ready') {
       errorMessage = 'Connect to this project, then resume the selected thread.';

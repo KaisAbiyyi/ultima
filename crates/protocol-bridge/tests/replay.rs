@@ -402,3 +402,79 @@ fn one_shot_accept_with_execpolicy_proposal_emits_only_accept_and_does_not_persi
     assert_eq!(broker.approval_count(), 1);
     assert!(broker.take_outbound().is_none());
 }
+
+#[test]
+fn local_environment_fixture_keeps_exact_binding_across_substitution_and_reset() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nc10g-local-approval.json"
+    ))
+    .unwrap();
+    let mut broker = make_ready();
+    broker
+        .ingest_line(&serde_json::to_vec(&fixture).unwrap())
+        .unwrap();
+    let Event::Approval(original) = broker.take_event().unwrap() else {
+        panic!("approval");
+    };
+    assert_eq!(original.request, fixture["params"]);
+    // Even legacy null/absent must not inherit consent to explicit local.
+    for environment in [json!("remote"), Value::Null, json!("local "), json!(1)] {
+        let mut changed = original.clone();
+        changed.request["environmentId"] = environment;
+        assert_eq!(
+            broker.decide_exact_approval(&changed, ApprovalDecision::Accept, true),
+            Err(BridgeError::UnknownApproval)
+        );
+        assert!(broker.take_outbound().is_none());
+    }
+    let mut absent = original.clone();
+    absent
+        .request
+        .as_object_mut()
+        .unwrap()
+        .remove("environmentId");
+    assert!(broker
+        .decide_exact_approval(&absent, ApprovalDecision::Accept, true)
+        .is_err());
+    broker
+        .decide_exact_approval(&original, ApprovalDecision::Accept, true)
+        .unwrap();
+    let response: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+    assert_eq!(
+        response,
+        json!({"id":"local-once","result":{"decision":"accept"}})
+    );
+    assert!(broker
+        .decide_exact_approval(&original, ApprovalDecision::Accept, true)
+        .is_err());
+    broker.reset_for_new_process();
+    assert!(broker
+        .decide_exact_approval(&original, ApprovalDecision::Accept, true)
+        .is_err());
+    let mut different_session = make_ready();
+    assert!(different_session
+        .decide_exact_approval(&original, ApprovalDecision::Accept, true)
+        .is_err());
+    assert!(different_session.take_outbound().is_none());
+}
+
+#[test]
+fn supported_local_environment_contract_uses_shared_adversarial_cases() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nc10g-environments.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        LocalCommandEnvironment::parse(None),
+        Some(LocalCommandEnvironment::LegacyAbsent)
+    );
+    for case in cases.as_array().unwrap() {
+        assert_eq!(
+            LocalCommandEnvironment::parse(Some(&case["value"])).is_some(),
+            case["supported"].as_bool().unwrap(),
+            "{}",
+            case["value"]
+        );
+    }
+    assert!(LocalCommandEnvironment::parse(Some(&json!("x".repeat(8193)))).is_none());
+}
