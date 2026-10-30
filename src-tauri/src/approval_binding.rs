@@ -266,7 +266,7 @@ fn scope(request: &Value, kind: ApprovalKind, project: &Path) -> bool {
         return false;
     }
     if let Some(reason) = request.get("reason").filter(|value| !value.is_null()) {
-        if !reason.as_str().is_some_and(|s| s.len() <= MAX_COMMAND) {
+        if reason.as_str().is_none_or(|s| s.len() > MAX_COMMAND) {
             return false;
         }
     }
