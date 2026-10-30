@@ -188,7 +188,7 @@ fn scope(request: &Value, kind: ApprovalKind, project: &Path) -> bool {
     if !one_shot_accept_offered(request) {
         return false;
     }
-    if let Some(reason) = request.get("reason") {
+    if let Some(reason) = request.get("reason").filter(|value| !value.is_null()) {
         if !reason.as_str().is_some_and(|s| s.len() <= MAX_COMMAND) {
             return false;
         }
@@ -582,11 +582,16 @@ mod tests {
 
         let mut null_proposal = req("echo safe", cwd);
         null_proposal.request["proposedExecpolicyAmendment"] = Value::Null;
+        null_proposal.request["reason"] = Value::Null;
         assert!(ledger.matches(&null_proposal, &snapshot, &root));
 
         let mut malformed = vec![json!("echo"), json!({"command":"echo"}), json!([1])];
-        malformed.push(json!([ "x".repeat(MAX_EXEC_POLICY_AMENDMENT_ITEM_BYTES + 1) ]));
-        malformed.push(json!((0..=MAX_EXEC_POLICY_AMENDMENT_ENTRIES).map(|_| "x").collect::<Vec<_>>()));
+        malformed.push(json!(
+            ["x".repeat(MAX_EXEC_POLICY_AMENDMENT_ITEM_BYTES + 1)]
+        ));
+        malformed.push(json!((0..=MAX_EXEC_POLICY_AMENDMENT_ENTRIES)
+            .map(|_| "x")
+            .collect::<Vec<_>>()));
         for value in malformed {
             let mut candidate = req("echo safe", cwd);
             candidate.request["proposedExecpolicyAmendment"] = value;

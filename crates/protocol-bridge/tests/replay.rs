@@ -343,7 +343,6 @@ fn descriptor_is_exactly_bound_and_same_id_mutation_is_rejected() {
     assert_eq!(broker.approval_count(), 0);
 }
 
-
 #[test]
 fn one_shot_accept_with_execpolicy_proposal_emits_only_accept_and_does_not_persist() {
     let mut broker = make_ready();
@@ -362,13 +361,15 @@ fn one_shot_accept_with_execpolicy_proposal_emits_only_accept_and_does_not_persi
         "method":"item/commandExecution/requestApproval",
         "params":first_params
     });
-    broker.ingest_line(&serde_json::to_vec(&first).unwrap()).unwrap();
+    broker
+        .ingest_line(&serde_json::to_vec(&first).unwrap())
+        .unwrap();
     let Event::Approval(original) = broker.take_event().unwrap() else {
         panic!("expected proposal-bearing approval");
     };
     assert_eq!(
         original.request["proposedExecpolicyAmendment"],
-        json!(["echo","safe"])
+        json!(["echo", "safe"])
     );
     broker
         .decide_exact_approval(&original, ApprovalDecision::Accept, true)
@@ -390,7 +391,9 @@ fn one_shot_accept_with_execpolicy_proposal_emits_only_accept_and_does_not_persi
             "availableDecisions":["accept","acceptForSession"]
         }
     });
-    broker.ingest_line(&serde_json::to_vec(&second).unwrap()).unwrap();
+    broker
+        .ingest_line(&serde_json::to_vec(&second).unwrap())
+        .unwrap();
     assert!(matches!(broker.take_event(), Some(Event::Approval(_))));
     assert_eq!(broker.approval_count(), 1);
     assert!(broker.take_outbound().is_none());

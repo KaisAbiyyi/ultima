@@ -206,6 +206,7 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
     expect(parsed?.request).toEqual(original.request);
     expect(canApprove(parsed!, tools, '/project')).toBe(true);
     expect(canApprove({ ...approval, request:{ ...approval.request, proposedExecpolicyAmendment:null } }, tools, '/project')).toBe(true);
+    expect(canApprove({ ...approval, request:{ ...approval.request, reason:null } }, tools, '/project')).toBe(true);
     expect(canApprove(approval, tools, '/project')).toBe(true);
     expect(sameApproval(parsed!, { ...parsed!, request:{ ...parsed!.request, proposedExecpolicyAmendment:['cargo','build'] } })).toBe(false);
   });

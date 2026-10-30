@@ -390,10 +390,17 @@ impl ToolLedger {
                 approval.kind == ApprovalKind::Command && valid_exec_policy_amendment(value)
             }
         };
+        let reason_valid = req.get("reason").is_none_or(|reason| {
+            reason.is_null()
+                || reason
+                    .as_str()
+                    .is_some_and(|text| text.len() <= MAX_COMMAND)
+        });
         if !req.is_object()
             || !serde_json::to_vec(req)
                 .is_ok_and(|serialized| serialized.len() <= MAX_APPROVAL_DESCRIPTOR_BYTES)
             || !proposal_valid
+            || !reason_valid
             || !one_shot_accept_offered(req)
             || [
                 "additionalPermissions",
@@ -402,8 +409,7 @@ impl ToolLedger {
             ]
             .iter()
             .any(|key| req.get(*key).is_some_and(|v| !v.is_null()))
-            || req.get("threadId").and_then(Value::as_str)
-                != Some(approval.thread_id.as_str())
+            || req.get("threadId").and_then(Value::as_str) != Some(approval.thread_id.as_str())
             || req.get("turnId").and_then(Value::as_str) != Some(approval.turn_id.as_str())
             || req.get("itemId").and_then(Value::as_str) != Some(approval.item_id.as_str())
             || req.get("startedAtMs").and_then(Value::as_u64) != Some(approval.started_at_ms)
@@ -668,7 +674,7 @@ mod tests {
         let mut valid = approval();
         valid.request = json!({
             "threadId":"t","turnId":"u","itemId":"i","startedAtMs":1,
-            "command":"echo safe","cwd":cwd,
+            "command":"echo safe","cwd":cwd,"reason":null,
             "proposedExecpolicyAmendment":["echo","safe"],
             "availableDecisions":[
                 "accept",
@@ -680,25 +686,49 @@ mod tests {
             ]
         });
         let original = valid.request.clone();
-        assert!(ToolLedger::request_matches_review(&valid, &project(), &reviewed));
+        assert!(ToolLedger::request_matches_review(
+            &valid,
+            &project(),
+            &reviewed
+        ));
         assert_eq!(valid.request, original);
 
         for proposal in [Value::Null, json!(["echo", "safe"])] {
             let mut candidate = valid.clone();
             candidate.request["proposedExecpolicyAmendment"] = proposal;
-            assert!(ToolLedger::request_matches_review(&candidate, &project(), &reviewed));
+            assert!(ToolLedger::request_matches_review(
+                &candidate,
+                &project(),
+                &reviewed
+            ));
         }
         let mut absent = valid.clone();
-        absent.request.as_object_mut().unwrap().remove("proposedExecpolicyAmendment");
-        assert!(ToolLedger::request_matches_review(&absent, &project(), &reviewed));
+        absent
+            .request
+            .as_object_mut()
+            .unwrap()
+            .remove("proposedExecpolicyAmendment");
+        assert!(ToolLedger::request_matches_review(
+            &absent,
+            &project(),
+            &reviewed
+        ));
 
         let mut malformed = vec![json!("echo"), json!({"command":"echo"}), json!([1])];
-        malformed.push(json!([ "x".repeat(MAX_EXEC_POLICY_AMENDMENT_ITEM_BYTES + 1) ]));
-        malformed.push(json!((0..=MAX_EXEC_POLICY_AMENDMENT_ENTRIES).map(|_| "x").collect::<Vec<_>>()));
+        malformed.push(json!(
+            ["x".repeat(MAX_EXEC_POLICY_AMENDMENT_ITEM_BYTES + 1)]
+        ));
+        malformed.push(json!((0..=MAX_EXEC_POLICY_AMENDMENT_ENTRIES)
+            .map(|_| "x")
+            .collect::<Vec<_>>()));
         for proposal in malformed {
             let mut candidate = valid.clone();
             candidate.request["proposedExecpolicyAmendment"] = proposal;
-            assert!(!ToolLedger::request_matches_review(&candidate, &project(), &reviewed));
+            assert!(!ToolLedger::request_matches_review(
+                &candidate,
+                &project(),
+                &reviewed
+            ));
         }
 
         for key in [
@@ -708,19 +738,35 @@ mod tests {
         ] {
             let mut candidate = valid.clone();
             candidate.request[key] = json!({"enabled":true});
-            assert!(!ToolLedger::request_matches_review(&candidate, &project(), &reviewed));
+            assert!(!ToolLedger::request_matches_review(
+                &candidate,
+                &project(),
+                &reviewed
+            ));
         }
 
         let mut no_one_shot = valid.clone();
         no_one_shot.request["availableDecisions"] = json!(["acceptForSession"]);
-        assert!(!ToolLedger::request_matches_review(&no_one_shot, &project(), &reviewed));
+        assert!(!ToolLedger::request_matches_review(
+            &no_one_shot,
+            &project(),
+            &reviewed
+        ));
         let mut malformed_decisions = valid.clone();
         malformed_decisions.request["availableDecisions"] = json!(["accept", 7]);
-        assert!(!ToolLedger::request_matches_review(&malformed_decisions, &project(), &reviewed));
+        assert!(!ToolLedger::request_matches_review(
+            &malformed_decisions,
+            &project(),
+            &reviewed
+        ));
 
         let mut changed_timestamp = valid.clone();
         changed_timestamp.request["startedAtMs"] = json!(2);
-        assert!(!ToolLedger::request_matches_review(&changed_timestamp, &project(), &reviewed));
+        assert!(!ToolLedger::request_matches_review(
+            &changed_timestamp,
+            &project(),
+            &reviewed
+        ));
 
         let long_command = "x".repeat(MAX_COMMAND);
         let mut oversized = valid.clone();
@@ -730,6 +776,10 @@ mod tests {
             command: long_command,
             ..reviewed.clone()
         };
-        assert!(!ToolLedger::request_matches_review(&oversized, &project(), &oversized_review));
+        assert!(!ToolLedger::request_matches_review(
+            &oversized,
+            &project(),
+            &oversized_review
+        ));
     }
 }
