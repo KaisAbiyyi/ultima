@@ -36,7 +36,10 @@ async function approvalPreview(page: import('@playwright/test').Page) {
           setTimeout(() => {
             listener({session:1,type:'reply',id:current,method,ok:true,
               result:method === 'thread/start' ? {thread:{id:'t'}} : {data:[]}});
-            if (method === 'turn/start') listener({session:1,type:'turnStarted',params:{threadId:'t',turn:{id:'u'}}});
+            if (method === 'turn/start') {
+              listener({session:1,type:'turnStarted',params:{threadId:'t',turn:{id:'u'}}});
+              window.__fixtureTurnReady = true;
+            }
           },0);
           return current;
         },
@@ -53,6 +56,7 @@ async function approvalPreview(page: import('@playwright/test').Page) {
   await expect(page.getByRole('textbox', { name:'Message to Codex', exact:true })).toBeEnabled();
   await page.getByRole('textbox', { name:'Message to Codex', exact:true }).fill('Synthetic approval preview');
   await page.getByRole('button', { name:'Send message to Codex' }).click();
+  await page.waitForFunction(() => (window as any).__fixtureTurnReady === true);
   await expect(page.getByRole('button', { name:'Interrupt Codex turn' })).toBeVisible();
 }
 

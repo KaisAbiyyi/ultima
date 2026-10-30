@@ -7,7 +7,7 @@ failure's known combination (`environmentId: "local"`, a non-null execpolicy
 proposal and plain `accept`), using invented IDs, command, cwd and timestamp.
 It is not a captured or sanitized copy of the owner's descriptor. The cloud
 receipt is issue #33 comment 6521059805; the raw evidence is owner-local and
-was not accessed. Rust tests substitute only cwd to the temporary test context.
+was not accessed. Rust tests substitute only cwd to the host test context.
 
 `nc10g-environments.json` is a synthetic adversarial scope matrix, shared by
 native Rust, Tauri Rust, the protocol bridge and Vitest. The Cyrillic character
