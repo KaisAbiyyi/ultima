@@ -130,20 +130,13 @@ fn valid_command_metadata(request: &Value, kind: ApprovalKind) -> bool {
             request
                 .get("kind")
                 .is_none_or(|value| value.as_str() == Some("command"))
-                && request
-                    .get("environmentId")
-                    .is_none_or(Value::is_null)
+                && request.get("environmentId").is_none_or(Value::is_null)
                 && request.get("approvalId").is_none_or(Value::is_null)
                 && valid_command_actions(request.get("commandActions"))
         }
-        ApprovalKind::FileChange => [
-            "kind",
-            "environmentId",
-            "approvalId",
-            "commandActions",
-        ]
-        .iter()
-        .all(|key| request.get(*key).is_none()),
+        ApprovalKind::FileChange => ["kind", "environmentId", "approvalId", "commandActions"]
+            .iter()
+            .all(|key| request.get(*key).is_none()),
     }
 }
 
@@ -176,9 +169,9 @@ fn valid_available_decision(value: &Value) -> bool {
                     return false;
                 };
                 amendment
-                        .get("host")
-                        .and_then(Value::as_str)
-                        .is_some_and(|host| host.len() <= MAX_NETWORK_POLICY_HOST_BYTES)
+                    .get("host")
+                    .and_then(Value::as_str)
+                    .is_some_and(|host| host.len() <= MAX_NETWORK_POLICY_HOST_BYTES)
                     && matches!(
                         amendment.get("action").and_then(Value::as_str),
                         Some("allow" | "deny")
@@ -860,7 +853,8 @@ mod tests {
             &reviewed
         ));
         let mut malformed_actions = valid.clone();
-        malformed_actions.request["commandActions"] = json!([{"type":"read","command":"cat","name":"file"}]);
+        malformed_actions.request["commandActions"] =
+            json!([{"type":"read","command":"cat","name":"file"}]);
         assert!(!ToolLedger::request_matches_review(
             &malformed_actions,
             &project(),

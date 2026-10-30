@@ -165,9 +165,9 @@ fn valid_available_decision(value: &Value) -> bool {
                     return false;
                 };
                 amendment
-                        .get("host")
-                        .and_then(Value::as_str)
-                        .is_some_and(|host| host.len() <= MAX_NETWORK_POLICY_HOST_BYTES)
+                    .get("host")
+                    .and_then(Value::as_str)
+                    .is_some_and(|host| host.len() <= MAX_NETWORK_POLICY_HOST_BYTES)
                     && matches!(
                         amendment.get("action").and_then(Value::as_str),
                         Some("allow" | "deny")
@@ -660,7 +660,8 @@ mod tests {
         callback_scoped.request["approvalId"] = json!("callback-1");
         assert!(!ledger.matches(&callback_scoped, &snapshot, &root));
         let mut malformed_actions = proposal.clone();
-        malformed_actions.request["commandActions"] = json!([{"type":"read","command":"cat","name":"file"}]);
+        malformed_actions.request["commandActions"] =
+            json!([{"type":"read","command":"cat","name":"file"}]);
         assert!(!ledger.matches(&malformed_actions, &snapshot, &root));
 
         let mut malformed = vec![json!("echo"), json!({"command":"echo"}), json!([1])];
