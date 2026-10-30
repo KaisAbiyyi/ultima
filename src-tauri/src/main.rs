@@ -1,8 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod approval_binding;
 mod runtime;
 
+use approval_binding::EvidenceLedger;
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -40,6 +42,7 @@ enum Action {
     Decision(
         Approval,
         ApprovalDecision,
+        Value, // reviewed tool snapshot from the webview; never authoritative by itself
         oneshot::Sender<Result<(), String>>,
     ),
     Stop,
@@ -68,16 +71,35 @@ fn parse_approval(value: &Value) -> Result<Approval, String> {
         Some("fileChange") => ApprovalKind::FileChange,
         _ => return Err(safe_error("Invalid approval kind")),
     };
+    let thread_id = field("threadId")?;
+    let turn_id = field("turnId")?;
+    let item_id = field("itemId")?;
+    let started_at_ms = value
+        .get("startedAtMs")
+        .and_then(Value::as_u64)
+        .ok_or("Invalid approval timestamp")?;
+    // The webview must echo the exact immutable server-origin descriptor.
+    // Never synthesize an empty one: it would bypass cross-crate binding.
+    let request = value
+        .get("request")
+        .filter(|request| request.is_object())
+        .ok_or_else(|| safe_error("Missing authoritative approval descriptor"))?;
+    if serde_json::to_vec(request).map_or(true, |bytes| bytes.len() > 8 * 1024)
+        || request.get("threadId").and_then(Value::as_str) != Some(thread_id.as_str())
+        || request.get("turnId").and_then(Value::as_str) != Some(turn_id.as_str())
+        || request.get("itemId").and_then(Value::as_str) != Some(item_id.as_str())
+        || request.get("startedAtMs").and_then(Value::as_u64) != Some(started_at_ms)
+    {
+        return Err(safe_error("Inconsistent approval descriptor"));
+    }
     Ok(Approval {
         id,
         kind,
-        thread_id: field("threadId")?,
-        turn_id: field("turnId")?,
-        item_id: field("itemId")?,
-        started_at_ms: value
-            .get("startedAtMs")
-            .and_then(Value::as_u64)
-            .ok_or("Invalid approval timestamp")?,
+        thread_id,
+        turn_id,
+        item_id,
+        started_at_ms,
+        request: request.clone(),
     })
 }
 fn safe_error(reason: &str) -> String {
@@ -134,17 +156,23 @@ fn broker_event(event: Event) -> Option<Value> {
         Event::Approval(_) => None, // Caller always explicitly declines before forwarding.
     }
 }
+// Legacy worker boundary retained to keep this security correction scoped. The
+// crate remains under -D warnings; only this pre-existing argument-count lint
+// is locally expected until the worker context is refactored separately.
+#[allow(clippy::too_many_arguments)]
 async fn drive(
     app: tauri::AppHandle,
     gate: Arc<SessionGate<EngineHandle>>,
     session: u64,
     mut supervisor: EngineSupervisor,
     mut broker: Broker,
+    project: PathBuf,
     mut inbox: mpsc::Receiver<Action>,
     closed: watch::Sender<Option<bool>>,
     updates: Arc<Mutex<()>>,
     managed_version: Option<String>,
 ) {
+    let mut evidence = EvidenceLedger::default();
     let result: Result<(), String> = async {
         broker.begin_initialize().map_err(|_| safe_error("Handshake initialization failed"))?;
         flush(&mut broker, &mut supervisor).await?;
@@ -171,9 +199,17 @@ async fn drive(
                             }
                             let _ = reply.send(answer);
                         }
-                        Some(Action::Decision(approval, decision, reply)) => {
-                            let answer = broker.decide_exact_approval(&approval, decision, decision == ApprovalDecision::Accept)
-                                .map_err(|_| safe_error("Approval stale, invalid or already resolved"));
+                        Some(Action::Decision(approval, decision, reviewed, reply)) => {
+                            // The host's own bounded tool ledger must match the exact
+                            // snapshot reviewed by Svelte, not merely its approval ID.
+                            let answer = if decision == ApprovalDecision::Accept
+                                && !evidence.matches(&approval, &reviewed, &project)
+                            {
+                                Err(safe_error("Approval evidence or scope mismatch"))
+                            } else {
+                                broker.decide_exact_approval(&approval, decision, decision == ApprovalDecision::Accept)
+                                    .map_err(|_| safe_error("Approval stale, invalid or already resolved"))
+                            };
                             if answer.is_ok() {
                                 if let Err(reason) = flush(&mut broker, &mut supervisor).await {
                                     let _ = reply.send(Err(reason.clone()));
@@ -208,7 +244,14 @@ async fn drive(
                                             "turnId":approval.turn_id,
                                             "itemId":approval.item_id,
                                             "startedAtMs":approval.started_at_ms,
+                                            "request":approval.request,
                                         }}));
+                                    }
+                                    Event::Notification { kind, params } => {
+                                        evidence.observe(kind, &params);
+                                        if let Some(value) = broker_event(Event::Notification { kind, params }) {
+                                            emit(&app, session, value);
+                                        }
                                     }
                                     other => {
                                         if let Some(value) = broker_event(other) { emit(&app, session, value); }
@@ -352,6 +395,7 @@ async fn ultima_connect(
         session,
         supervisor,
         broker,
+        cwd.to_path_buf(),
         receiver,
         shutdown_tx,
         state.updates.clone(),
@@ -389,6 +433,7 @@ async fn ultima_approval(
     session: u64,
     request: Value,
     decision: String,
+    reviewed: Option<Value>,
 ) -> Result<(), String> {
     if decision != "accept" && decision != "decline" {
         return Err(safe_error("Unsupported decision"));
@@ -406,7 +451,12 @@ async fn ultima_approval(
     };
     handle
         .tx
-        .try_send(Action::Decision(approval, decision, tx))
+        .try_send(Action::Decision(
+            approval,
+            decision,
+            reviewed.unwrap_or(Value::Null),
+            tx,
+        ))
         .map_err(|_| safe_error("Engine decision queue unavailable"))?;
     rx.await
         .map_err(|_| safe_error("Engine decision dropped"))?
@@ -537,11 +587,23 @@ mod nc07_approval_tests {
     use super::*;
     #[test]
     fn only_full_approval_identity_is_accepted() {
-        let approved = json!({"id":"a","kind":"command","threadId":"t","turnId":"z","itemId":"i","startedAtMs":15});
+        let approved = json!({"id":"a","kind":"command","threadId":"t","turnId":"z","itemId":"i","startedAtMs":15,
+            "request":{"threadId":"t","turnId":"z","itemId":"i","startedAtMs":15,
+                "command":"echo reviewed","cwd":"/project"}});
         let parsed = parse_approval(&approved).unwrap();
         assert_eq!(parsed.id, RpcId::String("a".to_string()));
         assert_eq!(parsed.kind, ApprovalKind::Command);
+        assert_eq!(parsed.request["command"], "echo reviewed");
+        let mut altered_command = approved.clone();
+        altered_command["request"]["command"] = json!("echo mutated");
+        assert_ne!(parse_approval(&altered_command).unwrap(), parsed);
+        let mut foreign_item = approved.clone();
+        foreign_item["request"]["itemId"] = json!("different");
+        let mut truncated = approved.clone();
+        truncated.as_object_mut().unwrap().remove("request");
         for invalid in [
+            foreign_item,
+            truncated,
             json!({"id":"a","kind":"unknown","threadId":"t","turnId":"z","itemId":"i","startedAtMs":15}),
             json!({"id":"a","kind":"command","threadId":"t","turnId":"z","itemId":"","startedAtMs":15}),
             json!({"id":"a","kind":"command","threadId":"t","turnId":"z","itemId":"i"}),

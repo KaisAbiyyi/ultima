@@ -17,3 +17,5 @@ src-tauri/gen/
 crates/*/target/
 experiments/native-renderer/target/
 experiments/native-renderer/results/
+
+tests/approval-parity/target/

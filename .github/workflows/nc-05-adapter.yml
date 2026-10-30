@@ -2,10 +2,12 @@ name: NC-05 bounded Rust protocol adapter
 on:
   push:
     paths:
+      - 'tests/fixtures/nc10g-*.json'
       - "crates/protocol-bridge/**"
       - ".github/workflows/nc-05-adapter.yml"
   pull_request:
     paths:
+      - 'tests/fixtures/nc10g-*.json'
       - "crates/protocol-bridge/**"
       - ".github/workflows/nc-05-adapter.yml"
   workflow_dispatch:

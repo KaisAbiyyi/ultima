@@ -14,6 +14,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 ultima-app-server-supervisor = { path = "../../crates/app-server-supervisor" }
 ultima-protocol-bridge = { path = "../../crates/protocol-bridge" }
 ultima-native-session = { path = "../../crates/native-session" }
+ultima-runtime-manager = { path = "../../crates/runtime-manager" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Com", "Win32_UI_Shell"] }
 
 [profile.release]
 lto = "thin"

@@ -2,6 +2,7 @@ name: NC-06 interactive desktop
 on:
   pull_request:
     paths:
+      - 'tests/fixtures/nc10g-*.json'
       - 'src/**'
       - 'src-tauri/**'
       - 'tests/e2e/desktop.spec.ts'
@@ -10,6 +11,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'tests/fixtures/nc10g-*.json'
       - 'src/**'
       - 'src-tauri/**'
       - 'tests/e2e/desktop.spec.ts'
@@ -37,10 +39,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: npm install --no-audit --no-fund
       - run: npm run build
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo check --manifest-path src-tauri/Cargo.toml
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml

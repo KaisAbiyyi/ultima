@@ -4,8 +4,34 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, VecDeque};
 
+/// Historical reference/test metadata only. The broker does not enforce this
+/// value against the App Server initialize handshake.
 pub const PINNED_APP_SERVER: &str = "0.164.0";
 pub const MAX_JSONL_BYTES: usize = 1024 * 1024;
+
+/// Diagnostic classification of a command's original environment field.
+/// Only explicit Local is eligible for command approval. Classification never
+/// rewrites the descriptor or replaces exact pending-request/user-consent checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalCommandEnvironment {
+    Absent,
+    Null,
+    Local,
+    Unsupported,
+}
+impl LocalCommandEnvironment {
+    pub fn parse(value: Option<&Value>) -> Self {
+        match value {
+            None => Self::Absent,
+            Some(Value::Null) => Self::Null,
+            Some(Value::String(id)) if id == "local" => Self::Local,
+            _ => Self::Unsupported,
+        }
+    }
+    pub fn allows_approval(self) -> bool {
+        self == Self::Local
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeError {
@@ -20,6 +46,8 @@ pub enum BridgeError {
     IdExhausted,
     UnknownApproval,
     ExplicitApprovalRequired,
+    UnsupportedCommandEnvironment,
+    UnsupportedFileChangeEnvironment,
 }
 impl std::fmt::Display for BridgeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -124,6 +152,9 @@ pub enum ClientMethod {
     Initialize,
     ModelList,
     ThreadStart,
+    ThreadList,
+    ThreadRead,
+    ThreadTurnsList,
     ThreadResume,
     TurnStart,
     TurnInterrupt,
@@ -134,6 +165,9 @@ impl ClientMethod {
             Self::Initialize => "initialize",
             Self::ModelList => "model/list",
             Self::ThreadStart => "thread/start",
+            Self::ThreadList => "thread/list",
+            Self::ThreadRead => "thread/read",
+            Self::ThreadTurnsList => "thread/turns/list",
             Self::ThreadResume => "thread/resume",
             Self::TurnStart => "turn/start",
             Self::TurnInterrupt => "turn/interrupt",
@@ -164,6 +198,31 @@ impl ClientMethod {
                         .is_none_or(|v| v.as_str().is_some_and(|s| !s.is_empty()))
                     && !(p.get("sandbox").is_some_and(|v| !v.is_null())
                         && p.get("permissions").is_some_and(|v| !v.is_null()))
+            }
+            Self::ThreadList => {
+                p.get("cwd")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.is_empty())
+                    && p.get("limit")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|n| (1..=24).contains(&n))
+                    && p.get("cursor").is_none_or(|v| {
+                        v.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 2048)
+                    })
+            }
+            Self::ThreadRead => {
+                non_empty("threadId") && p.get("includeTurns") == Some(&Value::Bool(false))
+            }
+            Self::ThreadTurnsList => {
+                non_empty("threadId")
+                    && p.get("limit")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|n| (1..=12).contains(&n))
+                    && p.get("sortDirection").and_then(Value::as_str) == Some("desc")
+                    && p.get("itemsView").and_then(Value::as_str) == Some("full")
+                    && p.get("cursor").is_none_or(|v| {
+                        v.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 2048)
+                    })
             }
             Self::ThreadResume => {
                 non_empty("threadId")
@@ -233,6 +292,15 @@ pub enum ApprovalKind {
     FileChange,
 }
 impl ApprovalKind {
+    /// Necessary environment constraint, never a substitute for consent,
+    /// complete evidence or exact authoritative pending-descriptor matching.
+    pub fn environment_allows_approval(self, environment_id: Option<&Value>) -> bool {
+        match self {
+            Self::Command => LocalCommandEnvironment::parse(environment_id).allows_approval(),
+            Self::FileChange => environment_id.is_none(),
+        }
+    }
+
     fn parse(name: &str) -> Option<Self> {
         match name {
             "item/commandExecution/requestApproval" => Some(Self::Command),
@@ -249,6 +317,10 @@ pub struct Approval {
     pub turn_id: String,
     pub item_id: String,
     pub started_at_ms: u64,
+    /// Immutable server-origin request params, including requested command,
+    /// working directory, decision scope and any permission amendments.
+    /// Broker compares this exact descriptor before accepting a decision.
+    pub request: Value,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RpcFailure {
@@ -460,11 +532,21 @@ impl Broker {
         decision: ApprovalDecision,
         explicit_user_approval: bool,
     ) -> Result<()> {
-        if !self.approvals.contains_key(id) {
-            return Err(BridgeError::UnknownApproval);
-        }
+        let approval = self.approvals.get(id).ok_or(BridgeError::UnknownApproval)?;
         if decision == ApprovalDecision::Accept && !explicit_user_approval {
             return Err(BridgeError::ExplicitApprovalRequired);
+        }
+        // Check the authoritative pending descriptor even for callers of the
+        // direct reply API. Unsupported identities stay inspectable/declinable.
+        if decision == ApprovalDecision::Accept
+            && !approval
+                .kind
+                .environment_allows_approval(approval.request.get("environmentId"))
+        {
+            return Err(match approval.kind {
+                ApprovalKind::Command => BridgeError::UnsupportedCommandEnvironment,
+                ApprovalKind::FileChange => BridgeError::UnsupportedFileChangeEnvironment,
+            });
         }
         self.queue(
             None,
@@ -522,13 +604,25 @@ impl Broker {
                     };
                     let started = p.and_then(|v| v.get("startedAtMs")).and_then(Value::as_u64);
                     if p.and_then(|v| v.get("approvalId"))
-                        .is_some_and(|v| !v.is_null() && !v.as_str().is_some_and(|s| !s.is_empty()))
+                        .is_some_and(|v| !v.is_null() && v.as_str().is_none_or(str::is_empty))
                         || ["threadId", "turnId", "itemId"]
                             .iter()
                             .any(|name| field(name).is_none_or(|s| s.len() > 256))
                         || started.is_none()
                     {
                         return self.error_reply(id, -32602, "Invalid approval request");
+                    }
+                    // Never enqueue or render unbounded request descriptors.
+                    // An oversized request is declined, not presented as a
+                    // clipped preview which might hide elevated permissions.
+                    let descriptor = Value::Object(p.cloned().unwrap_or_default());
+                    if serde_json::to_vec(&descriptor).map_or(true, |bytes| bytes.len() > 8 * 1024)
+                    {
+                        return self.error_reply(
+                            id,
+                            -32602,
+                            "Approval descriptor exceeds safe limit",
+                        );
                     }
                     if self.approvals.len() >= self.limits.approvals {
                         return Err(BridgeError::Backpressure);
@@ -543,6 +637,7 @@ impl Broker {
                         turn_id: field("turnId").expect("validated"),
                         item_id: field("itemId").expect("validated"),
                         started_at_ms: started.expect("validated"),
+                        request: descriptor,
                     };
                     self.push_event(Event::Approval(approval.clone()), line.len())?;
                     self.approvals.insert(id, approval);

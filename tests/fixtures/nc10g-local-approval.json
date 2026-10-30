@@ -1,0 +1,25 @@
+{
+  "id": "local-once",
+  "method": "item/commandExecution/requestApproval",
+  "params": {
+    "threadId": "t",
+    "turnId": "u",
+    "itemId": "i",
+    "startedAtMs": 1,
+    "kind": "command",
+    "environmentId": "local",
+    "approvalId": null,
+    "command": "echo safe",
+    "cwd": "/project",
+    "reason": "Run this command once",
+    "commandActions": [{ "type": "unknown", "command": "echo safe" }],
+    "proposedExecpolicyAmendment": ["echo", "safe"],
+    "availableDecisions": [
+      "accept",
+      "acceptForSession",
+      { "acceptWithExecpolicyAmendment": { "execpolicy_amendment": ["echo", "safe"] } },
+      "decline",
+      "cancel"
+    ]
+  }
+}

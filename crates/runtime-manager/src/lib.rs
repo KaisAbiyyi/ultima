@@ -166,6 +166,28 @@ pub struct Manager {
     root: PathBuf,
     approvals: BTreeMap<String, Approval>,
 }
+/// A non-cloneable store-level launch lease. Its update lock covers both
+/// selecting a binary and the entire owned process lifetime; supported host
+/// activation and rollback cannot overtake the native launch.
+pub struct LaunchSnapshot {
+    pub config: ultima_app_server_supervisor::EngineConfig,
+    pub choice: Choice,
+    pub digest: Option<String>,
+    generation: u64,
+    owner: PathBuf,
+    _guard: Lock,
+}
+
+impl LaunchSnapshot {
+    /// On uncertain process-tree cleanup, leave the existing NC-12 lock in
+    /// place. A trusted host must confirm process death before manual recovery.
+    /// Releasing the lock would allow another host activation while a child
+    /// might still be executing the previous selected runtime.
+    pub fn retain_lock_after_uncertain_cleanup(self) {
+        std::mem::forget(self._guard);
+    }
+}
+
 struct Lock(PathBuf);
 impl Drop for Lock {
     fn drop(&mut self) {
@@ -238,6 +260,49 @@ impl Manager {
             approvals: allowed,
         })
     }
+    /// Read-only attachment to a store initialized by the production host.
+    /// Unlike open(), a missing root, marker or layout is never adopted or repaired.
+    /// Callers must additionally bind the root to their trusted host location.
+    pub fn open_existing(root: &Path, approvals: Vec<Approval>) -> Result<Self, Error> {
+        if !root.is_absolute() {
+            return Err(Error::Invalid("existing store path"));
+        }
+        let meta = fs::symlink_metadata(root)?;
+        if !meta.is_dir() || meta.file_type().is_symlink() {
+            return Err(Error::Invalid("existing store root"));
+        }
+        let root = fs::canonicalize(root)?;
+        let marker = root.join(MARKER);
+        let marker_meta = fs::symlink_metadata(&marker)?;
+        if !marker_meta.is_file()
+            || marker_meta.file_type().is_symlink()
+            || marker_meta.len() != b"ultima-managed-v1\n".len() as u64
+            || fs::read(&marker)? != b"ultima-managed-v1\n"
+        {
+            return Err(Error::Invalid("existing store marker"));
+        }
+        for name in ["versions", "journal"] {
+            let meta = fs::symlink_metadata(root.join(name))?;
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                return Err(Error::Invalid("existing store layout"));
+            }
+        }
+        let mut allowed = BTreeMap::new();
+        for a in approvals {
+            let verified = Approval::new(&a.version, &a.release_url, &a.sha256)?;
+            if allowed.insert(verified.version.clone(), verified).is_some() {
+                return Err(Error::Invalid("dup"));
+            }
+        }
+        // Validate the existing journal before returning an attachable manager.
+        let manager = Self {
+            root,
+            approvals: allowed,
+        };
+        manager.history()?;
+        Ok(manager)
+    }
+
     fn lock(&self) -> Result<Lock, Error> {
         let path = self.root.join(".update-lock");
         match OpenOptions::new().create_new(true).write(true).open(&path) {
@@ -454,6 +519,10 @@ impl Manager {
     /// fallback: repeated rollback is idempotent, not a managed reactivation.
     pub fn rollback(&self) -> Result<Choice, Error> {
         let _guard = self.lock()?;
+        self.rollback_locked()
+    }
+
+    fn rollback_locked(&self) -> Result<Choice, Error> {
         let entries = self.history()?;
         let current = entries.last().map(|entry| &entry.choice);
         let fallback = match current {
@@ -482,6 +551,65 @@ impl Manager {
         }
         Ok(fallback)
     }
+    /// One lock-protected read binds generation, selection, verified executable
+    /// and official digest to the exact engine config used for launch. Keep this
+    /// returned lease alive until the child tree is confirmed reaped.
+    pub fn launch_snapshot(
+        &self,
+        system_exe: &Path,
+        system_root: &Path,
+        project: &Path,
+        project_root: &Path,
+    ) -> Result<LaunchSnapshot, Error> {
+        let guard = self.lock()?;
+        let entries = self.history()?;
+        let generation = entries.last().map_or(0, |entry| entry.sequence);
+        let choice = entries
+            .last()
+            .map_or(Choice::System, |entry| entry.choice.clone());
+        let (binary, root, digest) = match &choice {
+            Choice::System => (system_exe.to_path_buf(), system_root.to_path_buf(), None),
+            Choice::Managed(version) => {
+                let binary = self.verified(version)?;
+                let digest = self.approval(version)?.digest().to_owned();
+                (
+                    binary,
+                    self.root.join("versions").join(version),
+                    Some(digest),
+                )
+            }
+        };
+        let config =
+            ultima_app_server_supervisor::EngineConfig::new(binary, root, project, project_root)
+                .map_err(|_| Error::Invalid("launch snapshot config"))?;
+        Ok(LaunchSnapshot {
+            config,
+            choice,
+            digest,
+            generation,
+            owner: self.root.clone(),
+            _guard: guard,
+        })
+    }
+
+    /// Conditional rollback runs under the original launch lease, not a
+    /// separate precheck and an unconditional journal update. A stale or
+    /// foreign lease never mutates another actor's selected runtime.
+    pub fn rollback_launch(&self, lease: &LaunchSnapshot) -> Result<Choice, Error> {
+        if lease.owner != self.root || !matches!(lease.choice, Choice::Managed(_)) {
+            return Err(Error::Invalid("foreign or system launch lease"));
+        }
+        let entries = self.history()?;
+        let generation = entries.last().map_or(0, |entry| entry.sequence);
+        let current = entries
+            .last()
+            .map_or(Choice::System, |entry| entry.choice.clone());
+        if generation != lease.generation || current != lease.choice {
+            return Err(Error::Invalid("journal advanced after launch"));
+        }
+        self.rollback_locked()
+    }
+
     pub fn selected(&self) -> Choice {
         self.active()
     }
@@ -510,8 +638,15 @@ mod policy_tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("owned");
         let mut manager = Manager::open(&root, vec![]).unwrap();
-        let file = tmp.path().join("untrusted-fixture.bin");
+        let file = tmp
+            .path()
+            .join(if cfg!(windows) { "codex.exe" } else { "codex" });
         fs::write(&file, b"synthetic test binary").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let hash = hash_file(&file).unwrap();
         // Private test fixture: production cannot construct ApprovedArtifact
         // except the exact reviewed upstream platform pin.
@@ -647,6 +782,102 @@ mod policy_tests {
         manager.activate_system().unwrap();
         assert_eq!(manager.history().unwrap().len(), count);
         assert_eq!(manager.active(), Choice::System);
+    }
+
+    #[test]
+    fn existing_store_attach_never_creates_or_adopts() {
+        let temp = TempDir::new().unwrap();
+        let missing = temp.path().join("missing");
+        assert!(Manager::open_existing(&missing, vec![]).is_err());
+        assert!(!missing.exists());
+        let foreign = temp.path().join("foreign");
+        fs::create_dir(&foreign).unwrap();
+        fs::write(foreign.join(".ultima-managed-runtime-v1"), b"forged\n").unwrap();
+        assert!(Manager::open_existing(&foreign, vec![]).is_err());
+        assert_eq!(
+            fs::read(foreign.join(".ultima-managed-runtime-v1")).unwrap(),
+            b"forged\n"
+        );
+        let owner = temp.path().join("production");
+        Manager::open(&owner, vec![]).unwrap();
+        assert!(Manager::open_existing(&owner, vec![]).is_ok());
+    }
+
+    #[test]
+    fn launch_lease_excludes_concurrent_host_selection_and_rollback() {
+        let (tmp, manager, file, _) = fixture();
+        manager.stage(&file, "0.164.0").unwrap();
+        manager.record(Choice::Managed("0.164.0".into())).unwrap();
+        let snapshot = manager
+            .launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path())
+            .unwrap();
+        assert_eq!(snapshot.choice, Choice::Managed("0.164.0".into()));
+        assert!(snapshot.digest.is_some());
+        assert!(matches!(manager.activate_system(), Err(Error::Locked)));
+        let other = Manager::open_existing(&manager.root, vec![]).unwrap();
+        assert!(matches!(other.rollback(), Err(Error::Locked)));
+        assert_eq!(manager.history().unwrap().len(), 1);
+        assert_eq!(manager.rollback_launch(&snapshot).unwrap(), Choice::System);
+        assert_eq!(manager.active(), Choice::System);
+        let recovered_len = manager.history().unwrap().len();
+        // A second native attempt for the same failed runtime cannot replay it.
+        assert!(manager.rollback_launch(&snapshot).is_err());
+        assert_eq!(manager.history().unwrap().len(), recovered_len);
+        drop(snapshot);
+        assert!(manager.activate_system().is_ok());
+        let reconnect = manager
+            .launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path())
+            .unwrap();
+        assert_eq!(reconnect.choice, Choice::System);
+    }
+
+    #[test]
+    fn stale_launch_generation_does_not_rollback_external_journal_change() {
+        let (tmp, manager, file, _) = fixture();
+        manager.stage(&file, "0.164.0").unwrap();
+        manager.record(Choice::Managed("0.164.0".into())).unwrap();
+        let snapshot = manager
+            .launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path())
+            .unwrap();
+        // Simulate a malicious/out-of-contract external writer bypassing
+        // the lease; even then the rollback refuses the newer generation.
+        manager.record(Choice::System).unwrap();
+        let before = manager.history().unwrap().len();
+        assert!(manager.rollback_launch(&snapshot).is_err());
+        assert_eq!(manager.history().unwrap().len(), before);
+        assert_eq!(manager.selected(), Choice::System);
+    }
+
+    #[test]
+    fn unconfirmed_cleanup_retains_exclusive_journal_lock() {
+        let (tmp, manager, file, _) = fixture();
+        let lease = manager
+            .launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path())
+            .unwrap();
+        lease.retain_lock_after_uncertain_cleanup();
+        assert!(matches!(manager.activate_system(), Err(Error::Locked)));
+        // Test-only trusted recovery after synthetic child is known dead.
+        fs::remove_file(manager.root.join(".update-lock")).unwrap();
+        assert!(manager.activate_system().is_ok());
+    }
+
+    #[test]
+    fn snapshot_blocks_system_to_managed_until_release() {
+        let (tmp, manager, file, _) = fixture();
+        manager.stage(&file, "0.164.0").unwrap();
+        let system = manager
+            .launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path())
+            .unwrap();
+        assert_eq!(system.choice, Choice::System);
+        assert!(matches!(manager.activate_system(), Err(Error::Locked)));
+        assert!(manager.rollback_launch(&system).is_err());
+        drop(system);
+        manager.record(Choice::Managed("0.164.0".into())).unwrap();
+        let managed = manager
+            .launch_snapshot(&file, tmp.path(), tmp.path(), tmp.path())
+            .unwrap();
+        assert_eq!(managed.choice, Choice::Managed("0.164.0".into()));
+        assert!(manager.rollback_launch(&managed).is_ok());
     }
 
     #[test]

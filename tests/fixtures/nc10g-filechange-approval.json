@@ -1,0 +1,11 @@
+{
+  "id": "file-once",
+  "method": "item/fileChange/requestApproval",
+  "params": {
+    "threadId": "t",
+    "turnId": "u",
+    "itemId": "i",
+    "startedAtMs": 1,
+    "reason": "Apply this change once"
+  }
+}
