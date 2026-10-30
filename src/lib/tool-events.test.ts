@@ -161,13 +161,17 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
       'permissionScope']) {
       expect(canApprove({ ...approval, request:{ ...approval.request, [key]: { enabled:true } } }, tools,'/project')).toBe(false);
     }
+    expect(canApprove({ ...approval, request:{ ...approval.request, availableDecisions:null } },tools,'/project')).toBe(true);
     expect(canApprove({ ...approval, request:{ ...approval.request, availableDecisions:['acceptForSession'] } },tools,'/project')).toBe(false);
     expect(canApprove({ ...approval, request:{ ...approval.request, availableDecisions:['accept','acceptForSession'] } },tools,'/project')).toBe(true);
     expect(canApprove({ ...approval, request:{ ...approval.request, availableDecisions:['accept', 7] } },tools,'/project')).toBe(false);
     expect(canApprove({ ...approval, request:{ ...approval.request, availableDecisions:[
       'accept',
       { acceptWithExecpolicyAmendment:{ execpolicy_amendment:['cargo','test'] } },
-      { applyNetworkPolicyAmendment:{ network_policy_amendment:{ action:'allow', host:'example.com' } } },
+      { applyNetworkPolicyAmendment:{
+        network_policy_amendment:{ action:'allow', host:'example.com', source:'server' },
+        source:'server'
+      } },
       'decline','cancel'
     ] } },tools,'/project')).toBe(true);
     expect(canApprove({ ...approval, request:{ ...approval.request, command:undefined } },tools,'/project')).toBe(false);

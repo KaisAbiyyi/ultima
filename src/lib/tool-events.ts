@@ -102,7 +102,7 @@ function validAvailableDecision(value: unknown): boolean {
     return validExecPolicyAmendment(exec.execpolicy_amendment);
   }
   const network = record(choice.applyNetworkPolicyAmendment);
-  if (!network || Object.keys(network).length !== 1) return false;
+  if (!network) return false;
   const amendment = record(network.network_policy_amendment);
   return !!amendment &&
     typeof amendment.host === 'string' &&

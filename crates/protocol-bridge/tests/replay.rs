@@ -355,7 +355,7 @@ fn one_shot_accept_with_execpolicy_proposal_emits_only_accept_and_does_not_persi
         "availableDecisions":[
             "accept",
             "acceptForSession",
-            {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","safe"]}}
+            {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","safe"],"source":"server"}}
         ]
     });
     let first = json!({

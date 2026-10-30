@@ -641,6 +641,14 @@ mod tests {
             "decline",
             "cancel"
         ]);
+        proposal.request["availableDecisions"] = json!([
+            "accept",
+            "acceptForSession",
+            {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","safe"],"source":"server"}},
+            {"applyNetworkPolicyAmendment":{"network_policy_amendment":{"action":"allow","host":"example.com","source":"server"},"source":"server"}},
+            "decline",
+            "cancel"
+        ]);
         let original = proposal.request.clone();
         assert!(ledger.matches(&proposal, &snapshot, &root));
         assert_eq!(proposal.request, original);
@@ -688,8 +696,13 @@ mod tests {
         }
 
         let mut no_accept = req("echo safe", cwd);
-        no_accept.request["availableDecisions"] = json!(["acceptWithExecpolicyAmendment"]);
+        no_accept.request["availableDecisions"] = json!([
+            {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","safe"]}}
+        ]);
         assert!(!ledger.matches(&no_accept, &snapshot, &root));
+        let mut null_decisions = req("echo safe", cwd);
+        null_decisions.request["availableDecisions"] = Value::Null;
+        assert!(ledger.matches(&null_decisions, &snapshot, &root));
         let mut stale = proposal.clone();
         stale.request["startedAtMs"] = json!(2);
         assert!(!ledger.matches(&stale, &snapshot, &root));

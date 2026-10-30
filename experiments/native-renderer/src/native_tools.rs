@@ -750,8 +750,8 @@ mod tests {
             "availableDecisions":[
                 "accept",
                 "acceptForSession",
-                {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","safe"]}},
-                {"applyNetworkPolicyAmendment":{"network_policy_amendment":{"action":"allow","host":"example.com"}}},
+                {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","safe"],"source":"server"}},
+                {"applyNetworkPolicyAmendment":{"network_policy_amendment":{"action":"allow","host":"example.com","source":"server"},"source":"server"}},
                 "decline",
                 "cancel"
             ]
@@ -815,6 +815,14 @@ mod tests {
                 &reviewed
             ));
         }
+
+        let mut null_decisions = valid.clone();
+        null_decisions.request["availableDecisions"] = Value::Null;
+        assert!(ToolLedger::request_matches_review(
+            &null_decisions,
+            &project(),
+            &reviewed
+        ));
 
         let mut no_one_shot = valid.clone();
         no_one_shot.request["availableDecisions"] = json!(["acceptForSession"]);
