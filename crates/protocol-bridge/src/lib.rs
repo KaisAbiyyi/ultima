@@ -47,6 +47,7 @@ pub enum BridgeError {
     UnknownApproval,
     ExplicitApprovalRequired,
     UnsupportedCommandEnvironment,
+    UnsupportedFileChangeEnvironment,
 }
 impl std::fmt::Display for BridgeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -291,6 +292,15 @@ pub enum ApprovalKind {
     FileChange,
 }
 impl ApprovalKind {
+    /// Necessary environment constraint, never a substitute for consent,
+    /// complete evidence or exact authoritative pending-descriptor matching.
+    pub fn environment_allows_approval(self, environment_id: Option<&Value>) -> bool {
+        match self {
+            Self::Command => LocalCommandEnvironment::parse(environment_id).allows_approval(),
+            Self::FileChange => environment_id.is_none(),
+        }
+    }
+
     fn parse(name: &str) -> Option<Self> {
         match name {
             "item/commandExecution/requestApproval" => Some(Self::Command),
@@ -529,11 +539,14 @@ impl Broker {
         // Check the authoritative pending descriptor even for callers of the
         // direct reply API. Unsupported identities stay inspectable/declinable.
         if decision == ApprovalDecision::Accept
-            && approval.kind == ApprovalKind::Command
-            && !LocalCommandEnvironment::parse(approval.request.get("environmentId"))
-                .allows_approval()
+            && !approval
+                .kind
+                .environment_allows_approval(approval.request.get("environmentId"))
         {
-            return Err(BridgeError::UnsupportedCommandEnvironment);
+            return Err(match approval.kind {
+                ApprovalKind::Command => BridgeError::UnsupportedCommandEnvironment,
+                ApprovalKind::FileChange => BridgeError::UnsupportedFileChangeEnvironment,
+            });
         }
         self.queue(
             None,

@@ -123,3 +123,34 @@ for (const identity of ['remote','custom','null','missing']) {
     expect(decision).toBe('decline');
   });
 }
+
+const fileFixture=JSON.parse(readFileSync(new URL('../fixtures/nc10g-filechange-approval.json',import.meta.url),'utf8'));
+for (const identity of ['missing','null','local']) {
+  test(`NC-10G FileChange ${identity} environment metadata preserves the absence-only contract`,async ({page})=>{
+    await approvalPreview(page);
+    const request: Record<string,unknown>=structuredClone(fileFixture.params);
+    if (identity!=='missing') request.environmentId=identity==='null' ? null : identity;
+    await page.evaluate(request=>{
+      const emit=(window as any).__emitApproval;
+      emit({type:'itemStarted',params:{threadId:'t',turnId:'u',item:{id:'i',type:'fileChange',changes:[{path:'safe.txt',diff:'+safe change'}]}}});
+      emit({type:'approvalPending',request});
+    },{id:fileFixture.id,kind:'fileChange',...fileFixture.params,request});
+    const card=page.getByTestId('nc07-approval');
+    await expect(card).toBeVisible();
+    await expect(card.getByRole('button',{name:'Decline',exact:true})).toBeEnabled();
+    await expect(card.getByRole('button',{name:'Allow once'})).toBeDisabled();
+    await card.getByRole('button',{name:'Review file diff',exact:true}).click();
+    if (identity==='missing') {
+      await card.getByRole('checkbox').check();
+      await expect(card.getByRole('button',{name:'Allow once'})).toBeEnabled();
+      await card.getByRole('button',{name:'Allow once'}).click();
+    } else {
+      await expect(card).toContainText('File-change environment metadata is unsupported.');
+      await expect(card.getByRole('checkbox')).toBeDisabled();
+      await card.getByRole('button',{name:'Decline',exact:true}).click();
+    }
+    const [,sent,decision]=await page.evaluate(()=>(window as any).__approvalCalls[0]);
+    expect(sent.request).toEqual(request);
+    expect(decision).toBe(identity==='missing' ? 'accept' : 'decline');
+  });
+}

@@ -25,7 +25,7 @@ use std::time::Instant;
 use theme::{
     body, mono, small, BORDER, CANVAS, GREEN, HOVER, MUTED, RAISED, SECONDARY, SURFACE, TEXT,
 };
-use ultima_protocol_bridge::{Approval, ApprovalKind, LocalCommandEnvironment, RpcId};
+use ultima_protocol_bridge::{Approval, ApprovalKind, RpcId};
 
 const MAX_HISTORY_ROWS: usize = 10_000;
 const MAX_DRAFT_CHARS: usize = 8 * 1024;
@@ -652,15 +652,26 @@ impl RendererSpike {
         }
     }
 
-    fn unsupported_command_environment(request: &Approval) -> bool {
-        request.kind == ApprovalKind::Command
-            && !LocalCommandEnvironment::parse(request.request.get("environmentId"))
-                .allows_approval()
+    fn unsupported_approval_environment(request: &Approval) -> bool {
+        !request
+            .kind
+            .environment_allows_approval(request.request.get("environmentId"))
+    }
+
+    fn unavailable_environment_message(request: &Approval) -> &'static str {
+        match request.kind {
+            ApprovalKind::Command => {
+                "Execution environment is unsupported or unidentified. Allow once is unavailable."
+            }
+            ApprovalKind::FileChange => {
+                "File-change environment metadata is unsupported. Allow once is unavailable."
+            }
+        }
     }
 
     fn approval_can_allow(&self, request: &Approval, evidence: Option<&ToolEvidence>) -> bool {
         self.approval_dispatching.is_none()
-            && !Self::unsupported_command_environment(request)
+            && !Self::unsupported_approval_environment(request)
             && self.reviewed_approval.as_ref() == Some(request)
             && evidence.is_some_and(|item| item.complete && !item.truncated)
     }
@@ -684,11 +695,8 @@ impl RendererSpike {
                     && item.kind == request.kind
             })
             .cloned();
-        if accept && Self::unsupported_command_environment(&request) {
-            self.live_error = Some(
-                "Execution environment is unsupported or unidentified. Allow once is unavailable."
-                    .to_owned(),
-            );
+        if accept && Self::unsupported_approval_environment(&request) {
+            self.live_error = Some(Self::unavailable_environment_message(&request).to_owned());
             return;
         }
         if accept && !self.approval_can_allow(&request, snapshot.as_ref()) {
@@ -762,8 +770,8 @@ impl RendererSpike {
                 } else {
                     ui.label(small("Unreviewed request. Never approved automatically."));
                 }
-                if Self::unsupported_command_environment(&request) {
-                    ui.label(small("Execution environment is unsupported or unidentified. Allow once is unavailable; inspect or decline this request."));
+                if Self::unsupported_approval_environment(&request) {
+                    ui.label(small(format!("{} Inspect or decline this request.",Self::unavailable_environment_message(&request))));
                 }
                 ui.horizontal(|ui| {
                     if ui
@@ -2039,12 +2047,7 @@ mod tests {
         assert!(app.pending_approvals.is_empty());
     }
 
-    #[test]
-    fn native_approval_card_requires_explicit_local_and_keeps_decline_enabled() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/nc10g-local-approval.json"
-        ))
-        .unwrap();
+    fn assert_native_card_environment_cases(kind: ApprovalKind, fixture: serde_json::Value) {
         let cases: serde_json::Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/nc10g-environments.json"
         ))
@@ -2052,7 +2055,7 @@ mod tests {
         for case in cases.as_array().unwrap() {
             let mut request = Approval {
                 id: RpcId::String("local-once".into()),
-                kind: ApprovalKind::Command,
+                kind,
                 thread_id: "t".into(),
                 turn_id: "u".into(),
                 item_id: "i".into(),
@@ -2075,13 +2078,29 @@ mod tests {
                 thread: "t".into(),
                 turn: "u".into(),
                 id: "i".into(),
-                kind: ApprovalKind::Command,
+                kind,
                 state: "running".into(),
-                command: "echo safe".into(),
-                cwd: "/project".into(),
+                command: if kind == ApprovalKind::Command {
+                    "echo safe".into()
+                } else {
+                    String::new()
+                },
+                cwd: if kind == ApprovalKind::Command {
+                    "/project".into()
+                } else {
+                    String::new()
+                },
                 output: String::new(),
-                diff: String::new(),
-                paths: vec![],
+                diff: if kind == ApprovalKind::FileChange {
+                    "safe.txt\n+safe change".into()
+                } else {
+                    String::new()
+                },
+                paths: if kind == ApprovalKind::FileChange {
+                    vec!["safe.txt".into()]
+                } else {
+                    vec![]
+                },
                 complete: true,
                 truncated: false,
             });
@@ -2110,24 +2129,56 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 !allow.1.is_disabled(),
-                case["supported"].as_bool().unwrap(),
+                case[if kind == ApprovalKind::Command {
+                    "supported"
+                } else {
+                    "fileChangeSupported"
+                }]
+                .as_bool()
+                .unwrap(),
                 "{}",
                 case["name"]
             );
             assert!(!decline.1.is_disabled());
-            if case["supported"] == false {
-                assert!(nodes.iter().any(|(_, n)| n
-                    .value()
-                    .is_some_and(|s| s.contains("unsupported or unidentified"))));
+            if case[if kind == ApprovalKind::Command {
+                "supported"
+            } else {
+                "fileChangeSupported"
+            }] == false
+            {
+                assert!(nodes
+                    .iter()
+                    .any(|(_, n)| n.value().is_some_and(|s| s.contains("unsupported"))));
                 app.decide_current(true);
                 assert!(app.approval_dispatching.is_none());
                 assert!(app
                     .live_error
                     .as_deref()
-                    .is_some_and(|s| s.contains("unsupported or unidentified")));
+                    .is_some_and(|s| s.contains("unsupported")));
                 assert_eq!(app.pending_approvals.len(), 1);
             }
         }
+    }
+
+    #[test]
+    fn native_approval_card_requires_explicit_local_and_keeps_decline_enabled() {
+        assert_native_card_environment_cases(
+            ApprovalKind::Command,
+            serde_json::from_str(include_str!(
+                "../../../tests/fixtures/nc10g-local-approval.json"
+            ))
+            .unwrap(),
+        );
+    }
+    #[test]
+    fn native_filechange_card_requires_absent_environment_and_keeps_decline_enabled() {
+        assert_native_card_environment_cases(
+            ApprovalKind::FileChange,
+            serde_json::from_str(include_str!(
+                "../../../tests/fixtures/nc10g-filechange-approval.json"
+            ))
+            .unwrap(),
+        );
     }
 
     #[test]

@@ -557,3 +557,67 @@ fn original_unsupported_environment_is_inspectable_and_decline_only_at_broker() 
         assert_eq!(broker.approval_count(), 0);
     }
 }
+
+#[test]
+fn filechange_environment_presence_is_decline_only_in_both_broker_apis() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nc10g-filechange-approval.json"
+    ))
+    .unwrap();
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nc10g-environments.json"
+    ))
+    .unwrap();
+    for case in cases.as_array().unwrap() {
+        for direct in [false, true] {
+            let mut request = fixture.clone();
+            if case["present"] == true {
+                request["params"]["environmentId"] = case["value"].clone();
+            }
+            let mut broker = make_ready();
+            broker
+                .ingest_line(&serde_json::to_vec(&request).unwrap())
+                .unwrap();
+            let Event::Approval(original) = broker.take_event().unwrap() else {
+                panic!("inspection");
+            };
+            assert_eq!(original.request, request["params"]);
+            // A metadata addition cannot inherit the valid absent-field approval.
+            if case["fileChangeSupported"] == true {
+                let mut changed = original.clone();
+                changed.request["environmentId"] = Value::Null;
+                assert_eq!(
+                    broker.decide_exact_approval(&changed, ApprovalDecision::Accept, true),
+                    Err(BridgeError::UnknownApproval)
+                );
+                assert!(broker.take_outbound().is_none());
+            }
+            let result = if direct {
+                broker.reply_approval(&original.id, ApprovalDecision::Accept, true)
+            } else {
+                broker.decide_exact_approval(&original, ApprovalDecision::Accept, true)
+            };
+            assert_eq!(
+                result.is_ok(),
+                case["fileChangeSupported"].as_bool().unwrap(),
+                "{} direct={direct}",
+                case["name"]
+            );
+            if result.is_err() {
+                assert!(broker.take_outbound().is_none());
+                assert_eq!(broker.approval(&original.id), Some(&original));
+                broker.decline_approval(&original.id).unwrap();
+            }
+            let wire: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+            assert_eq!(
+                wire,
+                json!({"id":"file-once","result":{"decision":if case["fileChangeSupported"]==true {"accept"} else {"decline"}}})
+            );
+            assert_eq!(broker.approval_count(), 0);
+            assert!(broker
+                .decide_exact_approval(&original, ApprovalDecision::Accept, true)
+                .is_err());
+            assert!(broker.take_outbound().is_none());
+        }
+    }
+}

@@ -728,6 +728,8 @@
           <pre class="nc07-evidence" data-testid="nc10e-request">{JSON.stringify(currentApproval.request, null, 2)}</pre>
           {#if currentApproval.kind === 'command' && !supportedCommandEnvironment(currentApproval.request.environmentId)}
             <p class="nc07-warning">Execution environment is unsupported or unidentified. You can inspect or decline this request.</p>
+          {:else if currentApproval.kind === 'fileChange' && Object.hasOwn(currentApproval.request, 'environmentId')}
+            <p class="nc07-warning">File-change environment metadata is unsupported. You can inspect or decline this request.</p>
           {/if}
           {#if !canApprove(currentApproval, toolItems, activeProject)}
             <p class="nc07-warning">Server request, project, permission scope or displayed evidence disagrees. Allow once is unavailable.</p>

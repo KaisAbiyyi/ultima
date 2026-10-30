@@ -603,6 +603,40 @@ mod tests {
         }
     }
     #[test]
+    fn original_filechange_environment_matrix_retains_safe_decline() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/nc10g-filechange-approval.json"
+        ))
+        .unwrap();
+        let cases: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/nc10g-environments.json"
+        ))
+        .unwrap();
+        for case in cases.as_array().unwrap() {
+            let mut a = approval();
+            a.kind = ApprovalKind::FileChange;
+            a.request = fixture["params"].clone();
+            if case["present"] == true {
+                a.request["environmentId"] = case["value"].clone();
+            }
+            let mut ledger = ToolLedger::default();
+            let snapshot=ledger.capture(NotificationKind::ItemStarted,&json!({"threadId":"t","turnId":"u","item":{"id":"i","type":"fileChange","changes":[{"path":"safe.txt","diff":"+safe change"}]}}),&project()).unwrap();
+            assert!(ledger.offer(a.clone(), &project()));
+            let eligible = ledger.consume_reviewed(&a, &project(), &snapshot);
+            assert_eq!(
+                eligible,
+                case["fileChangeSupported"].as_bool().unwrap(),
+                "{}",
+                case["name"]
+            );
+            if !eligible {
+                assert_eq!(ledger.pending(), std::slice::from_ref(&a));
+                assert!(ledger.take(&a));
+            }
+            assert!(ledger.pending().is_empty());
+        }
+    }
+    #[test]
     fn local_environment_fixture_is_bound_to_the_complete_pending_descriptor() {
         let fixture: Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/nc10g-local-approval.json"

@@ -550,6 +550,34 @@ mod tests {
             "output":"","state":"running","previewComplete":true,"truncated":false})
     }
     #[test]
+    fn original_filechange_environment_matrix_requires_absence() {
+        let root = project();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/nc10g-filechange-approval.json"
+        ))
+        .unwrap();
+        let cases: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/nc10g-environments.json"))
+                .unwrap();
+        for case in cases.as_array().unwrap() {
+            let mut a = req("echo safe", root.to_str().unwrap());
+            a.kind = ApprovalKind::FileChange;
+            a.request = fixture["params"].clone();
+            if case["present"] == true {
+                a.request["environmentId"] = case["value"].clone();
+            }
+            let mut ledger = EvidenceLedger::default();
+            ledger.observe(NotificationKind::ItemStarted,&json!({"threadId":"t","turnId":"u","item":{"id":"i","type":"fileChange","changes":[{"path":"safe.txt","diff":"+safe change"}]}}));
+            let preview = json!({"id":"i","threadId":"t","turnId":"u","kind":"fileChange","state":"running","previewComplete":true,"truncated":false,"cwd":"","paths":["safe.txt"],"diff":"safe.txt\n+safe change"});
+            assert_eq!(
+                ledger.matches(&a, &preview, &root),
+                case["fileChangeSupported"].as_bool().unwrap(),
+                "{}",
+                case["name"]
+            );
+        }
+    }
+    #[test]
     fn official_local_environment_fixture_and_unsupported_identifiers() {
         let fixture: Value = serde_json::from_str(include_str!(
             "../../tests/fixtures/nc10g-local-approval.json"

@@ -13,9 +13,15 @@ was not accessed. Rust tests substitute only cwd to the host test context.
 native Rust, Tauri Rust, the protocol bridge and Vitest. The Cyrillic character
 in `locаl` is intentional. Remote execution remains unsupported in this client.
 Missing identity is represented by `present: false`; the `value` key is absent.
-Only explicit `local` is eligible. Null/missing and every other case are decline-only.
+`supported` describes command eligibility (only explicit local);
+`fileChangeSupported` describes FileChange eligibility (only field absence).
 Full descriptor equality must still distinguish absent/null/local.
 
 `tests/approval-parity` runs the actual native and Tauri validators with each
 original descriptor through the broker, then compares their wire decisions to
 Svelte in Vitest. The NC-10E parity jobs require this combined test on both OSes.
+
+`nc10g-filechange-approval.json` is a synthetic official-shaped FileChange request,
+with no environment field, paired with a complete `safe.txt` diff in tests. It is
+not captured physical evidence. The joint test exercises both approval kinds
+against all 16 cases (32 cases total), including both broker APIs and safe decline.

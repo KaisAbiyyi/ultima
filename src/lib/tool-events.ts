@@ -146,7 +146,8 @@ function permissionScope(request: Record<string, unknown>, kind: ApprovalRequest
         !supportedCommandEnvironment(request.environmentId) ||
         (request.approvalId !== undefined && request.approvalId !== null) ||
         !validCommandActions(request.commandActions)) return false;
-  } else if (['kind', 'environmentId', 'approvalId', 'commandActions'].some(key => request[key] !== undefined)) {
+  } else if (Object.hasOwn(request, 'environmentId') ||
+      ['kind', 'approvalId', 'commandActions'].some(key => request[key] !== undefined)) {
     return false;
   }
   if (request.reason !== undefined && request.reason !== null &&

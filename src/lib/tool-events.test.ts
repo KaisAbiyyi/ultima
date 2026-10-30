@@ -1,3 +1,4 @@
+import fileFixture from '../../tests/fixtures/nc10g-filechange-approval.json';
 import localFixture from '../../tests/fixtures/nc10g-local-approval.json';
 import environments from '../../tests/fixtures/nc10g-environments.json';
 import { describe, it, expect } from 'vitest';
@@ -45,6 +46,22 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
     const oversized = { ...parsed, request:{ ...parsed.request, environmentId:'x'.repeat(8193) } };
     expect(parseApproval(oversized)).toBeNull();
     expect(canApprove(oversized, tools, '/project')).toBe(false);
+  });
+
+  it('requires absent environment metadata on each original FileChange descriptor', () => {
+    const evidence=trackTool([], 'itemStarted', fileEvent([change('safe.txt','+safe change')],{},'t','u','i'));
+    for (const testCase of environments) {
+      const request: Record<string,unknown>=structuredClone(fileFixture.params);
+      if (testCase.present) request.environmentId=testCase.value;
+      const parsed=parseApproval({id:fileFixture.id,kind:'fileChange',...fileFixture.params,request})!;
+      expect(parsed).not.toBeNull();
+      expect(parsed.request).toEqual(request);
+      expect(canApprove(parsed,evidence,'/project'),testCase.name).toBe(testCase.fileChangeSupported);
+    }
+    // Presence, rather than a nullish/value check, defines the contract in JS too.
+    const malformed={...fileApproval,request:{...fileApproval.request,environmentId:undefined}};
+    const originalEvidence=trackTool([], 'itemStarted',fileEvent([change('safe.txt','+safe change')]));
+    expect(canApprove(malformed,originalEvidence,'/project')).toBe(false);
   });
 
   it('rejects malformed or forged approval identity', () => {
