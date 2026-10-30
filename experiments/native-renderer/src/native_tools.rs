@@ -18,10 +18,22 @@ const MAX_AVAILABLE_DECISIONS: usize = 8;
 const MAX_NETWORK_POLICY_HOST_BYTES: usize = 512;
 const MAX_COMMAND_ACTIONS: usize = 32;
 const REQUEST_FIELDS: &[&str] = &[
-    "threadId", "turnId", "itemId", "startedAtMs", "kind", "environmentId",
-    "approvalId", "commandActions", "command", "cwd", "grantRoot",
-    "availableDecisions", "reason", "networkApprovalContext",
-    "additionalPermissions", "proposedExecpolicyAmendment",
+    "threadId",
+    "turnId",
+    "itemId",
+    "startedAtMs",
+    "kind",
+    "environmentId",
+    "approvalId",
+    "commandActions",
+    "command",
+    "cwd",
+    "grantRoot",
+    "availableDecisions",
+    "reason",
+    "networkApprovalContext",
+    "additionalPermissions",
+    "proposedExecpolicyAmendment",
     "proposedNetworkPolicyAmendments",
 ];
 
@@ -149,7 +161,9 @@ fn valid_command_metadata(request: &Value, kind: ApprovalKind) -> bool {
 
 fn valid_request_fields(request: &Value) -> bool {
     request.as_object().is_some_and(|fields| {
-        fields.keys().all(|key| REQUEST_FIELDS.contains(&key.as_str()))
+        fields
+            .keys()
+            .all(|key| REQUEST_FIELDS.contains(&key.as_str()))
     })
 }
 
