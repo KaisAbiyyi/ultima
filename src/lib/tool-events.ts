@@ -33,12 +33,13 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 const REQUEST_FIELDS = new Set([
   'threadId', 'turnId', 'itemId', 'startedAtMs', 'kind', 'environmentId', 'approvalId',
-  'commandActions', 'command', 'cwd', 'grantRoot', 'availableDecisions', 'reason'
+  'commandActions', 'command', 'cwd', 'grantRoot', 'availableDecisions', 'reason',
+  'networkApprovalContext', 'additionalPermissions', 'proposedExecpolicyAmendment',
+  'proposedNetworkPolicyAmendments'
 ]);
 const ESCALATION_FIELDS = [
   'additionalPermissions', 'networkApprovalContext', 'proposedNetworkPolicyAmendments'
 ];
-const APPROVAL_METADATA_FIELDS = ['proposedExecpolicyAmendment'];
 function commandText(value: unknown): string | null {
   if (typeof value === 'string') return value.trim() && value.length <= MAX_COMMAND_CHARS ? value : null;
   if (!Array.isArray(value) || !value.length || !value.every(v =>
@@ -99,12 +100,14 @@ function validAvailableDecision(value: unknown): boolean {
   if (!choice || Object.keys(choice).length !== 1) return false;
   const exec = record(choice.acceptWithExecpolicyAmendment);
   if (exec) {
-    return validExecPolicyAmendment(exec.execpolicy_amendment);
+    return Object.keys(exec).length === 1 &&
+      validExecPolicyAmendment(exec.execpolicy_amendment);
   }
   const network = record(choice.applyNetworkPolicyAmendment);
   if (!network) return false;
   const amendment = record(network.network_policy_amendment);
-  return !!amendment &&
+  return Object.keys(network).length === 1 &&
+    !!amendment && Object.keys(amendment).length === 2 &&
     typeof amendment.host === 'string' &&
     new TextEncoder().encode(amendment.host).length <= MAX_NETWORK_POLICY_HOST_BYTES &&
     (amendment.action === 'allow' || amendment.action === 'deny');
@@ -128,8 +131,7 @@ function safeRelativePath(path: string): boolean {
     path.split('/').every(part => part.length > 0 && part !== '.' && part !== '..');
 }
 function permissionScope(request: Record<string, unknown>, kind: ApprovalRequest['kind'], project: string): boolean {
-  if (!project || Object.keys(request).some(k =>
-    !REQUEST_FIELDS.has(k) && !ESCALATION_FIELDS.includes(k) && !APPROVAL_METADATA_FIELDS.includes(k))) return false;
+  if (!project || Object.keys(request).some(k => !REQUEST_FIELDS.has(k))) return false;
   if (ESCALATION_FIELDS.some(key => request[key] !== undefined && request[key] !== null)) return false;
   const proposal = request.proposedExecpolicyAmendment;
   if (proposal !== undefined && proposal !== null &&

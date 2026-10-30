@@ -156,6 +156,10 @@ fn broker_event(event: Event) -> Option<Value> {
         Event::Approval(_) => None, // Caller always explicitly declines before forwarding.
     }
 }
+// Legacy worker boundary retained to keep this security correction scoped. The
+// crate remains under -D warnings; only this pre-existing argument-count lint
+// is locally expected until the worker context is refactored separately.
+#[allow(clippy::too_many_arguments)]
 async fn drive(
     app: tauri::AppHandle,
     gate: Arc<SessionGate<EngineHandle>>,

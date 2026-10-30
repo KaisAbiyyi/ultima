@@ -17,6 +17,13 @@ const MAX_EXEC_POLICY_AMENDMENT_BYTES: usize = 4 * 1024;
 const MAX_AVAILABLE_DECISIONS: usize = 8;
 const MAX_NETWORK_POLICY_HOST_BYTES: usize = 512;
 const MAX_COMMAND_ACTIONS: usize = 32;
+const REQUEST_FIELDS: &[&str] = &[
+    "threadId", "turnId", "itemId", "startedAtMs", "kind", "environmentId",
+    "approvalId", "commandActions", "command", "cwd", "grantRoot",
+    "availableDecisions", "reason", "networkApprovalContext",
+    "additionalPermissions", "proposedExecpolicyAmendment",
+    "proposedNetworkPolicyAmendments",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolEvidence {
@@ -140,6 +147,12 @@ fn valid_command_metadata(request: &Value, kind: ApprovalKind) -> bool {
     }
 }
 
+fn valid_request_fields(request: &Value) -> bool {
+    request.as_object().is_some_and(|fields| {
+        fields.keys().all(|key| REQUEST_FIELDS.contains(&key.as_str()))
+    })
+}
+
 fn valid_available_decision(value: &Value) -> bool {
     match value.as_str() {
         Some("accept" | "acceptForSession" | "decline" | "cancel") => true,
@@ -155,9 +168,10 @@ fn valid_available_decision(value: &Value) -> bool {
                 let Some(payload) = payload.as_object() else {
                     return false;
                 };
-                payload
-                    .get("execpolicy_amendment")
-                    .is_some_and(valid_exec_policy_amendment)
+                payload.len() == 1
+                    && payload
+                        .get("execpolicy_amendment")
+                        .is_some_and(valid_exec_policy_amendment)
             } else if let Some(payload) = choice.get("applyNetworkPolicyAmendment") {
                 let Some(payload) = payload.as_object() else {
                     return false;
@@ -168,10 +182,12 @@ fn valid_available_decision(value: &Value) -> bool {
                 else {
                     return false;
                 };
-                amendment
-                    .get("host")
-                    .and_then(Value::as_str)
-                    .is_some_and(|host| host.len() <= MAX_NETWORK_POLICY_HOST_BYTES)
+                payload.len() == 1
+                    && amendment.len() == 2
+                    && amendment
+                        .get("host")
+                        .and_then(Value::as_str)
+                        .is_some_and(|host| host.len() <= MAX_NETWORK_POLICY_HOST_BYTES)
                     && matches!(
                         amendment.get("action").and_then(Value::as_str),
                         Some("allow" | "deny")
@@ -465,6 +481,7 @@ impl ToolLedger {
                     .is_some_and(|text| text.len() <= MAX_COMMAND)
         });
         if !req.is_object()
+            || !valid_request_fields(req)
             || !serde_json::to_vec(req)
                 .is_ok_and(|serialized| serialized.len() <= MAX_APPROVAL_DESCRIPTOR_BYTES)
             || !proposal_valid
@@ -602,6 +619,29 @@ mod tests {
         assert!(ledger.offer(a.clone(), &project()));
         assert!(ledger.consume_reviewed(&a, &project(), &snapshot));
         assert!(ledger.pending().is_empty());
+    }
+
+    #[test]
+    fn unknown_request_fields_cannot_be_consumed_for_allow_once() {
+        let mut ledger = ToolLedger::default();
+        let cwd = project().to_str().unwrap().to_owned();
+        let item = json!({"threadId":"t","turnId":"u","item":{
+            "id":"i","type":"commandExecution","command":"echo safe","cwd":cwd
+        }});
+        let reviewed = ledger
+            .capture(NotificationKind::ItemStarted, &item, &project())
+            .unwrap();
+        let mut candidate = approval();
+        candidate.request = json!({
+            "threadId":"t","turnId":"u","itemId":"i","startedAtMs":1,
+            "kind":"command","environmentId":null,"approvalId":null,
+            "commandActions":[{"type":"unknown","command":"echo safe"}],
+            "command":"echo safe","cwd":cwd,"availableDecisions":["accept"]
+        });
+        candidate.request["permissionScope"] = json!("workspace");
+        assert!(ledger.offer(candidate.clone(), &project()));
+        assert!(!ledger.consume_reviewed(&candidate, &project(), &reviewed));
+        assert_eq!(ledger.pending().len(), 1);
     }
 
     #[test]
@@ -750,8 +790,8 @@ mod tests {
             "availableDecisions":[
                 "accept",
                 "acceptForSession",
-                {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","safe"],"source":"server"}},
-                {"applyNetworkPolicyAmendment":{"network_policy_amendment":{"action":"allow","host":"example.com","source":"server"},"source":"server"}},
+                {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","safe"]}},
+                {"applyNetworkPolicyAmendment":{"network_policy_amendment":{"action":"allow","host":"example.com"}}},
                 "decline",
                 "cancel"
             ]
@@ -816,6 +856,22 @@ mod tests {
             ));
         }
 
+        for key in [
+            "permissionScope",
+            "unexpectedField",
+            "permissionGrant",
+            "requestedPermissions",
+            "permissionProfile",
+        ] {
+            let mut candidate = valid.clone();
+            candidate.request[key] = json!({"enabled":true});
+            assert!(!ToolLedger::request_matches_review(
+                &candidate,
+                &project(),
+                &reviewed
+            ));
+        }
+
         let mut null_decisions = valid.clone();
         null_decisions.request["availableDecisions"] = Value::Null;
         assert!(ToolLedger::request_matches_review(
@@ -838,6 +894,31 @@ mod tests {
             &project(),
             &reviewed
         ));
+
+        for invalid_choice in [
+            json!({"acceptWithExecpolicyAmendment":{
+                "execpolicy_amendment":["echo","safe"],"source":"server"
+            }}),
+            json!({"applyNetworkPolicyAmendment":{
+                "network_policy_amendment":{"action":"allow","host":"example.com","source":"server"}
+            }}),
+            json!({"applyNetworkPolicyAmendment":{
+                "network_policy_amendment":{"action":"allow","host":"example.com"},
+                "source":"server"
+            }}),
+            json!({
+                "acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","safe"]},
+                "decline":null
+            }),
+        ] {
+            let mut candidate = valid.clone();
+            candidate.request["availableDecisions"] = json!(["accept", invalid_choice]);
+            assert!(!ToolLedger::request_matches_review(
+                &candidate,
+                &project(),
+                &reviewed
+            ));
+        }
 
         let mut wrong_kind = valid.clone();
         wrong_kind.request["kind"] = json!("writeStdin");

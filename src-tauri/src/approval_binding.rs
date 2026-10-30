@@ -151,9 +151,10 @@ fn valid_available_decision(value: &Value) -> bool {
                 let Some(payload) = payload.as_object() else {
                     return false;
                 };
-                payload
-                    .get("execpolicy_amendment")
-                    .is_some_and(valid_exec_policy_amendment)
+                payload.len() == 1
+                    && payload
+                        .get("execpolicy_amendment")
+                        .is_some_and(valid_exec_policy_amendment)
             } else if let Some(payload) = choice.get("applyNetworkPolicyAmendment") {
                 let Some(payload) = payload.as_object() else {
                     return false;
@@ -164,10 +165,12 @@ fn valid_available_decision(value: &Value) -> bool {
                 else {
                     return false;
                 };
-                amendment
-                    .get("host")
-                    .and_then(Value::as_str)
-                    .is_some_and(|host| host.len() <= MAX_NETWORK_POLICY_HOST_BYTES)
+                payload.len() == 1
+                    && amendment.len() == 2
+                    && amendment
+                        .get("host")
+                        .and_then(Value::as_str)
+                        .is_some_and(|host| host.len() <= MAX_NETWORK_POLICY_HOST_BYTES)
                     && matches!(
                         amendment.get("action").and_then(Value::as_str),
                         Some("allow" | "deny")
@@ -570,8 +573,17 @@ mod tests {
         elevated.request["availableDecisions"] = json!(["accept", 7]);
         assert!(!ledger.matches(&elevated, &snapshot, &root));
         elevated = original.clone();
-        elevated.request["permissionScope"] = json!("workspace");
-        assert!(!ledger.matches(&elevated, &snapshot, &root));
+        for key in [
+            "permissionScope",
+            "unexpectedField",
+            "permissionGrant",
+            "requestedPermissions",
+            "permissionProfile",
+        ] {
+            elevated = original.clone();
+            elevated.request[key] = json!({"enabled":true});
+            assert!(!ledger.matches(&elevated, &snapshot, &root));
+        }
         let mut preview_changed = snapshot.clone();
         preview_changed["command"] = json!("echo evil");
         assert!(!ledger.matches(&original, &preview_changed, &root));
@@ -641,14 +653,6 @@ mod tests {
             "decline",
             "cancel"
         ]);
-        proposal.request["availableDecisions"] = json!([
-            "accept",
-            "acceptForSession",
-            {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","safe"],"source":"server"}},
-            {"applyNetworkPolicyAmendment":{"network_policy_amendment":{"action":"allow","host":"example.com","source":"server"},"source":"server"}},
-            "decline",
-            "cancel"
-        ]);
         let original = proposal.request.clone();
         assert!(ledger.matches(&proposal, &snapshot, &root));
         assert_eq!(proposal.request, original);
@@ -692,6 +696,27 @@ mod tests {
         ] {
             let mut candidate = req("echo safe", cwd);
             candidate.request[key] = json!({"enabled":true});
+            assert!(!ledger.matches(&candidate, &snapshot, &root));
+        }
+
+        for invalid_choice in [
+            json!({"acceptWithExecpolicyAmendment":{
+                "execpolicy_amendment":["echo","safe"],"source":"server"
+            }}),
+            json!({"applyNetworkPolicyAmendment":{
+                "network_policy_amendment":{"action":"allow","host":"example.com","source":"server"}
+            }}),
+            json!({"applyNetworkPolicyAmendment":{
+                "network_policy_amendment":{"action":"allow","host":"example.com"},
+                "source":"server"
+            }}),
+            json!({
+                "acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","safe"]},
+                "decline":null
+            }),
+        ] {
+            let mut candidate = req("echo safe", cwd);
+            candidate.request["availableDecisions"] = json!(["accept", invalid_choice]);
             assert!(!ledger.matches(&candidate, &snapshot, &root));
         }
 

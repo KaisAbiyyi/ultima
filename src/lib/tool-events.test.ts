@@ -158,7 +158,7 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
     expect(canApprove(approval,tools,'/foreign')).toBe(false);
     expect(canApprove({ ...approval, request:{ ...approval.request, cwd:'/foreign' } }, tools,'/project')).toBe(false);
     for (const key of ['additionalPermissions','networkApprovalContext','proposedExecpolicyAmendment','proposedNetworkPolicyAmendments',
-      'permissionScope']) {
+      'permissionScope','unexpectedField','permissionGrant','requestedPermissions','permissionProfile']) {
       expect(canApprove({ ...approval, request:{ ...approval.request, [key]: { enabled:true } } }, tools,'/project')).toBe(false);
     }
     expect(canApprove({ ...approval, request:{ ...approval.request, availableDecisions:null } },tools,'/project')).toBe(true);
@@ -169,11 +169,18 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
       'accept',
       { acceptWithExecpolicyAmendment:{ execpolicy_amendment:['cargo','test'] } },
       { applyNetworkPolicyAmendment:{
-        network_policy_amendment:{ action:'allow', host:'example.com', source:'server' },
-        source:'server'
+        network_policy_amendment:{ action:'allow', host:'example.com' }
       } },
       'decline','cancel'
     ] } },tools,'/project')).toBe(true);
+    for (const choice of [
+      { acceptWithExecpolicyAmendment:{ execpolicy_amendment:['cargo','test'], source:'server' } },
+      { applyNetworkPolicyAmendment:{ network_policy_amendment:{ action:'allow', host:'example.com', source:'server' } } },
+      { applyNetworkPolicyAmendment:{ network_policy_amendment:{ action:'allow', host:'example.com' }, source:'server' } },
+      { acceptWithExecpolicyAmendment:{ execpolicy_amendment:['cargo','test'] }, decline:null }
+    ]) {
+      expect(canApprove({ ...approval, request:{ ...approval.request, availableDecisions:['accept',choice] } },tools,'/project')).toBe(false);
+    }
     expect(canApprove({ ...approval, request:{ ...approval.request, command:undefined } },tools,'/project')).toBe(false);
     const changed = trackTool(tools,'itemCompleted',itemEvent('t','z','i','commandExecution',
       { command:'rm -rf /', cwd:'/project' }));
