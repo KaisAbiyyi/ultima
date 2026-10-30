@@ -5,6 +5,12 @@ export const MAX_TOOL_OUTPUT_CHARS = 32 * 1024;
 export const MAX_TOOL_DIFF_CHARS = 64 * 1024;
 export const MAX_FILE_CHANGES = 32;
 export const MAX_PATH_CHARS = 512;
+const MAX_APPROVAL_DESCRIPTOR_BYTES = 8 * 1024;
+const MAX_EXEC_POLICY_AMENDMENT_ENTRIES = 32;
+const MAX_EXEC_POLICY_AMENDMENT_ITEM_BYTES = 512;
+const MAX_EXEC_POLICY_AMENDMENT_BYTES = 4 * 1024;
+const MAX_AVAILABLE_DECISIONS = 8;
+const MAX_NETWORK_POLICY_HOST_BYTES = 512;
 
 export type ApprovalRequest = {
   id: string | number; kind: 'command' | 'fileChange';
@@ -29,9 +35,9 @@ const REQUEST_FIELDS = new Set([
   'availableDecisions', 'reason'
 ]);
 const ESCALATION_FIELDS = [
-  'additionalPermissions', 'networkApprovalContext', 'proposedExecpolicyAmendment',
-  'proposedNetworkPolicyAmendments'
+  'additionalPermissions', 'networkApprovalContext', 'proposedNetworkPolicyAmendments'
 ];
+const APPROVAL_METADATA_FIELDS = ['proposedExecpolicyAmendment'];
 function commandText(value: unknown): string | null {
   if (typeof value === 'string') return value.trim() && value.length <= MAX_COMMAND_CHARS ? value : null;
   if (!Array.isArray(value) || !value.length || !value.every(v =>
@@ -39,6 +45,46 @@ function commandText(value: unknown): string | null {
   const joined = value.join(' ');
   return joined.length <= MAX_COMMAND_CHARS ? joined : null;
 }
+function validExecPolicyAmendment(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > MAX_EXEC_POLICY_AMENDMENT_ENTRIES) return false;
+  let total = 0;
+  for (const token of value) {
+    if (typeof token !== 'string') return false;
+    const bytes = new TextEncoder().encode(token).length;
+    if (bytes > MAX_EXEC_POLICY_AMENDMENT_ITEM_BYTES) return false;
+    total += bytes;
+    if (total > MAX_EXEC_POLICY_AMENDMENT_BYTES) return false;
+  }
+  return true;
+}
+
+/** Validate protocol choices, but never surface or dispatch persistent choices. */
+function validAvailableDecision(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return ['accept', 'acceptForSession', 'decline', 'cancel'].includes(value);
+  }
+  const choice = record(value);
+  if (!choice || Object.keys(choice).length !== 1) return false;
+  const exec = record(choice.acceptWithExecpolicyAmendment);
+  if (exec) {
+    return Object.keys(exec).length === 1 && validExecPolicyAmendment(exec.execpolicy_amendment);
+  }
+  const network = record(choice.applyNetworkPolicyAmendment);
+  if (!network || Object.keys(network).length !== 1) return false;
+  const amendment = record(network.network_policy_amendment);
+  return !!amendment && Object.keys(amendment).length === 2 &&
+    typeof amendment.host === 'string' &&
+    new TextEncoder().encode(amendment.host).length <= MAX_NETWORK_POLICY_HOST_BYTES &&
+    (amendment.action === 'allow' || amendment.action === 'deny');
+}
+
+function oneShotAcceptOffered(request: Record<string, unknown>): boolean {
+  const choices = request.availableDecisions;
+  if (choices === undefined || choices === null) return true;
+  return Array.isArray(choices) && choices.length <= MAX_AVAILABLE_DECISIONS &&
+    choices.every(validAvailableDecision) && choices.includes('accept');
+}
+
 /** No silent normalization of an ambiguous argv into a displayed shell command. */
 function commandMatches(a: unknown, b: unknown): boolean {
   const aText = commandText(a), bText = commandText(b);
@@ -50,13 +96,15 @@ function safeRelativePath(path: string): boolean {
     path.split('/').every(part => part.length > 0 && part !== '.' && part !== '..');
 }
 function permissionScope(request: Record<string, unknown>, kind: ApprovalRequest['kind'], project: string): boolean {
-  if (!project || Object.keys(request).some(k => !REQUEST_FIELDS.has(k) && !ESCALATION_FIELDS.includes(k))) return false;
+  if (!project || Object.keys(request).some(k =>
+    !REQUEST_FIELDS.has(k) && !ESCALATION_FIELDS.includes(k) && !APPROVAL_METADATA_FIELDS.includes(k))) return false;
   if (ESCALATION_FIELDS.some(key => request[key] !== undefined && request[key] !== null)) return false;
-  const decisions = request.availableDecisions;
-  if (decisions !== undefined &&
-    (!Array.isArray(decisions) || !decisions.length || !decisions.includes('accept') ||
-      !decisions.every(v => v === 'accept' || v === 'decline' || v === 'cancel'))) return false;
-  if (request.reason !== undefined && (typeof request.reason !== 'string' || request.reason.length > 4096)) return false;
+  const proposal = request.proposedExecpolicyAmendment;
+  if (proposal !== undefined && proposal !== null &&
+      (kind !== 'command' || !validExecPolicyAmendment(proposal))) return false;
+  if (!oneShotAcceptOffered(request)) return false;
+  if (request.reason !== undefined && request.reason !== null &&
+      (typeof request.reason !== 'string' || request.reason.length > 4096)) return false;
   if (kind === 'command') return request.grantRoot === undefined &&
     typeof request.cwd === 'string' && request.cwd === project && commandText(request.command) !== null;
   return request.command === undefined && request.cwd === undefined &&
@@ -77,7 +125,7 @@ export function parseApproval(raw: unknown): ApprovalRequest | null {
   if (!Number.isSafeInteger(v.startedAtMs) || (v.startedAtMs as number) < 0) return null;
   const request = record(v.request);
   if (!request || !Object.keys(request).length ||
-    new TextEncoder().encode(JSON.stringify(request)).length > 8192 ||
+    new TextEncoder().encode(JSON.stringify(request)).length > MAX_APPROVAL_DESCRIPTOR_BYTES ||
     request.threadId !== v.threadId || request.turnId !== v.turnId ||
     request.itemId !== v.itemId || request.startedAtMs !== v.startedAtMs) return null;
   return { id: v.id as string | number, kind: v.kind as ApprovalRequest['kind'],

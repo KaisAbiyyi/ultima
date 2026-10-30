@@ -342,3 +342,56 @@ fn descriptor_is_exactly_bound_and_same_id_mutation_is_rejected() {
     broker.decline_approval(&original.id).unwrap();
     assert_eq!(broker.approval_count(), 0);
 }
+
+
+#[test]
+fn one_shot_accept_with_execpolicy_proposal_emits_only_accept_and_does_not_persist() {
+    let mut broker = make_ready();
+    let first_params = json!({
+        "threadId":"t","turnId":"u","itemId":"i1","startedAtMs":7,
+        "command":"echo safe","cwd":"/project",
+        "proposedExecpolicyAmendment":["echo","safe"],
+        "availableDecisions":[
+            "accept",
+            "acceptForSession",
+            {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","safe"]}}
+        ]
+    });
+    let first = json!({
+        "id":"proposal1",
+        "method":"item/commandExecution/requestApproval",
+        "params":first_params
+    });
+    broker.ingest_line(&serde_json::to_vec(&first).unwrap()).unwrap();
+    let Event::Approval(original) = broker.take_event().unwrap() else {
+        panic!("expected proposal-bearing approval");
+    };
+    assert_eq!(
+        original.request["proposedExecpolicyAmendment"],
+        json!(["echo","safe"])
+    );
+    broker
+        .decide_exact_approval(&original, ApprovalDecision::Accept, true)
+        .unwrap();
+    let response: Value = serde_json::from_slice(&broker.take_outbound().unwrap()).unwrap();
+    assert_eq!(
+        response,
+        json!({"id":"proposal1","result":{"decision":"accept"}})
+    );
+    assert_eq!(broker.approval_count(), 0);
+
+    let second = json!({
+        "id":"proposal2",
+        "method":"item/commandExecution/requestApproval",
+        "params":{
+            "threadId":"t","turnId":"u","itemId":"i2","startedAtMs":8,
+            "command":"echo safe","cwd":"/project",
+            "proposedExecpolicyAmendment":["echo","safe"],
+            "availableDecisions":["accept","acceptForSession"]
+        }
+    });
+    broker.ingest_line(&serde_json::to_vec(&second).unwrap()).unwrap();
+    assert!(matches!(broker.take_event(), Some(Event::Approval(_))));
+    assert_eq!(broker.approval_count(), 1);
+    assert!(broker.take_outbound().is_none());
+}

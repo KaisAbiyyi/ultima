@@ -9,6 +9,12 @@ const MAX_OUTPUT: usize = 32 * 1024;
 const MAX_DIFF: usize = 64 * 1024;
 const MAX_PATH: usize = 512;
 const MAX_CHANGE: usize = 32;
+const MAX_APPROVAL_DESCRIPTOR_BYTES: usize = 8 * 1024;
+const MAX_EXEC_POLICY_AMENDMENT_ENTRIES: usize = 32;
+const MAX_EXEC_POLICY_AMENDMENT_ITEM_BYTES: usize = 512;
+const MAX_EXEC_POLICY_AMENDMENT_BYTES: usize = 4 * 1024;
+const MAX_AVAILABLE_DECISIONS: usize = 8;
+const MAX_NETWORK_POLICY_HOST_BYTES: usize = 512;
 
 #[derive(Clone)]
 struct Observed {
@@ -53,6 +59,88 @@ fn command(value: &Value) -> Option<String> {
     (!normalized.trim().is_empty() && normalized.len() <= MAX_COMMAND).then_some(normalized)
 }
 
+fn valid_exec_policy_amendment(value: &Value) -> bool {
+    let Some(entries) = value.as_array() else {
+        return false;
+    };
+    if entries.len() > MAX_EXEC_POLICY_AMENDMENT_ENTRIES {
+        return false;
+    }
+    let mut total = 0usize;
+    entries.iter().all(|entry| {
+        let Some(token) = entry.as_str() else {
+            return false;
+        };
+        if token.len() > MAX_EXEC_POLICY_AMENDMENT_ITEM_BYTES {
+            return false;
+        }
+        total = total.saturating_add(token.len());
+        total <= MAX_EXEC_POLICY_AMENDMENT_BYTES
+    })
+}
+
+fn valid_available_decision(value: &Value) -> bool {
+    match value.as_str() {
+        Some("accept" | "acceptForSession" | "decline" | "cancel") => true,
+        Some(_) => false,
+        None => {
+            let Some(choice) = value.as_object() else {
+                return false;
+            };
+            if choice.len() != 1 {
+                return false;
+            }
+            if let Some(payload) = choice.get("acceptWithExecpolicyAmendment") {
+                let Some(payload) = payload.as_object() else {
+                    return false;
+                };
+                payload.len() == 1
+                    && payload
+                        .get("execpolicy_amendment")
+                        .is_some_and(valid_exec_policy_amendment)
+            } else if let Some(payload) = choice.get("applyNetworkPolicyAmendment") {
+                let Some(payload) = payload.as_object() else {
+                    return false;
+                };
+                if payload.len() != 1 {
+                    return false;
+                }
+                let Some(amendment) = payload
+                    .get("network_policy_amendment")
+                    .and_then(Value::as_object)
+                else {
+                    return false;
+                };
+                amendment.len() == 2
+                    && amendment
+                        .get("host")
+                        .and_then(Value::as_str)
+                        .is_some_and(|host| host.len() <= MAX_NETWORK_POLICY_HOST_BYTES)
+                    && matches!(
+                        amendment.get("action").and_then(Value::as_str),
+                        Some("allow" | "deny")
+                    )
+            } else {
+                false
+            }
+        }
+    }
+}
+
+fn one_shot_accept_offered(request: &Value) -> bool {
+    match request.get("availableDecisions") {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(decisions)) => {
+            decisions.len() <= MAX_AVAILABLE_DECISIONS
+                && decisions.iter().all(valid_available_decision)
+                && decisions
+                    .iter()
+                    .any(|decision| decision.as_str() == Some("accept"))
+        }
+        _ => false,
+    }
+}
+
 fn scope(request: &Value, kind: ApprovalKind, project: &Path) -> bool {
     let Some(map) = request.as_object() else {
         return false;
@@ -77,15 +165,27 @@ fn scope(request: &Value, kind: ApprovalKind, project: &Path) -> bool {
     }) {
         return false;
     }
-    if [
-        "additionalPermissions",
-        "networkApprovalContext",
-        "proposedExecpolicyAmendment",
-        "proposedNetworkPolicyAmendments",
-    ]
-    .iter()
-    .any(|key| request.get(*key).is_some_and(|v| !v.is_null()))
+    if !serde_json::to_vec(request)
+        .is_ok_and(|serialized| serialized.len() <= MAX_APPROVAL_DESCRIPTOR_BYTES)
+        || [
+            "additionalPermissions",
+            "networkApprovalContext",
+            "proposedNetworkPolicyAmendments",
+        ]
+        .iter()
+        .any(|key| request.get(*key).is_some_and(|v| !v.is_null()))
     {
+        return false;
+    }
+    if let Some(proposal) = request
+        .get("proposedExecpolicyAmendment")
+        .filter(|value| !value.is_null())
+    {
+        if kind != ApprovalKind::Command || !valid_exec_policy_amendment(proposal) {
+            return false;
+        }
+    }
+    if !one_shot_accept_offered(request) {
         return false;
     }
     if let Some(reason) = request.get("reason") {
@@ -399,6 +499,10 @@ mod tests {
         assert!(!ledger.matches(&elevated, &snapshot, &root));
         elevated = original.clone();
         elevated.request["availableDecisions"] = json!(["accept", "acceptForSession"]);
+        assert!(ledger.matches(&elevated, &snapshot, &root));
+        elevated.request["availableDecisions"] = json!(["acceptForSession"]);
+        assert!(!ledger.matches(&elevated, &snapshot, &root));
+        elevated.request["availableDecisions"] = json!(["accept", 7]);
         assert!(!ledger.matches(&elevated, &snapshot, &root));
         elevated = original.clone();
         elevated.request["permissionScope"] = json!("workspace");
@@ -453,5 +557,65 @@ mod tests {
             "type":"fileChange","changes":[{"path":"../escape","diff":"+evil"}]}});
         ledger.observe(NotificationKind::ItemStarted, &unsafe_change);
         assert!(!ledger.matches(&file, &preview, &root));
+    }
+
+    #[test]
+    fn bounded_execpolicy_proposal_is_metadata_and_persistent_choices_are_not_granted() {
+        let root = project();
+        let cwd = root.to_str().unwrap();
+        let mut ledger = EvidenceLedger::default();
+        observe_cmd(&mut ledger, "echo safe", cwd);
+        let snapshot = reviewed("echo safe", cwd);
+        let mut proposal = req("echo safe", cwd);
+        proposal.request["proposedExecpolicyAmendment"] = json!(["echo", "safe"]);
+        proposal.request["availableDecisions"] = json!([
+            "accept",
+            "acceptForSession",
+            {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","safe"]}},
+            {"applyNetworkPolicyAmendment":{"network_policy_amendment":{"action":"allow","host":"example.com"}}},
+            "decline",
+            "cancel"
+        ]);
+        let original = proposal.request.clone();
+        assert!(ledger.matches(&proposal, &snapshot, &root));
+        assert_eq!(proposal.request, original);
+
+        let mut null_proposal = req("echo safe", cwd);
+        null_proposal.request["proposedExecpolicyAmendment"] = Value::Null;
+        assert!(ledger.matches(&null_proposal, &snapshot, &root));
+
+        let mut malformed = vec![json!("echo"), json!({"command":"echo"}), json!([1])];
+        malformed.push(json!([ "x".repeat(MAX_EXEC_POLICY_AMENDMENT_ITEM_BYTES + 1) ]));
+        malformed.push(json!((0..=MAX_EXEC_POLICY_AMENDMENT_ENTRIES).map(|_| "x").collect::<Vec<_>>()));
+        for value in malformed {
+            let mut candidate = req("echo safe", cwd);
+            candidate.request["proposedExecpolicyAmendment"] = value;
+            assert!(!ledger.matches(&candidate, &snapshot, &root));
+        }
+
+        for key in [
+            "additionalPermissions",
+            "networkApprovalContext",
+            "proposedNetworkPolicyAmendments",
+        ] {
+            let mut candidate = req("echo safe", cwd);
+            candidate.request[key] = json!({"enabled":true});
+            assert!(!ledger.matches(&candidate, &snapshot, &root));
+        }
+
+        let mut no_accept = req("echo safe", cwd);
+        no_accept.request["availableDecisions"] = json!(["acceptWithExecpolicyAmendment"]);
+        assert!(!ledger.matches(&no_accept, &snapshot, &root));
+        let mut stale = proposal.clone();
+        stale.request["startedAtMs"] = json!(2);
+        assert!(!ledger.matches(&stale, &snapshot, &root));
+
+        let long_command = "x".repeat(MAX_COMMAND);
+        let mut oversized = req(&long_command, cwd);
+        oversized.request["reason"] = json!("r".repeat(MAX_COMMAND));
+        let mut long_ledger = EvidenceLedger::default();
+        observe_cmd(&mut long_ledger, &long_command, cwd);
+        let long_snapshot = reviewed(&long_command, cwd);
+        assert!(!long_ledger.matches(&oversized, &long_snapshot, &root));
     }
 }

@@ -160,7 +160,14 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
       expect(canApprove({ ...approval, request:{ ...approval.request, [key]: { enabled:true } } }, tools,'/project')).toBe(false);
     }
     expect(canApprove({ ...approval, request:{ ...approval.request, availableDecisions:['acceptForSession'] } },tools,'/project')).toBe(false);
-    expect(canApprove({ ...approval, request:{ ...approval.request, availableDecisions:['accept','acceptForSession'] } },tools,'/project')).toBe(false);
+    expect(canApprove({ ...approval, request:{ ...approval.request, availableDecisions:['accept','acceptForSession'] } },tools,'/project')).toBe(true);
+    expect(canApprove({ ...approval, request:{ ...approval.request, availableDecisions:['accept', 7] } },tools,'/project')).toBe(false);
+    expect(canApprove({ ...approval, request:{ ...approval.request, availableDecisions:[
+      'accept',
+      { acceptWithExecpolicyAmendment:{ execpolicy_amendment:['cargo','test'] } },
+      { applyNetworkPolicyAmendment:{ network_policy_amendment:{ action:'allow', host:'example.com' } } },
+      'decline','cancel'
+    ] } },tools,'/project')).toBe(true);
     expect(canApprove({ ...approval, request:{ ...approval.request, command:undefined } },tools,'/project')).toBe(false);
     const changed = trackTool(tools,'itemCompleted',itemEvent('t','z','i','commandExecution',
       { command:'rm -rf /', cwd:'/project' }));
@@ -187,6 +194,45 @@ describe('NC-07 bounded tool evidence and explicit approvals', () => {
     const files = trackTool([], 'itemStarted', fileEvent([change('src/safe.txt','+hello')]));
     expect(canApprove(fileApproval,files,'/project')).toBe(true);
     expect(canApprove({ ...fileApproval, request:{ ...fileApproval.request, grantRoot:'/foreign' } },files,'/project')).toBe(false);
+  });
+
+
+  it('accepts bounded execpolicy proposal metadata without changing the immutable request', () => {
+    const tools = trackTool([], 'itemStarted', itemEvent('t','z','i','commandExecution',
+      { command:'cargo test', cwd:'/project' }));
+    const original = { ...approval, request:{ ...approval.request, proposedExecpolicyAmendment:['cargo','test'] } };
+    const parsed = parseApproval(original);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.request).toEqual(original.request);
+    expect(canApprove(parsed!, tools, '/project')).toBe(true);
+    expect(canApprove({ ...approval, request:{ ...approval.request, proposedExecpolicyAmendment:null } }, tools, '/project')).toBe(true);
+    expect(canApprove(approval, tools, '/project')).toBe(true);
+    expect(sameApproval(parsed!, { ...parsed!, request:{ ...parsed!.request, proposedExecpolicyAmendment:['cargo','build'] } })).toBe(false);
+  });
+
+  it('rejects malformed or oversized execpolicy proposals and oversized descriptors', () => {
+    const tools = trackTool([], 'itemStarted', itemEvent('t','z','i','commandExecution',
+      { command:'cargo test', cwd:'/project' }));
+    const invalid: unknown[] = [
+      'cargo',
+      { command:'cargo' },
+      [1],
+      ['x'.repeat(513)],
+      Array.from({ length:33 }, () => 'x'),
+      ['x'.repeat(4097)]
+    ];
+    for (const proposal of invalid) {
+      expect(canApprove({ ...approval, request:{ ...approval.request, proposedExecpolicyAmendment:proposal } }, tools, '/project')).toBe(false);
+    }
+    const oversized = parseApproval({
+      ...approval,
+      request:{
+        ...approval.request,
+        command:'x'.repeat(4096),
+        reason:'r'.repeat(4096)
+      }
+    });
+    expect(oversized).toBeNull();
   });
 
 });

@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, VecDeque};
 
+/// Historical reference/test metadata only. The broker does not enforce this
+/// value against the App Server initialize handshake.
 pub const PINNED_APP_SERVER: &str = "0.164.0";
 pub const MAX_JSONL_BYTES: usize = 1024 * 1024;
 
